@@ -106,7 +106,8 @@ const navGroups: NavGroup[] = [
     id: 'planning',
     labelKey: 'nav.group_planning',
     descriptionKey: 'nav.group_planning_desc',
-    defaultOpen: true,
+    defaultOpen: false,
+    hideInSimple: true,
     items: [
       { labelKey: 'schedule.title', to: '/schedule', icon: CalendarDays, moduleKey: 'schedule' },
       { labelKey: 'nav.5d_cost_model', to: '/5d', icon: TrendingUp, moduleKey: '5d', advancedOnly: true },
@@ -117,6 +118,7 @@ const navGroups: NavGroup[] = [
     labelKey: 'nav.group_procurement',
     descriptionKey: 'nav.group_procurement_desc',
     defaultOpen: false,
+    hideInSimple: true,
     items: [
       { labelKey: 'tendering.title', to: '/tendering', icon: FileText, moduleKey: 'tendering', advancedOnly: true },
       { labelKey: 'nav.change_orders', to: '/changeorders', icon: FileEdit, advancedOnly: true },
@@ -126,7 +128,8 @@ const navGroups: NavGroup[] = [
   {
     id: 'documentation',
     labelKey: 'nav.group_documentation',
-    defaultOpen: true,
+    defaultOpen: false,
+    hideInSimple: true,
     items: [
       { labelKey: 'nav.documents', to: '/documents', icon: FolderOpen },
       { labelKey: 'nav.photos', to: '/photos', icon: Camera },

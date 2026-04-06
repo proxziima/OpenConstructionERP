@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { apiGet, apiPost } from '@/shared/lib/api';
+import { useToastStore } from '@/stores/useToastStore';
 import { getIntlLocale } from '@/shared/lib/formatters';
 import { SUPPORTED_LANGUAGES } from '@/app/i18n';
 import {
@@ -723,6 +724,7 @@ function KpiRibbon({
 export function DashboardPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const addToast = useToastStore((s) => s.addToast);
 
   // First launch: redirect to onboarding wizard
   useEffect(() => {
@@ -964,11 +966,32 @@ export function DashboardPage() {
       <KpiRibbon boqs={allBoqs} schedules={allSchedules} projects={projects} />
 
       {/* Quick Actions */}
-      {projects && projects.length > 0 && (
-        <div className="flex flex-wrap sm:flex-nowrap sm:overflow-x-auto sm:scrollbar-none items-center gap-2 rounded-lg border border-border-light bg-surface-primary px-3 py-2 animate-card-in" style={{ animationDelay: '80ms' }}>
+      <div className="flex flex-wrap sm:flex-nowrap sm:overflow-x-auto sm:scrollbar-none items-center gap-2 rounded-lg border border-border-light bg-surface-primary px-3 py-2 animate-card-in" style={{ animationDelay: '80ms' }}>
           <span className="text-xs font-medium text-content-tertiary mr-1">
             {t('dashboard.quick_actions', { defaultValue: 'Quick Actions' })}:
           </span>
+          {/* Quick Start — primary action for new users */}
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Sparkles size={14} />}
+            onClick={async () => {
+              try {
+                const proj = await apiPost<{id:string}>('/v1/projects/', {
+                  name: `Estimate ${new Date().toLocaleDateString()}`,
+                  region: 'DACH', currency: 'EUR', classification_standard: 'din276',
+                });
+                const boq = await apiPost<{id:string}>('/v1/boq/boqs/', {
+                  project_id: proj.id, name: 'Bill of Quantities',
+                });
+                navigate(`/boq/${boq.id}`);
+              } catch {
+                addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }) });
+              }
+            }}
+          >
+            {t('dashboard.quick_start', { defaultValue: 'Quick Start Estimate' })}
+          </Button>
           <Button
             variant="secondary"
             size="sm"
@@ -981,7 +1004,7 @@ export function DashboardPage() {
             variant="secondary"
             size="sm"
             icon={<FileText size={14} />}
-            onClick={() => navigate('/boq/new')}
+            onClick={() => navigate('/boq')}
           >
             {t('dashboard.create_boq', { defaultValue: 'New BOQ' })}
           </Button>
