@@ -430,3 +430,115 @@ class CPMCalculateRequest(BaseModel):
         default=None,
         description="Work calendar override: {work_days: [0-4], exceptions: []}",
     )
+
+
+# ── Schedule Baseline schemas ──────────────────────────────────────────────
+
+
+class BaselineCreate(BaseModel):
+    """Create a schedule baseline snapshot."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    schedule_id: UUID | None = None
+    project_id: UUID
+    name: str = Field(..., min_length=1, max_length=255)
+    baseline_date: str = Field(..., max_length=20)
+    snapshot_data: dict[str, Any] = Field(..., description="Complete snapshot of activities")
+    is_active: bool = True
+    created_by: UUID | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class BaselineUpdate(BaseModel):
+    """Partial update for a schedule baseline."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    is_active: bool | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class BaselineResponse(BaseModel):
+    """Schedule baseline returned from the API."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    schedule_id: UUID | None
+    project_id: UUID
+    name: str
+    baseline_date: str
+    snapshot_data: dict[str, Any]
+    is_active: bool
+    created_by: UUID | None
+    metadata: dict[str, Any] = Field(default_factory=dict, alias="metadata_")
+    created_at: datetime
+    updated_at: datetime
+
+
+# ── Progress Update schemas ────────────────────────────────────────────────
+
+
+class ProgressUpdateCreate(BaseModel):
+    """Create a progress update record."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    project_id: UUID
+    activity_id: UUID | None = None
+    update_date: str = Field(..., max_length=20)
+    progress_pct: str | None = Field(default=None, max_length=10)
+    actual_start: str | None = Field(default=None, max_length=20)
+    actual_finish: str | None = Field(default=None, max_length=20)
+    remaining_duration: str | None = Field(default=None, max_length=10)
+    notes: str | None = None
+    status: str = Field(
+        default="draft",
+        pattern=r"^(draft|submitted|approved)$",
+    )
+    submitted_by: UUID | None = None
+    approved_by: UUID | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProgressUpdateEdit(BaseModel):
+    """Partial update for a progress update record."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    progress_pct: str | None = Field(default=None, max_length=10)
+    actual_start: str | None = Field(default=None, max_length=20)
+    actual_finish: str | None = Field(default=None, max_length=20)
+    remaining_duration: str | None = Field(default=None, max_length=10)
+    notes: str | None = None
+    status: str | None = Field(
+        default=None,
+        pattern=r"^(draft|submitted|approved)$",
+    )
+    submitted_by: UUID | None = None
+    approved_by: UUID | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class ProgressUpdateResponse(BaseModel):
+    """Progress update record returned from the API."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    project_id: UUID
+    activity_id: UUID | None
+    update_date: str
+    progress_pct: str | None
+    actual_start: str | None
+    actual_finish: str | None
+    remaining_duration: str | None
+    notes: str | None
+    status: str
+    submitted_by: UUID | None
+    approved_by: UUID | None
+    metadata: dict[str, Any] = Field(default_factory=dict, alias="metadata_")
+    created_at: datetime
+    updated_at: datetime

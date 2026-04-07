@@ -8,6 +8,8 @@ export interface BOQ {
   name: string;
   description: string;
   status: string;
+  estimate_type: string | null;
+  is_locked: boolean;
   created_at: string;
   updated_at: string;
 }

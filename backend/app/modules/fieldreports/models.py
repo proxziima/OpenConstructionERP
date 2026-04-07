@@ -1,7 +1,9 @@
 """Field Reports ORM models.
 
 Tables:
-    oe_fieldreports_report — daily/inspection/safety/concrete pour field reports
+    oe_fieldreports_report     — daily/inspection/safety/concrete pour field reports
+    oe_fieldreports_workforce  — structured workforce log entries per report
+    oe_fieldreports_equipment  — structured equipment log entries per report
 """
 
 import uuid
@@ -115,3 +117,70 @@ class FieldReport(Base):
 
     def __repr__(self) -> str:
         return f"<FieldReport {self.report_date} ({self.report_type}/{self.status})>"
+
+
+class SiteWorkforceLog(Base):
+    """Structured workforce log entry linked to a field report.
+
+    Tracks headcount, hours worked, and overtime per trade/company
+    for a single day's report.
+    """
+
+    __tablename__ = "oe_fieldreports_workforce"
+
+    field_report_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("oe_fieldreports_report.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    worker_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    company: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    headcount: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hours_worked: Mapped[str] = mapped_column(String(10), nullable=False, default="0")
+    overtime_hours: Mapped[str] = mapped_column(String(10), nullable=False, default="0")
+    wbs_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    cost_category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    metadata_: Mapped[dict] = mapped_column(  # type: ignore[assignment]
+        "metadata",
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+
+    def __repr__(self) -> str:
+        return f"<SiteWorkforceLog {self.worker_type} x{self.headcount}>"
+
+
+class SiteEquipmentLog(Base):
+    """Structured equipment log entry linked to a field report.
+
+    Tracks operational, standby, and breakdown hours per piece of
+    equipment for a single day's report.
+    """
+
+    __tablename__ = "oe_fieldreports_equipment"
+
+    field_report_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("oe_fieldreports_report.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    equipment_description: Mapped[str] = mapped_column(String(500), nullable=False)
+    equipment_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    hours_operational: Mapped[str] = mapped_column(String(10), nullable=False, default="0")
+    hours_standby: Mapped[str] = mapped_column(String(10), nullable=False, default="0")
+    hours_breakdown: Mapped[str] = mapped_column(String(10), nullable=False, default="0")
+    operator_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    metadata_: Mapped[dict] = mapped_column(  # type: ignore[assignment]
+        "metadata",
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+
+    def __repr__(self) -> str:
+        return f"<SiteEquipmentLog {self.equipment_description[:40]}>"

@@ -20,6 +20,7 @@ interface RiskItem {
   category: string; probability: number; impact_cost: number; impact_schedule_days: number;
   impact_severity: string; risk_score: number; status: string; mitigation_strategy: string;
   contingency_plan: string; owner_name: string; response_cost: number; currency: string;
+  probability_score?: number | null; impact_score_cost?: number | null;
   metadata: Record<string, unknown>; created_at: string; updated_at: string;
 }
 
@@ -96,6 +97,98 @@ function RiskMatrix({ cells }: { cells: MatrixCell[] }) {
         {[['bg-green-400/70', 'Low'], ['bg-yellow-400/80', 'Medium'], ['bg-orange-400/80', 'High'], ['bg-red-500/80', 'Critical']].map(([bg, l]) => (
           <span key={l} className="flex items-center gap-1"><span className={`inline-block w-3 h-3 rounded ${bg}`} />{l}</span>
         ))}
+      </div>
+    </Card>
+  );
+}
+
+/* ── 5x5 Risk Heatmap ────────────────────────────────────────────────── */
+
+function heatmapColor(score: number): string {
+  if (score >= 16) return 'bg-red-500 text-white';
+  if (score >= 11) return 'bg-orange-500 text-white';
+  if (score >= 6) return 'bg-yellow-400 text-gray-900';
+  if (score >= 1) return 'bg-green-500 text-white';
+  return 'bg-surface-secondary text-content-quaternary';
+}
+
+function RiskMatrixHeatmap({ risks }: { risks: RiskItem[] }) {
+  const { t } = useTranslation();
+
+  // Build a 5x5 grid: key = "prob|impact", value = count
+  const grid = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of risks) {
+      const p = r.probability_score;
+      const i = r.impact_score_cost;
+      if (p != null && i != null && p >= 1 && p <= 5 && i >= 1 && i <= 5) {
+        const key = `${p}|${i}`;
+        map.set(key, (map.get(key) ?? 0) + 1);
+      }
+    }
+    return map;
+  }, [risks]);
+
+  const probLabels = ['5', '4', '3', '2', '1'];
+  const impactLabels = ['1', '2', '3', '4', '5'];
+
+  return (
+    <Card className="p-4 mb-6">
+      <h3 className="text-sm font-semibold text-content-primary mb-3">
+        {t('risk.heatmap', { defaultValue: 'Risk Matrix' })}
+      </h3>
+      <div className="overflow-x-auto">
+        <table className="text-xs mx-auto">
+          <thead>
+            <tr>
+              <th className="p-1 text-right text-content-tertiary w-20 pr-2">
+                {t('risk.probability', { defaultValue: 'Probability' })}
+              </th>
+              {impactLabels.map((il) => (
+                <th key={il} className="p-1 text-center text-content-tertiary w-12">{il}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {probLabels.map((pl) => (
+              <tr key={pl}>
+                <td className="p-1 text-right text-content-secondary font-medium pr-2">{pl}</td>
+                {impactLabels.map((il) => {
+                  const p = parseInt(pl, 10);
+                  const i = parseInt(il, 10);
+                  const score = p * i;
+                  const count = grid.get(`${p}|${i}`) ?? 0;
+                  return (
+                    <td key={il} className="p-1">
+                      <div
+                        className={`flex items-center justify-center h-10 w-12 rounded-md text-sm font-bold ${
+                          count > 0 ? heatmapColor(score) : 'bg-surface-secondary text-content-quaternary'
+                        }`}
+                        title={`P=${p} x I=${i} = ${score}${count > 0 ? `, ${count} risk(s)` : ''}`}
+                      >
+                        {count > 0 ? count : '-'}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td />
+              <td colSpan={5} className="text-center text-content-tertiary text-2xs pt-1">
+                {t('risk.impact', { defaultValue: 'Impact' })}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div className="flex gap-4 mt-2 text-2xs text-content-tertiary justify-center">
+        <span className="flex items-center gap-1"><div className="w-3 h-3 rounded bg-green-500" /> {t('risk.low', { defaultValue: 'Low (1-5)' })}</span>
+        <span className="flex items-center gap-1"><div className="w-3 h-3 rounded bg-yellow-400" /> {t('risk.medium', { defaultValue: 'Medium (6-10)' })}</span>
+        <span className="flex items-center gap-1"><div className="w-3 h-3 rounded bg-orange-500" /> {t('risk.high', { defaultValue: 'High (11-15)' })}</span>
+        <span className="flex items-center gap-1"><div className="w-3 h-3 rounded bg-red-500" /> {t('risk.critical', { defaultValue: 'Critical (16-25)' })}</span>
       </div>
     </Card>
   );
@@ -380,6 +473,11 @@ export function RiskRegisterPage() {
 
       {/* Only show matrix when there are actual risks */}
       {hasRisks && matrixData?.cells && <div className="mt-6"><RiskMatrix cells={matrixData.cells} /></div>}
+
+      {/* 5x5 Risk Heatmap (client-side, based on probability_score × impact_score_cost) */}
+      {risks.length > 0 && risks.some((r) => r.probability_score != null && r.impact_score_cost != null) && (
+        <div className="mt-6"><RiskMatrixHeatmap risks={risks} /></div>
+      )}
 
       {/* Search & filter bar (only when there are risks) */}
       {risks.length > 0 && (

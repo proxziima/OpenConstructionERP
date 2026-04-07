@@ -734,6 +734,14 @@ def create_app() -> FastAPI:
         except Exception:
             logger.debug("OpenCDE API router not available (non-fatal)")
 
+        # Variations alias (plan §3.3) — mount changeorders also at /api/v1/variations
+        try:
+            from app.modules.changeorders.router import router as co_router
+
+            app.include_router(co_router, prefix="/api/v1/variations", tags=["Variations"])
+        except Exception:
+            logger.debug("Variations alias not available (non-fatal)")
+
         # Register cross-module event handlers (dataflow wiring)
         from app.core.event_handlers import register_event_handlers
 

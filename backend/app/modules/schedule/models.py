@@ -5,6 +5,8 @@ Tables:
     oe_schedule_activity      — individual activities / tasks in the schedule (WBS hierarchy)
     oe_schedule_work_order    — work orders linked to activities
     oe_schedule_relationship  — CPM dependency relationships between activities
+    oe_schedule_baseline      — schedule baseline snapshots for planned-vs-actual comparison
+    oe_schedule_progress      — progress update records for activities
 """
 
 import uuid
@@ -231,3 +233,93 @@ class ScheduleRelationship(Base):
             f"<ScheduleRelationship {self.predecessor_id}->{self.successor_id} "
             f"({self.relationship_type} lag={self.lag_days})>"
         )
+
+
+class ScheduleBaseline(Base):
+    """Snapshot of all schedule activities at a point in time.
+
+    Baselines allow comparison between planned vs. actual progress.
+    Each schedule/project may have multiple baselines (e.g. original,
+    revision 1, revision 2).  Only one baseline is active at a time.
+    """
+
+    __tablename__ = "oe_schedule_baseline"
+
+    schedule_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(),
+        nullable=True,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    baseline_date: Mapped[str] = mapped_column(String(20), nullable=False)
+    snapshot_data: Mapped[dict] = mapped_column(  # type: ignore[assignment]
+        JSON,
+        nullable=False,
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(),
+        nullable=True,
+    )
+    metadata_: Mapped[dict] = mapped_column(  # type: ignore[assignment]
+        "metadata",
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+
+    def __repr__(self) -> str:
+        return f"<ScheduleBaseline {self.name} ({self.baseline_date})>"
+
+
+class ProgressUpdate(Base):
+    """Progress update record for a schedule activity.
+
+    Tracks actual progress, start/finish dates, remaining duration,
+    and approval workflow (draft -> submitted -> approved).
+    """
+
+    __tablename__ = "oe_schedule_progress"
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        nullable=False,
+        index=True,
+    )
+    activity_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(),
+        nullable=True,
+    )
+    update_date: Mapped[str] = mapped_column(String(20), nullable=False)
+    progress_pct: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    actual_start: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    actual_finish: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    remaining_duration: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="draft")
+    submitted_by: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(),
+        nullable=True,
+    )
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(),
+        nullable=True,
+    )
+    metadata_: Mapped[dict] = mapped_column(  # type: ignore[assignment]
+        "metadata",
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+
+    def __repr__(self) -> str:
+        return f"<ProgressUpdate {self.update_date} ({self.status})>"

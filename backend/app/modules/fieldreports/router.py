@@ -28,6 +28,12 @@ from app.modules.fieldreports.schemas import (
     FieldReportUpdate,
     LinkDocumentsRequest,
     LinkedDocumentResponse,
+    SiteEquipmentLogCreate,
+    SiteEquipmentLogResponse,
+    SiteEquipmentLogUpdate,
+    SiteWorkforceLogCreate,
+    SiteWorkforceLogResponse,
+    SiteWorkforceLogUpdate,
 )
 from app.modules.fieldreports.service import FieldReportService
 
@@ -297,3 +303,214 @@ async def export_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=field_report_{report_id}.pdf"},
     )
+
+
+# ── Site Workforce Log CRUD ────────────────────────────────────────────────
+
+
+@router.post(
+    "/reports/{report_id}/workforce",
+    response_model=SiteWorkforceLogResponse,
+    status_code=201,
+)
+async def create_workforce_log(
+    report_id: uuid.UUID,
+    data: SiteWorkforceLogCreate,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("fieldreports.update")),
+) -> SiteWorkforceLogResponse:
+    """Add a workforce log entry to a field report."""
+    from app.modules.fieldreports.models import SiteWorkforceLog
+
+    entry = SiteWorkforceLog(
+        field_report_id=report_id,
+        worker_type=data.worker_type,
+        company=data.company,
+        headcount=data.headcount,
+        hours_worked=data.hours_worked,
+        overtime_hours=data.overtime_hours,
+        wbs_id=data.wbs_id,
+        cost_category=data.cost_category,
+        metadata_=data.metadata,
+    )
+    session.add(entry)
+    await session.flush()
+    return SiteWorkforceLogResponse.model_validate(entry)
+
+
+@router.get(
+    "/reports/{report_id}/workforce",
+    response_model=list[SiteWorkforceLogResponse],
+)
+async def list_workforce_logs(
+    report_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+) -> list[SiteWorkforceLogResponse]:
+    """List all workforce log entries for a field report."""
+    from sqlalchemy import select
+
+    from app.modules.fieldreports.models import SiteWorkforceLog
+
+    stmt = select(SiteWorkforceLog).where(SiteWorkforceLog.field_report_id == report_id)
+    result = await session.execute(stmt)
+    entries = list(result.scalars().all())
+    return [SiteWorkforceLogResponse.model_validate(e) for e in entries]
+
+
+@router.patch(
+    "/workforce/{entry_id}",
+    response_model=SiteWorkforceLogResponse,
+)
+async def update_workforce_log(
+    entry_id: uuid.UUID,
+    data: SiteWorkforceLogUpdate,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("fieldreports.update")),
+) -> SiteWorkforceLogResponse:
+    """Update a workforce log entry."""
+    from fastapi import HTTPException
+    from sqlalchemy import update
+
+    from app.modules.fieldreports.models import SiteWorkforceLog
+
+    entry = await session.get(SiteWorkforceLog, entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Workforce log entry not found")
+
+    updates = data.model_dump(exclude_unset=True)
+    if "metadata" in updates:
+        updates["metadata_"] = updates.pop("metadata")
+    if updates:
+        stmt = update(SiteWorkforceLog).where(SiteWorkforceLog.id == entry_id).values(**updates)
+        await session.execute(stmt)
+        await session.flush()
+        session.expire_all()
+        entry = await session.get(SiteWorkforceLog, entry_id)
+    return SiteWorkforceLogResponse.model_validate(entry)
+
+
+@router.delete("/workforce/{entry_id}", status_code=204)
+async def delete_workforce_log(
+    entry_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("fieldreports.delete")),
+) -> None:
+    """Delete a workforce log entry."""
+    from fastapi import HTTPException
+
+    from app.modules.fieldreports.models import SiteWorkforceLog
+
+    entry = await session.get(SiteWorkforceLog, entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Workforce log entry not found")
+    await session.delete(entry)
+    await session.flush()
+
+
+# ── Site Equipment Log CRUD ────────────────────────────────────────────────
+
+
+@router.post(
+    "/reports/{report_id}/equipment",
+    response_model=SiteEquipmentLogResponse,
+    status_code=201,
+)
+async def create_equipment_log(
+    report_id: uuid.UUID,
+    data: SiteEquipmentLogCreate,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("fieldreports.update")),
+) -> SiteEquipmentLogResponse:
+    """Add an equipment log entry to a field report."""
+    from app.modules.fieldreports.models import SiteEquipmentLog
+
+    entry = SiteEquipmentLog(
+        field_report_id=report_id,
+        equipment_description=data.equipment_description,
+        equipment_type=data.equipment_type,
+        hours_operational=data.hours_operational,
+        hours_standby=data.hours_standby,
+        hours_breakdown=data.hours_breakdown,
+        operator_name=data.operator_name,
+        metadata_=data.metadata,
+    )
+    session.add(entry)
+    await session.flush()
+    return SiteEquipmentLogResponse.model_validate(entry)
+
+
+@router.get(
+    "/reports/{report_id}/equipment",
+    response_model=list[SiteEquipmentLogResponse],
+)
+async def list_equipment_logs(
+    report_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+) -> list[SiteEquipmentLogResponse]:
+    """List all equipment log entries for a field report."""
+    from sqlalchemy import select
+
+    from app.modules.fieldreports.models import SiteEquipmentLog
+
+    stmt = select(SiteEquipmentLog).where(SiteEquipmentLog.field_report_id == report_id)
+    result = await session.execute(stmt)
+    entries = list(result.scalars().all())
+    return [SiteEquipmentLogResponse.model_validate(e) for e in entries]
+
+
+@router.patch(
+    "/equipment/{entry_id}",
+    response_model=SiteEquipmentLogResponse,
+)
+async def update_equipment_log(
+    entry_id: uuid.UUID,
+    data: SiteEquipmentLogUpdate,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("fieldreports.update")),
+) -> SiteEquipmentLogResponse:
+    """Update an equipment log entry."""
+    from fastapi import HTTPException
+    from sqlalchemy import update
+
+    from app.modules.fieldreports.models import SiteEquipmentLog
+
+    entry = await session.get(SiteEquipmentLog, entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Equipment log entry not found")
+
+    updates = data.model_dump(exclude_unset=True)
+    if "metadata" in updates:
+        updates["metadata_"] = updates.pop("metadata")
+    if updates:
+        stmt = update(SiteEquipmentLog).where(SiteEquipmentLog.id == entry_id).values(**updates)
+        await session.execute(stmt)
+        await session.flush()
+        session.expire_all()
+        entry = await session.get(SiteEquipmentLog, entry_id)
+    return SiteEquipmentLogResponse.model_validate(entry)
+
+
+@router.delete("/equipment/{entry_id}", status_code=204)
+async def delete_equipment_log(
+    entry_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("fieldreports.delete")),
+) -> None:
+    """Delete an equipment log entry."""
+    from fastapi import HTTPException
+
+    from app.modules.fieldreports.models import SiteEquipmentLog
+
+    entry = await session.get(SiteEquipmentLog, entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Equipment log entry not found")
+    await session.delete(entry)
+    await session.flush()

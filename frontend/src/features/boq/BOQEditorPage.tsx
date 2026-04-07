@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 // lucide-react icons used by sub-components (BOQToolbar, BOQGrid, etc.) — none needed directly here
-import { Database, Download, ExternalLink, X, Sparkles, AlertTriangle as WarnTriangle } from 'lucide-react';
+import { Database, Download, ExternalLink, X, Sparkles, AlertTriangle as WarnTriangle, Lock, Copy } from 'lucide-react';
 import { Button, Badge, Breadcrumb } from '@/shared/ui';
 import { useProgressStore } from '@/shared/ui/GlobalProgress';
 import { apiGet, apiPost, triggerDownload } from '@/shared/lib/api';
@@ -256,6 +256,53 @@ export function BOQEditorPage() {
       });
     },
   });
+
+  const lockMutation = useMutation({
+    mutationFn: () => apiPost(`/v1/boq/boqs/${boqId}/lock`, {}),
+    onSuccess: () => {
+      invalidateAll();
+      addToast({
+        type: 'success',
+        title: t('boq.locked_success', { defaultValue: 'Estimate locked' }),
+      });
+    },
+    onError: (err) => {
+      addToast({
+        type: 'error',
+        title: t('boq.lock_failed', { defaultValue: 'Lock failed' }),
+        message: err instanceof Error ? err.message : '',
+      });
+    },
+  });
+
+  const handleLock = useCallback(() => {
+    lockMutation.mutate();
+  }, [lockMutation]);
+
+  const createRevisionMutation = useMutation({
+    mutationFn: () => apiPost<{ id: string }>(`/v1/boq/boqs/${boqId}/create-revision`, {}),
+    onSuccess: (result) => {
+      invalidateAll();
+      addToast({
+        type: 'success',
+        title: t('boq.revision_created', { defaultValue: 'Revision created' }),
+      });
+      if (result?.id) {
+        navigate(`/boq/${result.id}`);
+      }
+    },
+    onError: (err) => {
+      addToast({
+        type: 'error',
+        title: t('boq.revision_failed', { defaultValue: 'Create revision failed' }),
+        message: err instanceof Error ? err.message : '',
+      });
+    },
+  });
+
+  const handleCreateRevision = useCallback(() => {
+    createRevisionMutation.mutate();
+  }, [createRevisionMutation]);
 
   const handleRenumber = useCallback(() => {
     setRenumberDialogOpen(true);
@@ -2050,10 +2097,34 @@ export function BOQEditorPage() {
           >
             {boq.status === 'draft' ? t('boq.draft', { defaultValue: 'draft' }) : boq.status === 'final' ? t('boq.final', { defaultValue: 'final' }) : boq.status}
           </Badge>
+          {boq.is_locked && (
+            <Badge variant="warning" size="sm" className="ml-2">
+              <Lock size={12} className="mr-1" /> {t('boq.locked', { defaultValue: 'LOCKED' })}
+            </Badge>
+          )}
+          {boq.estimate_type && (
+            <Badge variant="neutral" size="sm" className="ml-2">
+              {t(`boq.estimate_type_${boq.estimate_type}`, { defaultValue: boq.estimate_type })}
+            </Badge>
+          )}
         </div>
-        {boq.description && (
-          <p className="text-sm text-content-secondary truncate">{boq.description}</p>
-        )}
+        <div className="flex items-center gap-2">
+          {boq.description && (
+            <p className="text-sm text-content-secondary truncate flex-1">{boq.description}</p>
+          )}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {!boq.is_locked && (
+              <Button variant="secondary" size="sm" onClick={handleLock} disabled={lockMutation.isPending}>
+                <Lock size={14} className="mr-1" />
+                {t('boq.lock', { defaultValue: 'Lock Estimate' })}
+              </Button>
+            )}
+            <Button variant="secondary" size="sm" onClick={handleCreateRevision} disabled={createRevisionMutation.isPending}>
+              <Copy size={14} className="mr-1" />
+              {t('boq.create_revision', { defaultValue: 'Create Revision' })}
+            </Button>
+          </div>
+        </div>
 
         <BOQToolbar
           t={t}

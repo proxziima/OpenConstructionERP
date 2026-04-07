@@ -170,3 +170,106 @@ class LinkedDocumentResponse(BaseModel):
     category: str = "other"
     file_size: int = 0
     mime_type: str = ""
+
+
+# ── Site Workforce Log schemas ────────────────────────────────────────
+
+
+class SiteWorkforceLogCreate(BaseModel):
+    """Create a workforce log entry."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    field_report_id: UUID
+    worker_type: str = Field(..., min_length=1, max_length=100)
+    company: str | None = Field(default=None, max_length=255)
+    headcount: int = Field(default=0, ge=0)
+    hours_worked: str = Field(default="0", max_length=10)
+    overtime_hours: str = Field(default="0", max_length=10)
+    wbs_id: str | None = Field(default=None, max_length=36)
+    cost_category: str | None = Field(default=None, max_length=100)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SiteWorkforceLogUpdate(BaseModel):
+    """Partial update for a workforce log entry."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    worker_type: str | None = Field(default=None, min_length=1, max_length=100)
+    company: str | None = Field(default=None, max_length=255)
+    headcount: int | None = Field(default=None, ge=0)
+    hours_worked: str | None = Field(default=None, max_length=10)
+    overtime_hours: str | None = Field(default=None, max_length=10)
+    wbs_id: str | None = Field(default=None, max_length=36)
+    cost_category: str | None = Field(default=None, max_length=100)
+    metadata: dict[str, Any] | None = None
+
+
+class SiteWorkforceLogResponse(BaseModel):
+    """Workforce log entry returned from the API."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    field_report_id: UUID
+    worker_type: str
+    company: str | None
+    headcount: int
+    hours_worked: str
+    overtime_hours: str
+    wbs_id: str | None
+    cost_category: str | None
+    metadata: dict[str, Any] = Field(default_factory=dict, alias="metadata_")
+    created_at: datetime
+    updated_at: datetime
+
+
+# ── Site Equipment Log schemas ────────────────────────────────────────
+
+
+class SiteEquipmentLogCreate(BaseModel):
+    """Create an equipment log entry."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    field_report_id: UUID
+    equipment_description: str = Field(..., min_length=1, max_length=500)
+    equipment_type: str | None = Field(default=None, max_length=100)
+    hours_operational: str = Field(default="0", max_length=10)
+    hours_standby: str = Field(default="0", max_length=10)
+    hours_breakdown: str = Field(default="0", max_length=10)
+    operator_name: str | None = Field(default=None, max_length=255)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SiteEquipmentLogUpdate(BaseModel):
+    """Partial update for an equipment log entry."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    equipment_description: str | None = Field(default=None, min_length=1, max_length=500)
+    equipment_type: str | None = Field(default=None, max_length=100)
+    hours_operational: str | None = Field(default=None, max_length=10)
+    hours_standby: str | None = Field(default=None, max_length=10)
+    hours_breakdown: str | None = Field(default=None, max_length=10)
+    operator_name: str | None = Field(default=None, max_length=255)
+    metadata: dict[str, Any] | None = None
+
+
+class SiteEquipmentLogResponse(BaseModel):
+    """Equipment log entry returned from the API."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    field_report_id: UUID
+    equipment_description: str
+    equipment_type: str | None
+    hours_operational: str
+    hours_standby: str
+    hours_breakdown: str
+    operator_name: str | None
+    metadata: dict[str, Any] = Field(default_factory=dict, alias="metadata_")
+    created_at: datetime
+    updated_at: datetime

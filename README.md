@@ -9,7 +9,7 @@ Professional BOQ, 4D/5D planning, AI-powered estimation, CAD/BIM takeoff — all
 [Demo](https://openconstructionerp.com) · [Documentation](https://openconstructionerp.com/docs) · [Discussions](https://t.me/datadrivenconstruction) · [Report Bug](https://github.com/datadrivenconstruction/OpenConstructionERP/issues)
 
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
-![Version](https://img.shields.io/badge/version-0.7.0-green)
+![Version](https://img.shields.io/badge/version-0.9.0-green)
 ![Languages](https://img.shields.io/badge/languages-21-orange)
 ![Cost Items](https://img.shields.io/badge/cost_items-55%2C000%2B-red)
 ![Standards](https://img.shields.io/badge/standards-20-blueviolet)
@@ -110,7 +110,7 @@ Construction cost estimation software is expensive, closed-source, and locked to
 <tr><td><b>License</b></td><td align="center">AGPL-3.0 (free)</td><td align="center">Proprietary</td><td align="center">Proprietary</td></tr>
 <tr><td><b>Self-hosted / offline</b></td><td align="center">&#10004;</td><td align="center">&#10006; cloud only</td><td align="center">&#10006;</td></tr>
 <tr><td><b>Price</b></td><td align="center"><b>Free forever</b></td><td align="center">&#8364;200-500/mo per seat</td><td align="center">&#8364;30-100/mo per seat</td></tr>
-<tr><td><b>AI estimation</b></td><td align="center">&#10004; 7 LLM providers</td><td align="center">&#10006;</td><td align="center">&#10006;</td></tr>
+<tr><td><b>AI estimation</b></td><td align="center">&#10004; 16 LLM providers</td><td align="center">&#10006;</td><td align="center">&#10006;</td></tr>
 <tr><td><b>UI languages</b></td><td align="center"><b>21</b></td><td align="center">2-5</td><td align="center">3-8</td></tr>
 <tr><td><b>Regional standards</b></td><td align="center"><b>20</b></td><td align="center">1-4</td><td align="center">&mdash;</td></tr>
 <tr><td><b>BOQ editor</b></td><td align="center">&#10004;</td><td align="center">&#10004;</td><td align="center">&#10006;</td></tr>
@@ -121,6 +121,24 @@ Construction cost estimation software is expensive, closed-source, and locked to
 <tr><td><b>Validation engine</b></td><td align="center">&#10004; 42 rules</td><td align="center">&#9888; limited</td><td align="center">&#10006;</td></tr>
 <tr><td><b>REST API</b></td><td align="center">&#10004; full access</td><td align="center">&#9888; limited</td><td align="center">&#10006;</td></tr>
 </table>
+
+### What's New in v0.9.0
+
+**30 new modules** — contacts, finance, procurement, tasks, meetings, safety, inspections, RFI, submittals, NCR, correspondence, CDE (ISO 19650), transmittals, BIM Hub, reporting, and more.
+
+**SVG Gantt chart** — day/week/month zoom, dependency arrows, critical path highlighting, drag-to-reschedule.
+
+**BIM Viewer** — Three.js viewer with discipline coloring, element selection, properties panel. Upload CSV/Excel element data + DAE geometry, or raw CAD files (RVT, IFC, DWG, DGN).
+
+**16 AI providers** — Anthropic, OpenAI, Google Gemini, Mistral, Groq, DeepSeek, OpenRouter, Together, Fireworks, Perplexity, Cohere, AI21, xAI, Zhipu, Yandex GPT, Baidu.
+
+**8 regional packs** — US (AIA/CSI), DACH (DIN 276/GAEB/VOB), UK (NRM2/JCT/NEC4), Russia, Middle East (FIDIC), Asia-Pacific, India, Latin America.
+
+**Import/export everywhere** — contacts CSV import with template, budget Excel import, safety/inspection/RFI Excel exports, meeting minutes PDF export, AI meeting transcript import (Teams/Meet/Zoom).
+
+**ISO 19650 CDE** — document containers with WIP->Shared->Published->Archived workflow, OpenCDE BCF 3.0 API compliance.
+
+**568 translation keys x 20 languages** — professional construction terminology in German, French, Spanish, Russian, Chinese, Arabic, Japanese, and 13 more.
 
 ---
 

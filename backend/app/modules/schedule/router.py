@@ -33,12 +33,18 @@ from app.modules.schedule.schemas import (
     ActivityCreate,
     ActivityResponse,
     ActivityUpdate,
+    BaselineCreate,
+    BaselineResponse,
+    BaselineUpdate,
     CPMCalculateRequest,
     CriticalPathResponse,
     GanttData,
     GenerateFromBOQRequest,
     LinkPositionRequest,
+    ProgressUpdateCreate,
+    ProgressUpdateEdit,
     ProgressUpdateRequest,
+    ProgressUpdateResponse,
     RelationshipCreate,
     RelationshipResponse,
     RiskAnalysisResponse,
@@ -737,3 +743,262 @@ async def calculate_cpm_full(
         critical_path=critical_path,
         all_activities=all_cpm,
     )
+
+
+# ── Schedule Baselines ─────────────────────────────────────────────────────
+
+
+@router.post(
+    "/baselines/",
+    response_model=BaselineResponse,
+    status_code=201,
+    dependencies=[Depends(RequirePermission("schedule.update"))],
+)
+async def create_baseline(
+    data: BaselineCreate,
+    session: SessionDep,
+) -> BaselineResponse:
+    """Create a schedule baseline snapshot."""
+    from app.modules.schedule.models import ScheduleBaseline
+
+    baseline = ScheduleBaseline(
+        schedule_id=data.schedule_id,
+        project_id=data.project_id,
+        name=data.name,
+        baseline_date=data.baseline_date,
+        snapshot_data=data.snapshot_data,
+        is_active=data.is_active,
+        created_by=data.created_by,
+        metadata_=data.metadata,
+    )
+    session.add(baseline)
+    await session.flush()
+    return BaselineResponse.model_validate(baseline)
+
+
+@router.get(
+    "/baselines/",
+    response_model=list[BaselineResponse],
+    dependencies=[Depends(RequirePermission("schedule.read"))],
+)
+async def list_baselines(
+    project_id: uuid.UUID = Query(..., description="Filter baselines by project"),
+    session: SessionDep = None,
+) -> list[BaselineResponse]:
+    """List all baselines for a project."""
+    from sqlalchemy import select
+
+    from app.modules.schedule.models import ScheduleBaseline
+
+    stmt = (
+        select(ScheduleBaseline)
+        .where(ScheduleBaseline.project_id == project_id)
+        .order_by(ScheduleBaseline.created_at.desc())
+    )
+    result = await session.execute(stmt)
+    baselines = list(result.scalars().all())
+    return [BaselineResponse.model_validate(b) for b in baselines]
+
+
+@router.get(
+    "/baselines/{baseline_id}",
+    response_model=BaselineResponse,
+    dependencies=[Depends(RequirePermission("schedule.read"))],
+)
+async def get_baseline(
+    baseline_id: uuid.UUID,
+    session: SessionDep,
+) -> BaselineResponse:
+    """Get a single baseline by ID."""
+    from app.modules.schedule.models import ScheduleBaseline
+
+    baseline = await session.get(ScheduleBaseline, baseline_id)
+    if baseline is None:
+        raise HTTPException(status_code=404, detail="Baseline not found")
+    return BaselineResponse.model_validate(baseline)
+
+
+@router.patch(
+    "/baselines/{baseline_id}",
+    response_model=BaselineResponse,
+    dependencies=[Depends(RequirePermission("schedule.update"))],
+)
+async def update_baseline(
+    baseline_id: uuid.UUID,
+    data: BaselineUpdate,
+    session: SessionDep,
+) -> BaselineResponse:
+    """Update a baseline (name, is_active, metadata)."""
+    from sqlalchemy import update
+
+    from app.modules.schedule.models import ScheduleBaseline
+
+    baseline = await session.get(ScheduleBaseline, baseline_id)
+    if baseline is None:
+        raise HTTPException(status_code=404, detail="Baseline not found")
+
+    updates = data.model_dump(exclude_unset=True)
+    if "metadata" in updates:
+        updates["metadata_"] = updates.pop("metadata")
+    if updates:
+        stmt = (
+            update(ScheduleBaseline)
+            .where(ScheduleBaseline.id == baseline_id)
+            .values(**updates)
+        )
+        await session.execute(stmt)
+        await session.flush()
+        session.expire_all()
+        baseline = await session.get(ScheduleBaseline, baseline_id)
+    return BaselineResponse.model_validate(baseline)
+
+
+@router.delete(
+    "/baselines/{baseline_id}",
+    status_code=204,
+    dependencies=[Depends(RequirePermission("schedule.delete"))],
+)
+async def delete_baseline(
+    baseline_id: uuid.UUID,
+    session: SessionDep,
+) -> None:
+    """Delete a baseline."""
+    from app.modules.schedule.models import ScheduleBaseline
+
+    baseline = await session.get(ScheduleBaseline, baseline_id)
+    if baseline is None:
+        raise HTTPException(status_code=404, detail="Baseline not found")
+    await session.delete(baseline)
+    await session.flush()
+
+
+# ── Progress Updates ───────────────────────────────────────────────────────
+
+
+@router.post(
+    "/progress-updates/",
+    response_model=ProgressUpdateResponse,
+    status_code=201,
+    dependencies=[Depends(RequirePermission("schedule.update"))],
+)
+async def create_progress_update(
+    data: ProgressUpdateCreate,
+    session: SessionDep,
+) -> ProgressUpdateResponse:
+    """Create a progress update record."""
+    from app.modules.schedule.models import ProgressUpdate as ProgressUpdateModel
+
+    record = ProgressUpdateModel(
+        project_id=data.project_id,
+        activity_id=data.activity_id,
+        update_date=data.update_date,
+        progress_pct=data.progress_pct,
+        actual_start=data.actual_start,
+        actual_finish=data.actual_finish,
+        remaining_duration=data.remaining_duration,
+        notes=data.notes,
+        status=data.status,
+        submitted_by=data.submitted_by,
+        approved_by=data.approved_by,
+        metadata_=data.metadata,
+    )
+    session.add(record)
+    await session.flush()
+    return ProgressUpdateResponse.model_validate(record)
+
+
+@router.get(
+    "/progress-updates/",
+    response_model=list[ProgressUpdateResponse],
+    dependencies=[Depends(RequirePermission("schedule.read"))],
+)
+async def list_progress_updates(
+    project_id: uuid.UUID = Query(..., description="Filter by project"),
+    activity_id: uuid.UUID | None = Query(default=None, description="Filter by activity"),
+    session: SessionDep = None,
+) -> list[ProgressUpdateResponse]:
+    """List progress updates for a project, optionally filtered by activity."""
+    from sqlalchemy import select
+
+    from app.modules.schedule.models import ProgressUpdate as ProgressUpdateModel
+
+    stmt = select(ProgressUpdateModel).where(ProgressUpdateModel.project_id == project_id)
+    if activity_id is not None:
+        stmt = stmt.where(ProgressUpdateModel.activity_id == activity_id)
+    stmt = stmt.order_by(ProgressUpdateModel.created_at.desc())
+
+    result = await session.execute(stmt)
+    records = list(result.scalars().all())
+    return [ProgressUpdateResponse.model_validate(r) for r in records]
+
+
+@router.get(
+    "/progress-updates/{update_id}",
+    response_model=ProgressUpdateResponse,
+    dependencies=[Depends(RequirePermission("schedule.read"))],
+)
+async def get_progress_update(
+    update_id: uuid.UUID,
+    session: SessionDep,
+) -> ProgressUpdateResponse:
+    """Get a single progress update by ID."""
+    from app.modules.schedule.models import ProgressUpdate as ProgressUpdateModel
+
+    record = await session.get(ProgressUpdateModel, update_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Progress update not found")
+    return ProgressUpdateResponse.model_validate(record)
+
+
+@router.patch(
+    "/progress-updates/{update_id}",
+    response_model=ProgressUpdateResponse,
+    dependencies=[Depends(RequirePermission("schedule.update"))],
+)
+async def update_progress_update(
+    update_id: uuid.UUID,
+    data: ProgressUpdateEdit,
+    session: SessionDep,
+) -> ProgressUpdateResponse:
+    """Update a progress update record."""
+    from sqlalchemy import update
+
+    from app.modules.schedule.models import ProgressUpdate as ProgressUpdateModel
+
+    record = await session.get(ProgressUpdateModel, update_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Progress update not found")
+
+    updates = data.model_dump(exclude_unset=True)
+    if "metadata" in updates:
+        updates["metadata_"] = updates.pop("metadata")
+    if updates:
+        stmt = (
+            update(ProgressUpdateModel)
+            .where(ProgressUpdateModel.id == update_id)
+            .values(**updates)
+        )
+        await session.execute(stmt)
+        await session.flush()
+        session.expire_all()
+        record = await session.get(ProgressUpdateModel, update_id)
+    return ProgressUpdateResponse.model_validate(record)
+
+
+@router.delete(
+    "/progress-updates/{update_id}",
+    status_code=204,
+    dependencies=[Depends(RequirePermission("schedule.delete"))],
+)
+async def delete_progress_update(
+    update_id: uuid.UUID,
+    session: SessionDep,
+) -> None:
+    """Delete a progress update record."""
+    from app.modules.schedule.models import ProgressUpdate as ProgressUpdateModel
+
+    record = await session.get(ProgressUpdateModel, update_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Progress update not found")
+    await session.delete(record)
+    await session.flush()
