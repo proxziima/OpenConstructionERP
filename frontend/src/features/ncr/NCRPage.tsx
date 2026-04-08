@@ -17,7 +17,7 @@ import {
 import { Button, Card, Badge, EmptyState, Breadcrumb, ConfirmDialog, SkeletonTable } from '@/shared/ui';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
-import { apiGet } from '@/shared/lib/api';
+import { apiGet, apiPost } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import {
@@ -314,9 +314,11 @@ function CreateNCRModal({
 const NCRRow = React.memo(function NCRRow({
   ncr,
   onClose,
+  onCreateVariation,
 }: {
   ncr: NCR;
   onClose: (id: string) => void;
+  onCreateVariation: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -478,6 +480,19 @@ const NCRRow = React.memo(function NCRRow({
                 {t('ncr.action_close', { defaultValue: 'Close NCR' })}
               </Button>
             )}
+            {ncr.cost_impact != null && ncr.cost_impact > 0 && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCreateVariation(ncr.id);
+                }}
+              >
+                <DollarSign size={14} className="mr-1" />
+                {t('ncr.create_variation', { defaultValue: 'Create Variation' })}
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -580,6 +595,27 @@ export function NCRPage() {
       }),
   });
 
+  const createVariationMut = useMutation({
+    mutationFn: (ncrId: string) =>
+      apiPost<{ change_order_id: string; code: string; title: string }>(
+        `/v1/ncr/${ncrId}/create-variation`,
+        {},
+      ),
+    onSuccess: (data) => {
+      addToast({
+        type: 'success',
+        title: t('ncr.variation_created', { defaultValue: 'Variation created' }),
+        message: `${data.code}: ${data.title}`,
+      });
+    },
+    onError: (e: Error) =>
+      addToast({
+        type: 'error',
+        title: t('common.error', { defaultValue: 'Error' }),
+        message: e.message,
+      }),
+  });
+
   const handleCreateSubmit = useCallback(
     (formData: NCRFormData) => {
       if (!projectId) {
@@ -611,6 +647,13 @@ export function NCRPage() {
       if (ok) closeMut.mutate(id);
     },
     [closeMut, confirm, t],
+  );
+
+  const handleCreateVariation = useCallback(
+    (id: string) => {
+      createVariationMut.mutate(id);
+    },
+    [createVariationMut],
   );
 
   return (
@@ -813,7 +856,7 @@ export function NCRPage() {
 
               {/* Rows */}
               {filtered.map((ncr) => (
-                <NCRRow key={ncr.id} ncr={ncr} onClose={handleClose} />
+                <NCRRow key={ncr.id} ncr={ncr} onClose={handleClose} onCreateVariation={handleCreateVariation} />
               ))}
             </Card>
           </>

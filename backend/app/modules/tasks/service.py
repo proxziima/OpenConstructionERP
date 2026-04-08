@@ -90,6 +90,7 @@ class TaskService:
         status_filter: str | None = None,
         priority: str | None = None,
         responsible_id: str | None = None,
+        meeting_id: str | None = None,
     ) -> tuple[list[Task], int]:
         return await self.repo.list_for_project(
             project_id,
@@ -100,6 +101,7 @@ class TaskService:
             status=status_filter,
             priority=priority,
             responsible_id=responsible_id,
+            meeting_id=meeting_id,
         )
 
     async def list_my_tasks(

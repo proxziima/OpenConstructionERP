@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useParams } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import clsx from 'clsx';
 import {
   CalendarDays,
@@ -19,6 +19,7 @@ import {
   FileUp,
   Loader2,
   Upload,
+  ListChecks,
 } from 'lucide-react';
 import { Button, Card, Badge, EmptyState, Breadcrumb, ConfirmDialog, SkeletonTable } from '@/shared/ui';
 import { useConfirm } from '@/shared/hooks/useConfirm';
@@ -499,11 +500,13 @@ const MeetingRow = React.memo(function MeetingRow({
   onComplete,
   onExportPdf,
   isExporting,
+  projectId,
 }: {
   meeting: Meeting;
   onComplete: (id: string) => void;
   onExportPdf: (id: string) => void;
   isExporting: boolean;
+  projectId: string;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -667,6 +670,26 @@ const MeetingRow = React.memo(function MeetingRow({
             </div>
           )}
 
+          {/* Linked Tasks */}
+          {meeting.action_items && meeting.action_items.length > 0 && meeting.status === 'completed' && (
+            <div className="flex items-center gap-2">
+              <ListChecks size={14} className="text-content-tertiary" />
+              <span className="text-xs text-content-tertiary">
+                {t('meetings.linked_tasks', {
+                  defaultValue: '{{count}} tasks from action items',
+                  count: meeting.action_items.length,
+                })}
+              </span>
+              <Link
+                to={`/projects/${projectId}/tasks?meeting_id=${meeting.id}`}
+                className="text-xs font-medium text-oe-blue hover:underline"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {t('meetings.view_tasks', { defaultValue: 'View Tasks' })}
+              </Link>
+            </div>
+          )}
+
           {/* Actions */}
           <div className="flex items-center gap-2 pt-1">
             {(meeting.status === 'scheduled' || meeting.status === 'in_progress') && (
@@ -772,6 +795,7 @@ export function MeetingsPage() {
     mutationFn: (data: CreateMeetingPayload) => createMeeting(data),
     onSuccess: () => {
       invalidateAll();
+      qc.invalidateQueries({ queryKey: ['tasks'] });
       setShowCreateModal(false);
       addToast({
         type: 'success',
@@ -790,9 +814,11 @@ export function MeetingsPage() {
     mutationFn: (id: string) => completeMeeting(id),
     onSuccess: () => {
       invalidateAll();
+      qc.invalidateQueries({ queryKey: ['tasks'] });
       addToast({
         type: 'success',
         title: t('meetings.completed', { defaultValue: 'Meeting completed' }),
+        message: t('meetings.tasks_created', { defaultValue: 'Meeting completed. Action item tasks have been created.' }),
       });
     },
     onError: (e: Error) =>
@@ -822,6 +848,7 @@ export function MeetingsPage() {
     mutationFn: (file: File) => importMeetingSummary(projectId, file),
     onSuccess: () => {
       invalidateAll();
+      qc.invalidateQueries({ queryKey: ['tasks'] });
       setShowImportModal(false);
       addToast({
         type: 'success',
@@ -1116,6 +1143,7 @@ export function MeetingsPage() {
                   onComplete={handleComplete}
                   onExportPdf={handleExportPdf}
                   isExporting={exportPdfMut.isPending && exportPdfMut.variables === meeting.id}
+                  projectId={projectId}
                 />
               ))}
             </Card>

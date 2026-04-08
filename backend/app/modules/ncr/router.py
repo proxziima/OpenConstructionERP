@@ -1,12 +1,13 @@
 """NCR API routes.
 
 Endpoints:
-    GET    /                - List NCRs for a project
-    POST   /                - Create NCR
-    GET    /{ncr_id}        - Get single NCR
-    PATCH  /{ncr_id}        - Update NCR
-    DELETE /{ncr_id}        - Delete NCR
-    POST   /{ncr_id}/close  - Close NCR
+    GET    /                           - List NCRs for a project
+    POST   /                           - Create NCR
+    GET    /{ncr_id}                   - Get single NCR
+    PATCH  /{ncr_id}                   - Update NCR
+    DELETE /{ncr_id}                   - Delete NCR
+    POST   /{ncr_id}/create-variation  - Create change order from NCR
+    POST   /{ncr_id}/close             - Close NCR
 """
 
 import logging
@@ -119,6 +120,98 @@ async def delete_ncr(
     service: NCRService = Depends(_get_service),
 ) -> None:
     await service.delete_ncr(ncr_id)
+
+
+@router.post("/{ncr_id}/create-variation", status_code=201)
+async def create_variation_from_ncr(
+    ncr_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    _perm: None = Depends(RequirePermission("ncr.update")),
+    service: NCRService = Depends(_get_service),
+) -> dict:
+    """Create a change order/variation pre-filled from an NCR with cost impact.
+
+    The NCR must have a non-empty cost_impact value.
+    Pre-fills the change order with the NCR title, description, and cost impact.
+    """
+    ncr = await service.get_ncr(ncr_id)
+
+    if not ncr.cost_impact:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=400,
+            detail="NCR has no cost impact — cannot create a variation.",
+        )
+
+    # Lazy import changeorders module
+    try:
+        from app.modules.changeorders.models import ChangeOrder
+        from app.modules.changeorders.repository import ChangeOrderRepository
+
+        repo = ChangeOrderRepository(session)
+        count = await repo.count_for_project(ncr.project_id)
+        code = f"CO-{count + 1:03d}"
+
+        description_parts = [
+            f"Variation from NCR {ncr.ncr_number}: {ncr.title}",
+            "",
+            "Description:",
+            ncr.description,
+        ]
+        if ncr.corrective_action:
+            description_parts.extend(["", "Corrective Action:", ncr.corrective_action])
+        if ncr.root_cause:
+            description_parts.extend(["", "Root Cause:", ncr.root_cause])
+
+        order = ChangeOrder(
+            project_id=ncr.project_id,
+            code=code,
+            title=f"Variation: {ncr.title}",
+            description="\n".join(description_parts),
+            reason_category="non_conformance",
+            cost_impact=ncr.cost_impact or "0",
+            schedule_impact_days=ncr.schedule_impact_days or 0,
+            metadata_={
+                "source": "ncr",
+                "ncr_id": str(ncr_id),
+                "ncr_number": ncr.ncr_number,
+            },
+        )
+        session.add(order)
+        await session.flush()
+
+        # Link the change order back to the NCR
+        ncr.change_order_id = str(order.id)
+        await session.flush()
+
+        logger.info(
+            "Created change order %s from NCR %s",
+            code,
+            ncr_id,
+        )
+        return {
+            "change_order_id": str(order.id),
+            "code": code,
+            "ncr_id": str(ncr_id),
+            "title": order.title,
+        }
+    except ImportError:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=501,
+            detail="Change orders module is not available.",
+        )
+    except Exception as exc:
+        logger.exception("Failed to create variation from NCR %s: %s", ncr_id, exc)
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create change order from NCR.",
+        )
 
 
 @router.post("/{ncr_id}/close", response_model=NCRResponse)

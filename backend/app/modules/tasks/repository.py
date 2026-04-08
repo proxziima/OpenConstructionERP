@@ -28,6 +28,7 @@ class TaskRepository:
         status: str | None = None,
         priority: str | None = None,
         responsible_id: str | None = None,
+        meeting_id: str | None = None,
     ) -> tuple[list[Task], int]:
         base = select(Task).where(Task.project_id == project_id)
 
@@ -50,6 +51,8 @@ class TaskRepository:
             base = base.where(Task.priority == priority)
         if responsible_id is not None:
             base = base.where(Task.responsible_id == responsible_id)
+        if meeting_id is not None:
+            base = base.where(Task.meeting_id == meeting_id)
 
         count_stmt = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(count_stmt)).scalar_one()

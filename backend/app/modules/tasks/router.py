@@ -103,6 +103,7 @@ async def list_tasks(
     status_filter: str | None = Query(default=None, alias="status"),
     priority: str | None = Query(default=None),
     responsible_id: str | None = Query(default=None),
+    meeting_id: str | None = Query(default=None),
     service: TaskService = Depends(_get_service),
 ) -> list[TaskResponse]:
     """List tasks for a project with optional filters.
@@ -118,6 +119,7 @@ async def list_tasks(
         status_filter=status_filter,
         priority=priority,
         responsible_id=responsible_id,
+        meeting_id=meeting_id,
     )
     return [_to_response(t) for t in tasks]
 
