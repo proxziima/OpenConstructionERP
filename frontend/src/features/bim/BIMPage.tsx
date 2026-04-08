@@ -33,6 +33,7 @@ import {
   CheckCircle2,
   AlertCircle,
   ChevronUp,
+  Info,
 } from 'lucide-react';
 import { Button, Badge, EmptyState, Breadcrumb } from '@/shared/ui';
 import { BIMViewer, DisciplineToggle } from '@/shared/ui/BIMViewer';
@@ -42,6 +43,7 @@ import { useToastStore } from '@/stores/useToastStore';
 import { useUploadQueueStore } from '@/stores/useUploadQueueStore';
 import {
   fetchBIMModels,
+  fetchBIMModel,
   fetchBIMElements,
   uploadBIMData,
   uploadCADFile,
@@ -239,48 +241,127 @@ function ModelCard({
   model,
   isActive,
   onClick,
+  onUploadConverted,
 }: {
   model: BIMModelData;
   isActive: boolean;
   onClick: () => void;
+  onUploadConverted?: (modelName: string) => void;
 }) {
+  const { t } = useTranslation();
+  const formatLabel = (model.model_format || model.format || '').toUpperCase();
+  const fileSizeMB = model.file_size ? (model.file_size / (1024 * 1024)).toFixed(1) : null;
+  const isProcessing = model.status === 'processing';
+
   return (
-    <button
-      onClick={onClick}
-      className={`w-full text-start p-3 rounded-lg border transition-colors ${
+    <div
+      className={`w-full text-start rounded-lg border transition-colors ${
         isActive
           ? 'border-oe-blue bg-oe-blue-subtle'
           : 'border-border-light hover:border-border-medium hover:bg-surface-secondary'
       }`}
     >
-      <div className="flex items-center gap-2">
-        <Box size={16} className={isActive ? 'text-oe-blue' : 'text-content-tertiary'} />
-        <span className="text-sm font-medium text-content-primary truncate">{model.name}</span>
-      </div>
-      <div className="flex items-center gap-2 mt-1">
-        <Badge
-          variant={
-            model.status === 'ready'
-              ? 'success'
-              : model.status === 'processing'
-                ? 'warning'
-                : 'neutral'
-          }
-          size="sm"
-        >
-          {model.status === 'processing' ? (
-            <span className="flex items-center gap-1">
-              <Loader2 size={10} className="animate-spin" />
-              {model.status}
-            </span>
-          ) : (
-            model.status
+      <button onClick={onClick} className="w-full text-start p-3">
+        <div className="flex items-center gap-2">
+          <Box size={16} className={isActive ? 'text-oe-blue' : 'text-content-tertiary'} />
+          <span className="text-sm font-medium text-content-primary truncate">{model.name}</span>
+        </div>
+        <div className="flex items-center gap-2 mt-1">
+          <Badge
+            variant={
+              model.status === 'ready'
+                ? 'success'
+                : model.status === 'processing'
+                  ? 'warning'
+                  : model.status === 'error'
+                    ? 'error'
+                    : 'neutral'
+            }
+            size="sm"
+          >
+            {isProcessing ? (
+              <span className="flex items-center gap-1">
+                <Loader2 size={10} className="animate-spin" />
+                {t('bim.status_processing', { defaultValue: 'Processing' })}
+              </span>
+            ) : (
+              model.status
+            )}
+          </Badge>
+          {formatLabel && (
+            <span className="text-2xs text-content-tertiary">{formatLabel}</span>
           )}
-        </Badge>
-        <span className="text-2xs text-content-tertiary">{model.format?.toUpperCase()}</span>
-        <span className="text-2xs text-content-quaternary truncate">{model.filename}</span>
-      </div>
-    </button>
+          {model.filename && (
+            <span className="text-2xs text-content-quaternary truncate">{model.filename}</span>
+          )}
+        </div>
+
+        {/* Model info: file size + upload date */}
+        {(fileSizeMB || model.created_at) && (
+          <div className="flex items-center gap-3 mt-1.5 text-2xs text-content-quaternary">
+            {fileSizeMB && <span>{fileSizeMB} MB</span>}
+            {model.created_at && (
+              <span>
+                {new Date(model.created_at).toLocaleDateString(undefined, {
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </span>
+            )}
+          </div>
+        )}
+      </button>
+
+      {/* Processing status explanation */}
+      {isProcessing && isActive && (
+        <div className="px-3 pb-3 space-y-2">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+            <div className="flex items-center gap-2 mb-1.5">
+              <Loader2 size={14} className="animate-spin" />
+              <span className="font-semibold text-xs">
+                {t('bim.processing_converter_required', {
+                  defaultValue: 'Processing \u2014 Converter Required',
+                })}
+              </span>
+            </div>
+            <p className="text-2xs leading-relaxed">
+              {t('bim.processing_explanation', {
+                defaultValue:
+                  'Your file has been uploaded successfully. To extract elements and geometry, a CAD converter (ODA SDK or Cad2Data) needs to be installed on the server.',
+              })}
+            </p>
+            <p className="text-2xs leading-relaxed mt-1.5">
+              <strong>
+                {t('bim.processing_alternative_label', { defaultValue: 'Alternative:' })}
+              </strong>{' '}
+              {t('bim.processing_alternative', {
+                defaultValue:
+                  'Convert your IFC/RVT file externally and upload the resulting CSV/Excel element data using "Advanced mode" below.',
+              })}
+            </p>
+          </div>
+
+          {onUploadConverted && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onUploadConverted(model.name);
+              }}
+              className="flex items-center gap-1.5 w-full text-xs text-oe-blue hover:text-oe-blue/80 transition-colors py-1.5 px-2 rounded hover:bg-oe-blue-subtle/30"
+            >
+              <Upload size={13} />
+              {t('bim.upload_converted_data', {
+                defaultValue: 'Upload Converted Data (CSV/Excel)',
+              })}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -290,22 +371,38 @@ function UnifiedUploadSection({
   projectId,
   onUploadComplete,
   compact,
+  initialAdvancedMode,
+  initialModelName,
 }: {
   projectId: string;
   onUploadComplete: (modelId: string) => void;
   compact?: boolean;
+  /** Open in advanced mode immediately (for "Upload Converted Data" flow). */
+  initialAdvancedMode?: boolean;
+  /** Pre-fill model name (e.g. from a processing model). */
+  initialModelName?: string;
 }) {
   const { t } = useTranslation();
 
   const [file, setFile] = useState<File | null>(null);
-  const [modelName, setModelName] = useState('');
+  const [modelName, setModelName] = useState(initialModelName || '');
   const [discipline, setDiscipline] = useState('architecture');
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
   // Advanced mode state (separate data + geometry upload)
-  const [advancedMode, setAdvancedMode] = useState(false);
+  const [advancedMode, setAdvancedMode] = useState(initialAdvancedMode || false);
+
+  // Sync initialModelName when it changes (e.g. user clicks "Upload Converted Data" for a different model)
+  useEffect(() => {
+    if (initialModelName) setModelName(initialModelName);
+  }, [initialModelName]);
+
+  // Sync initialAdvancedMode when it changes
+  useEffect(() => {
+    if (initialAdvancedMode) setAdvancedMode(true);
+  }, [initialAdvancedMode]);
   const [dataFile, setDataFile] = useState<File | null>(null);
   const [geometryFile, setGeometryFile] = useState<File | null>(null);
 
@@ -314,7 +411,7 @@ function UnifiedUploadSection({
   const geoInputRef = useRef<HTMLInputElement>(null);
   const addToast = useToastStore((s) => s.addToast);
 
-  const allAcceptedExtensions = '.rvt,.ifc,.csv,.xlsx,.xls';
+  const cadAcceptedExtensions = '.rvt,.ifc';
   const addQueueTask = useUploadQueueStore((s) => s.addTask);
   const updateQueueTask = useUploadQueueStore((s) => s.updateTask);
 
@@ -618,7 +715,7 @@ function UnifiedUploadSection({
                     </p>
                     <p className="text-2xs text-content-tertiary mt-1">
                       {t('bim.supported_formats', {
-                        defaultValue: 'Supported: IFC, RVT, DWG, DGN, CSV, Excel',
+                        defaultValue: 'Supported: IFC, RVT',
                       })}
                     </p>
                     <p className="text-2xs text-content-quaternary mt-0.5">
@@ -632,7 +729,7 @@ function UnifiedUploadSection({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept={allAcceptedExtensions}
+                accept={cadAcceptedExtensions}
                 className="hidden"
                 onChange={handleInputChange}
               />
@@ -642,6 +739,19 @@ function UnifiedUploadSection({
 
         {advancedMode && (
           <>
+            {/* Hint when opened from "Upload Converted Data" */}
+            {initialAdvancedMode && (
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-blue-50 border border-blue-200 dark:bg-blue-950/30 dark:border-blue-800">
+                <Info size={16} className="text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+                <p className="text-xs text-blue-800 dark:text-blue-300">
+                  {t('bim.upload_converted_hint', {
+                    defaultValue:
+                      'Already converted your CAD file? Upload the element data (CSV/Excel) and optional geometry (DAE/COLLADA) here.',
+                  })}
+                </p>
+              </div>
+            )}
+
             {/* Advanced mode: separate data + geometry uploads */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {/* Data file (required) */}
@@ -834,6 +944,9 @@ export function BIMPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [disciplineVisibility, setDisciplineVisibility] = useState<Record<string, boolean>>({});
   const [leftPanelUploadOpen, setLeftPanelUploadOpen] = useState(false);
+  /** When set, opens the upload panel in advanced mode with this name pre-filled. */
+  const [uploadConvertedName, setUploadConvertedName] = useState<string | null>(null);
+  const addToast = useToastStore((s) => s.addToast);
 
   // Fetch models
   const modelsQuery = useQuery({
@@ -843,6 +956,44 @@ export function BIMPage() {
   });
 
   const hasModels = (modelsQuery.data?.items?.length ?? 0) > 0;
+
+  // Resolve active model from the list
+  const activeModel = useMemo(
+    () => modelsQuery.data?.items?.find((m) => m.id === activeModelId) ?? null,
+    [modelsQuery.data, activeModelId],
+  );
+
+  // Poll status when active model is "processing"
+  const statusPollQuery = useQuery({
+    queryKey: ['bim-model-status', activeModelId],
+    queryFn: () => fetchBIMModel(activeModelId!),
+    enabled: !!activeModelId && activeModel?.status === 'processing',
+    refetchInterval: 10_000, // poll every 10 seconds
+  });
+
+  // When status changes from "processing" to something else, refresh models list
+  useEffect(() => {
+    if (
+      statusPollQuery.data &&
+      statusPollQuery.data.status !== 'processing' &&
+      activeModel?.status === 'processing'
+    ) {
+      queryClient.invalidateQueries({ queryKey: ['bim-models', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['bim-elements', activeModelId] });
+      addToast({
+        type: statusPollQuery.data.status === 'ready' ? 'success' : 'info',
+        title:
+          statusPollQuery.data.status === 'ready'
+            ? t('bim.model_ready', { defaultValue: 'Model ready' })
+            : t('bim.model_status_changed', { defaultValue: 'Model status changed' }),
+        message: t('bim.model_status_changed_desc', {
+          defaultValue: '{{name}} is now {{status}}.',
+          name: activeModel?.name ?? '',
+          status: statusPollQuery.data.status,
+        }),
+      });
+    }
+  }, [statusPollQuery.data, activeModel, queryClient, projectId, activeModelId, addToast, t]);
 
   // Auto-select first model
   useEffect(() => {
@@ -934,9 +1085,16 @@ export function BIMPage() {
       setActiveModelId(modelId);
       setSelectedElementId(null);
       setLeftPanelUploadOpen(false);
+      setUploadConvertedName(null);
     },
     [queryClient, projectId],
   );
+
+  /** Open the upload panel in advanced mode with the given model name pre-filled. */
+  const handleUploadConverted = useCallback((modelName: string) => {
+    setUploadConvertedName(modelName);
+    setLeftPanelUploadOpen(true);
+  }, []);
 
   // Breadcrumb
   const breadcrumbItems = useMemo(() => {
@@ -1069,6 +1227,7 @@ export function BIMPage() {
                       setActiveModelId(model.id);
                       setSelectedElementId(null);
                     }}
+                    onUploadConverted={handleUploadConverted}
                   />
                 ))}
               </div>
@@ -1082,6 +1241,8 @@ export function BIMPage() {
                 projectId={projectId}
                 onUploadComplete={handleUploadComplete}
                 compact
+                initialAdvancedMode={!!uploadConvertedName}
+                initialModelName={uploadConvertedName || undefined}
               />
             </div>
           )}

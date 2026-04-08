@@ -46,6 +46,14 @@ export interface BIMModelData {
   filename: string;
   format: string;
   status: string;
+  /** model_format from backend, e.g. "rvt", "ifc" */
+  model_format?: string;
+  /** File size in bytes (set after CAD upload) */
+  file_size?: number;
+  /** ISO date string */
+  created_at?: string;
+  /** Element count (0 for processing models) */
+  element_count?: number;
 }
 
 /* ── Discipline Colors ─────────────────────────────────────────────────── */

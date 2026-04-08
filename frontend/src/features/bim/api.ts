@@ -47,6 +47,11 @@ export async function fetchBIMModels(projectId: string): Promise<BIMModelsRespon
   return apiGet<BIMModelsResponse>(`/v1/bim_hub?project_id=${encodeURIComponent(projectId)}`);
 }
 
+/** Fetch a single BIM model by ID (used for status polling). */
+export async function fetchBIMModel(modelId: string): Promise<BIMModelData> {
+  return apiGet<BIMModelData>(`/v1/bim_hub/${encodeURIComponent(modelId)}`);
+}
+
 /** Fetch elements for a specific BIM model. */
 export async function fetchBIMElements(
   modelId: string,

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
@@ -21,11 +21,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.boq.models import BOQ, BOQMarkup, Position
 from app.modules.changeorders.models import ChangeOrder, ChangeOrderItem
+from app.modules.contacts.models import Contact
+from app.modules.correspondence.models import Correspondence
 from app.modules.costmodel.models import BudgetLine, CashFlow, CostSnapshot
 from app.modules.documents.models import Document
+from app.modules.fieldreports.models import FieldReport
+from app.modules.finance.models import Invoice, InvoiceLineItem, ProjectBudget
+from app.modules.inspections.models import QualityInspection
+from app.modules.meetings.models import Meeting
+from app.modules.ncr.models import NCR
 from app.modules.projects.models import Project
+from app.modules.punchlist.models import PunchItem
+from app.modules.rfi.models import RFI
 from app.modules.risk.models import RiskItem
+from app.modules.safety.models import SafetyIncident, SafetyObservation
 from app.modules.schedule.models import Activity, Schedule
+from app.modules.submittals.models import Submittal
+from app.modules.tasks.models import Task
 from app.modules.tendering.models import TenderBid, TenderPackage
 from app.modules.users.models import User
 
@@ -3227,6 +3239,3486 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
     return meta
 
 
+# ---------------------------------------------------------------------------
+# Module-wide demo data seeder  (Contacts, Tasks, RFIs, Meetings, Safety,
+# Inspections, Finance, Punchlist, Field Reports, NCRs, Submittals, Correspondence)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_module_data(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    owner_id: uuid.UUID,
+    demo_id: str,
+    template: DemoTemplate,
+) -> dict:
+    """Populate every non-BOQ module with realistic demo data.
+
+    Each module block is wrapped in ``try / except`` so that missing or
+    disabled modules do not prevent other modules from being seeded.
+    Returns a summary dict of what was created.
+    """
+    results: dict[str, int] = {}
+    owner_str = str(owner_id)
+    base = datetime(2026, 4, 1)  # project start
+
+    # ── Contacts ─────────────────────────────────────────────────────
+    _CONTACTS: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "contact_type": "client",
+                "company_name": "Berliner Wohnungsbaugesellschaft mbH",
+                "first_name": "Klaus",
+                "last_name": "Weber",
+                "primary_email": "k.weber@bwb-berlin.de",
+                "primary_phone": "+49 30 12345678",
+                "country_code": "DE",
+                "notes": "Main client contact",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Hochtief AG",
+                "first_name": "Hans",
+                "last_name": "Mueller",
+                "primary_email": "h.mueller@hochtief.de",
+                "primary_phone": "+49 201 8240",
+                "country_code": "DE",
+                "notes": "Structural works subcontractor",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Sto SE Fassadenbau",
+                "first_name": "Maria",
+                "last_name": "Schmidt",
+                "primary_email": "m.schmidt@sto.de",
+                "primary_phone": "+49 7744 570",
+                "country_code": "DE",
+                "notes": "WDVS facade contractor",
+            },
+            {
+                "contact_type": "consultant",
+                "company_name": "Sauerbruch Hutton Architekten",
+                "first_name": "Louisa",
+                "last_name": "Hutton",
+                "primary_email": "l.hutton@sauerbruch-hutton.de",
+                "primary_phone": "+49 30 39780",
+                "country_code": "DE",
+                "notes": "Lead architect",
+            },
+            {
+                "contact_type": "consultant",
+                "company_name": "IB Hartmann Tragwerksplanung",
+                "first_name": "Thomas",
+                "last_name": "Hartmann",
+                "primary_email": "t.hartmann@ib-hartmann.de",
+                "primary_phone": "+49 30 44520",
+                "country_code": "DE",
+                "notes": "Structural engineer",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Imtech HLS Berlin",
+                "first_name": "Juergen",
+                "last_name": "Braun",
+                "primary_email": "j.braun@imtech.de",
+                "primary_phone": "+49 30 55120",
+                "country_code": "DE",
+                "notes": "MEP subcontractor",
+            },
+        ],
+        "office-london": [
+            {
+                "contact_type": "client",
+                "company_name": "Canary Properties Ltd",
+                "first_name": "James",
+                "last_name": "Harrison",
+                "primary_email": "j.harrison@canaryprops.co.uk",
+                "primary_phone": "+44 20 7946 0958",
+                "country_code": "GB",
+                "notes": "Client development manager",
+            },
+            {
+                "contact_type": "consultant",
+                "company_name": "Arup Group Ltd",
+                "first_name": "Sarah",
+                "last_name": "Chen",
+                "primary_email": "s.chen@arup.com",
+                "primary_phone": "+44 20 7636 1531",
+                "country_code": "GB",
+                "notes": "Structural engineer",
+            },
+            {
+                "contact_type": "consultant",
+                "company_name": "Hoare Lea M&E",
+                "first_name": "David",
+                "last_name": "Thompson",
+                "primary_email": "d.thompson@hoarelea.com",
+                "primary_phone": "+44 20 3668 7100",
+                "country_code": "GB",
+                "notes": "M&E consultant",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Severfield Steel",
+                "first_name": "Mark",
+                "last_name": "Jones",
+                "primary_email": "m.jones@severfield.com",
+                "primary_phone": "+44 1845 577896",
+                "country_code": "GB",
+                "notes": "Structural steelwork contractor",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Permasteelisa UK",
+                "first_name": "Andrea",
+                "last_name": "Rossi",
+                "primary_email": "a.rossi@permasteelisa.com",
+                "primary_phone": "+44 20 8317 3300",
+                "country_code": "GB",
+                "notes": "Curtain wall specialist",
+            },
+            {
+                "contact_type": "consultant",
+                "company_name": "Gardiner & Theobald",
+                "first_name": "Emma",
+                "last_name": "Wallace",
+                "primary_email": "e.wallace@gardiner.com",
+                "primary_phone": "+44 20 7209 3000",
+                "country_code": "GB",
+                "notes": "Quantity surveyor",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Crown House Technologies",
+                "first_name": "Robert",
+                "last_name": "White",
+                "primary_email": "r.white@crownhouse.co.uk",
+                "primary_phone": "+44 121 717 4600",
+                "country_code": "GB",
+                "notes": "MEP contractor",
+            },
+        ],
+        "medical-us": [
+            {
+                "contact_type": "client",
+                "company_name": "Downtown Health System",
+                "first_name": "Patricia",
+                "last_name": "Martinez",
+                "primary_email": "p.martinez@downtownhealth.org",
+                "primary_phone": "+1 555 234 5678",
+                "country_code": "US",
+                "notes": "VP of Facilities",
+            },
+            {
+                "contact_type": "consultant",
+                "company_name": "HKS Architects",
+                "first_name": "Michael",
+                "last_name": "Brooks",
+                "primary_email": "m.brooks@hks.com",
+                "primary_phone": "+1 214 969 5599",
+                "country_code": "US",
+                "notes": "Healthcare architect of record",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Southland Industries",
+                "first_name": "Richard",
+                "last_name": "Nguyen",
+                "primary_email": "r.nguyen@southlandind.com",
+                "primary_phone": "+1 714 901 5800",
+                "country_code": "US",
+                "notes": "MEP contractor",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Turner Construction",
+                "first_name": "Jennifer",
+                "last_name": "Davis",
+                "primary_email": "j.davis@tcco.com",
+                "primary_phone": "+1 212 229 6000",
+                "country_code": "US",
+                "notes": "General contractor",
+            },
+            {
+                "contact_type": "consultant",
+                "company_name": "Aon Fire Protection Engineering",
+                "first_name": "William",
+                "last_name": "Park",
+                "primary_email": "w.park@aon.com",
+                "primary_phone": "+1 312 381 1000",
+                "country_code": "US",
+                "notes": "Fire protection consultant",
+            },
+            {
+                "contact_type": "supplier",
+                "company_name": "Siemens Healthineers",
+                "first_name": "Lisa",
+                "last_name": "Chen",
+                "primary_email": "l.chen@siemens-healthineers.com",
+                "primary_phone": "+1 610 448 4500",
+                "country_code": "US",
+                "notes": "Medical imaging equipment supplier",
+            },
+        ],
+        "school-paris": [
+            {
+                "contact_type": "client",
+                "company_name": "Mairie du 20e Arrondissement",
+                "first_name": "Sophie",
+                "last_name": "Dupont",
+                "primary_email": "s.dupont@paris.fr",
+                "primary_phone": "+33 1 43 15 20 20",
+                "country_code": "FR",
+                "notes": "Direction de la construction",
+            },
+            {
+                "contact_type": "consultant",
+                "company_name": "Chartier Dalix Architectes",
+                "first_name": "Frederic",
+                "last_name": "Chartier",
+                "primary_email": "f.chartier@chartier-dalix.com",
+                "primary_phone": "+33 1 44 54 07 00",
+                "country_code": "FR",
+                "notes": "Architect mandate",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Eiffage Construction IDF",
+                "first_name": "Pierre",
+                "last_name": "Moreau",
+                "primary_email": "p.moreau@eiffage.com",
+                "primary_phone": "+33 1 49 29 60 00",
+                "country_code": "FR",
+                "notes": "Gros oeuvre contractor",
+            },
+            {
+                "contact_type": "consultant",
+                "company_name": "BET Fluides Setec",
+                "first_name": "Claire",
+                "last_name": "Martin",
+                "primary_email": "c.martin@setec.fr",
+                "primary_phone": "+33 1 82 51 00 00",
+                "country_code": "FR",
+                "notes": "MEP engineer",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Arbonis (CLT Timber)",
+                "first_name": "Jean",
+                "last_name": "Lefebvre",
+                "primary_email": "j.lefebvre@arbonis.com",
+                "primary_phone": "+33 5 58 05 55 00",
+                "country_code": "FR",
+                "notes": "CLT timber structure specialist",
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "contact_type": "client",
+                "company_name": "Al Futtaim Logistics",
+                "first_name": "Ahmed",
+                "last_name": "Al Maktoum",
+                "primary_email": "a.almaktoum@alfuttaim.ae",
+                "primary_phone": "+971 4 222 7111",
+                "country_code": "AE",
+                "notes": "Project sponsor",
+            },
+            {
+                "contact_type": "consultant",
+                "company_name": "KEO International Consultants",
+                "first_name": "Ravi",
+                "last_name": "Sharma",
+                "primary_email": "r.sharma@keo.com",
+                "primary_phone": "+971 4 338 0738",
+                "country_code": "AE",
+                "notes": "Lead design consultant",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Al Jaber Engineering",
+                "first_name": "Khalid",
+                "last_name": "Al Jaber",
+                "primary_email": "k.aljaber@ajec.ae",
+                "primary_phone": "+971 2 550 7777",
+                "country_code": "AE",
+                "notes": "Steel structure contractor",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Leminar Air Conditioning",
+                "first_name": "Suresh",
+                "last_name": "Nair",
+                "primary_email": "s.nair@leminar.ae",
+                "primary_phone": "+971 4 371 5000",
+                "country_code": "AE",
+                "notes": "HVAC contractor",
+            },
+            {
+                "contact_type": "consultant",
+                "company_name": "Robert Bird Group",
+                "first_name": "George",
+                "last_name": "Palmer",
+                "primary_email": "g.palmer@robertbird.com",
+                "primary_phone": "+971 4 327 7670",
+                "country_code": "AE",
+                "notes": "Structural engineer",
+            },
+            {
+                "contact_type": "subcontractor",
+                "company_name": "Emirates Fire Fighting Equipment",
+                "first_name": "Omar",
+                "last_name": "Hassan",
+                "primary_email": "o.hassan@effe.ae",
+                "primary_phone": "+971 4 268 9090",
+                "country_code": "AE",
+                "notes": "Fire protection systems",
+            },
+        ],
+    }
+
+    try:
+        contact_list = _CONTACTS.get(demo_id, [])
+        for c in contact_list:
+            session.add(
+                Contact(
+                    id=_id(),
+                    contact_type=c["contact_type"],
+                    company_name=c.get("company_name"),
+                    first_name=c.get("first_name"),
+                    last_name=c.get("last_name"),
+                    primary_email=c.get("primary_email"),
+                    primary_phone=c.get("primary_phone"),
+                    country_code=c.get("country_code"),
+                    notes=c.get("notes"),
+                    is_active=True,
+                    created_by=owner_str,
+                    metadata_={"project_id": str(project_id), "demo_id": demo_id},
+                )
+            )
+        results["contacts"] = len(contact_list)
+    except Exception:
+        logger.debug("Contacts module not loaded, skipping demo contacts")
+
+    # ── Tasks ────────────────────────────────────────────────────────
+    _TASKS: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "task_type": "task",
+                "title": "Baugrundgutachten beauftragen",
+                "description": "Commission geotechnical survey for foundation design",
+                "status": "completed",
+                "priority": "high",
+                "due_date": (base - timedelta(days=30)).strftime("%Y-%m-%d"),
+                "result": "Report received, no contamination found",
+            },
+            {
+                "task_type": "task",
+                "title": "Spundwandverbau Statik pruefen",
+                "description": "Review sheet pile wall structural calculations with engineer",
+                "status": "completed",
+                "priority": "high",
+                "due_date": (base - timedelta(days=14)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "decision",
+                "title": "WDVS Systemauswahl",
+                "description": "Choose between Sto StoTherm Classic vs Caparol Dalmatiner",
+                "status": "completed",
+                "priority": "normal",
+                "result": "Sto StoTherm Classic selected — better thermal performance",
+            },
+            {
+                "task_type": "topic",
+                "title": "KfW 55 Foerdermittel Antrag",
+                "description": "Prepare KfW subsidy application for energy-efficient building",
+                "status": "in_progress",
+                "priority": "high",
+                "due_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "task",
+                "title": "Tiefgarage Entrauchung abstimmen",
+                "description": "Coordinate underground parking smoke extraction with fire authority",
+                "status": "in_progress",
+                "priority": "high",
+                "due_date": (base + timedelta(days=45)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "task",
+                "title": "Aufzugsangebot vergleichen",
+                "description": "Compare lift offers from KONE, Schindler, and ThyssenKrupp",
+                "status": "open",
+                "priority": "normal",
+                "due_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "topic",
+                "title": "Mieterbeirat Farbkonzept",
+                "description": "Present facade color concept to tenant advisory board",
+                "status": "open",
+                "priority": "low",
+                "due_date": (base + timedelta(days=120)).strftime("%Y-%m-%d"),
+            },
+        ],
+        "office-london": [
+            {
+                "task_type": "task",
+                "title": "Appoint curtain wall specialist",
+                "description": "Final interview and appointment of unitised curtain wall contractor",
+                "status": "completed",
+                "priority": "high",
+                "due_date": (base - timedelta(days=21)).strftime("%Y-%m-%d"),
+                "result": "Permasteelisa appointed, contract signed",
+            },
+            {
+                "task_type": "decision",
+                "title": "Core strategy — steel vs concrete",
+                "description": "Finalise core construction methodology",
+                "status": "completed",
+                "priority": "high",
+                "result": "RC cores selected for fire rating and programme advantages",
+            },
+            {
+                "task_type": "task",
+                "title": "BREEAM credit review meeting",
+                "description": "Review achievable BREEAM credits with sustainability consultant",
+                "status": "in_progress",
+                "priority": "normal",
+                "due_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "topic",
+                "title": "Section 106 obligations",
+                "description": "Review planning obligations and public realm contributions",
+                "status": "in_progress",
+                "priority": "high",
+                "due_date": (base + timedelta(days=45)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "task",
+                "title": "Commission site investigation",
+                "description": "Arrange ground investigation for basement design",
+                "status": "completed",
+                "priority": "high",
+                "due_date": (base - timedelta(days=60)).strftime("%Y-%m-%d"),
+                "result": "Complete — GI report issued by Arup",
+            },
+            {
+                "task_type": "task",
+                "title": "Coordinate server room cooling",
+                "description": "Liaise with tenant IT team on server room cooling requirements",
+                "status": "open",
+                "priority": "normal",
+                "due_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+            },
+        ],
+        "medical-us": [
+            {
+                "task_type": "task",
+                "title": "Medical equipment list freeze",
+                "description": "Obtain frozen equipment list from radiology, surgery, and ED departments",
+                "status": "in_progress",
+                "priority": "critical",
+                "due_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "decision",
+                "title": "MRI suite location",
+                "description": "Decide between ground floor vs basement for 3T MRI suite",
+                "status": "completed",
+                "priority": "high",
+                "result": "Ground floor selected — easier equipment delivery and vibration isolation",
+            },
+            {
+                "task_type": "task",
+                "title": "ICRA plan approval",
+                "description": "Submit Infection Control Risk Assessment to hospital board for approval",
+                "status": "completed",
+                "priority": "high",
+                "due_date": (base - timedelta(days=14)).strftime("%Y-%m-%d"),
+                "result": "Approved with minor comments — addressed",
+            },
+            {
+                "task_type": "topic",
+                "title": "Emergency department flow analysis",
+                "description": "Review patient and ambulance flow simulation with clinical staff",
+                "status": "in_progress",
+                "priority": "high",
+                "due_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "task",
+                "title": "Backup power load calculations",
+                "description": "Verify emergency generator sizing for all critical systems",
+                "status": "open",
+                "priority": "high",
+                "due_date": (base + timedelta(days=45)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "task",
+                "title": "Radiation shielding review",
+                "description": "Coordinate radiation physicist review of CT and fluoroscopy room shielding",
+                "status": "open",
+                "priority": "normal",
+                "due_date": (base + timedelta(days=75)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "decision",
+                "title": "Nurse call system vendor",
+                "description": "Select nurse call system between Hill-Rom, Rauland, and TekTone",
+                "status": "open",
+                "priority": "normal",
+                "due_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+            },
+        ],
+        "school-paris": [
+            {
+                "task_type": "task",
+                "title": "Diagnostic amiante avant demolition",
+                "description": "Commission pre-demolition asbestos survey for existing structures",
+                "status": "completed",
+                "priority": "high",
+                "due_date": (base - timedelta(days=45)).strftime("%Y-%m-%d"),
+                "result": "No asbestos detected — demolition cleared",
+            },
+            {
+                "task_type": "decision",
+                "title": "Structure bois CLT vs beton",
+                "description": "Final decision on CLT timber vs reinforced concrete for superstructure",
+                "status": "completed",
+                "priority": "high",
+                "result": "CLT hybrid selected — meets RE 2020 carbon targets",
+            },
+            {
+                "task_type": "topic",
+                "title": "Reunion mairie — planning site",
+                "description": "Meeting with Mairie to discuss construction phase site logistics",
+                "status": "in_progress",
+                "priority": "normal",
+                "due_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "task",
+                "title": "Appel offres cuisine collective",
+                "description": "Prepare tender documents for commercial kitchen equipment",
+                "status": "open",
+                "priority": "normal",
+                "due_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "task",
+                "title": "Etude acoustique gymnase",
+                "description": "Acoustic study for gymnasium — ensure NRA compliance",
+                "status": "in_progress",
+                "priority": "normal",
+                "due_date": (base + timedelta(days=45)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "task",
+                "title": "Photovoltaique dimensionnement",
+                "description": "Size rooftop PV array for 120 kWc target",
+                "status": "completed",
+                "priority": "normal",
+                "result": "320 panels on south-facing roof — 125 kWc achieved",
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "task_type": "task",
+                "title": "JAFZA NOC application",
+                "description": "Submit No Objection Certificate application to JAFZA authority",
+                "status": "completed",
+                "priority": "high",
+                "due_date": (base - timedelta(days=60)).strftime("%Y-%m-%d"),
+                "result": "NOC approved — valid for 24 months",
+            },
+            {
+                "task_type": "decision",
+                "title": "Cold storage insulation system",
+                "description": "Select insulated panel system for -25C cold storage zone",
+                "status": "completed",
+                "priority": "high",
+                "result": "Kingspan QuadCore KS1000 selected — best U-value",
+            },
+            {
+                "task_type": "topic",
+                "title": "Summer work schedule",
+                "description": "Plan reduced outdoor hours June-August per UAE labor law",
+                "status": "in_progress",
+                "priority": "high",
+                "due_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "task",
+                "title": "Fire protection system design",
+                "description": "Coordinate ESFR sprinkler design with Dubai Civil Defence requirements",
+                "status": "in_progress",
+                "priority": "high",
+                "due_date": (base + timedelta(days=45)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "task",
+                "title": "Steel structure shop drawings",
+                "description": "Review and approve portal frame shop drawings from fabricator",
+                "status": "open",
+                "priority": "normal",
+                "due_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
+            },
+            {
+                "task_type": "task",
+                "title": "Dock leveller procurement",
+                "description": "Procure 10 dock levellers and 2 cold storage dock shelters",
+                "status": "open",
+                "priority": "normal",
+                "due_date": (base + timedelta(days=75)).strftime("%Y-%m-%d"),
+            },
+        ],
+    }
+
+    try:
+        task_list = _TASKS.get(demo_id, [])
+        for t in task_list:
+            session.add(
+                Task(
+                    id=_id(),
+                    project_id=project_id,
+                    task_type=t["task_type"],
+                    title=t["title"],
+                    description=t.get("description"),
+                    status=t["status"],
+                    priority=t.get("priority", "normal"),
+                    due_date=t.get("due_date"),
+                    result=t.get("result"),
+                    created_by=owner_str,
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["tasks"] = len(task_list)
+    except Exception:
+        logger.debug("Tasks module not loaded, skipping demo tasks")
+
+    # ── RFIs ─────────────────────────────────────────────────────────
+    _RFIS: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "rfi_number": "RFI-001",
+                "subject": "Foundation drainage detail at elevator pit",
+                "question": "Drawing S-102 shows drainage channel around elevator pit but does not specify "
+                "pump capacity or sump pit dimensions. Please clarify.",
+                "status": "answered",
+                "official_response": "Sump pit 800x800x600mm deep with 2.5 l/s submersible pump. "
+                "See revised detail S-102A.",
+                "cost_impact": False,
+                "schedule_impact": False,
+            },
+            {
+                "rfi_number": "RFI-002",
+                "subject": "Fire protection upgrade — stairwell pressurisation",
+                "question": "Fire authority comments require smoke pressurisation in stairwells 2 and 3. "
+                "Current design shows natural ventilation only. Is redesign required?",
+                "status": "answered",
+                "official_response": "Yes, mechanical pressurisation required. CO-002 raised for cost impact.",
+                "cost_impact": True,
+                "cost_impact_value": "35000",
+                "schedule_impact": True,
+                "schedule_impact_days": 5,
+            },
+            {
+                "rfi_number": "RFI-003",
+                "subject": "Balcony railing design — glass vs steel",
+                "question": "Architect's drawing shows frameless glass balustrade but specification "
+                "section calls for steel railings. Which applies?",
+                "status": "open",
+                "cost_impact": False,
+                "schedule_impact": False,
+            },
+            {
+                "rfi_number": "RFI-004",
+                "subject": "WDVS junction detail at window reveal",
+                "question": "Window reveal width of 80mm conflicts with 160mm WDVS thickness. "
+                "Please provide revised detail for thermal bridge-free junction.",
+                "status": "open",
+                "cost_impact": False,
+                "schedule_impact": False,
+            },
+        ],
+        "office-london": [
+            {
+                "rfi_number": "RFI-001",
+                "subject": "Cladding specification — unitised panel size",
+                "question": "Curtain wall specification states 1500mm module width but floor-to-floor "
+                "varies between 3.6m and 4.2m on mezzanine level. Confirm panel heights.",
+                "status": "answered",
+                "official_response": "Standard panels 1500x3600, mezzanine panels 1500x4200. "
+                "Revised CW schedule issued.",
+                "cost_impact": True,
+                "cost_impact_value": "45000",
+                "schedule_impact": False,
+            },
+            {
+                "rfi_number": "RFI-002",
+                "subject": "Server room cooling — redundancy requirement",
+                "question": "Client IT brief requests N+1 cooling redundancy for comms rooms on each "
+                "floor. Current design shows single DX unit. Please confirm requirement.",
+                "status": "open",
+                "cost_impact": True,
+                "schedule_impact": False,
+            },
+            {
+                "rfi_number": "RFI-003",
+                "subject": "Access floor loading — trading floor",
+                "question": "Trading floor Level 3 requires 6kPa imposed load for equipment. "
+                "Standard floor design is 3.5kPa. Structural upgrade needed?",
+                "status": "answered",
+                "official_response": "Local strengthening at 12 locations. Arup SK-045 issued.",
+                "cost_impact": True,
+                "cost_impact_value": "82000",
+                "schedule_impact": True,
+                "schedule_impact_days": 7,
+            },
+        ],
+        "medical-us": [
+            {
+                "rfi_number": "RFI-001",
+                "subject": "Operating room air change rates",
+                "question": "AIA/FGI guideline requires 20 ACH for Class C ORs. MEP drawings show "
+                "15 ACH. Please confirm which standard applies.",
+                "status": "answered",
+                "official_response": "20 ACH required per FGI 2022. AHU capacity to be increased. "
+                "MEP revision R3 to follow.",
+                "cost_impact": True,
+                "cost_impact_value": "125000",
+                "schedule_impact": True,
+                "schedule_impact_days": 10,
+            },
+            {
+                "rfi_number": "RFI-002",
+                "subject": "Radiation shielding — CT room adjacent to corridor",
+                "question": "CT room 2-104 shares wall with public corridor. Shielding calculations "
+                "show 2mm lead equivalent needed. Confirm wall construction.",
+                "status": "open",
+                "cost_impact": False,
+                "schedule_impact": False,
+            },
+            {
+                "rfi_number": "RFI-003",
+                "subject": "Medical gas zone valve box locations",
+                "question": "Zone valve box locations not shown on architectural plans for surgical "
+                "suite. Need coordination with nurse station layout.",
+                "status": "answered",
+                "official_response": "ZVBs located at corridor entries to each surgical suite. "
+                "See revised drawing M-401A.",
+                "cost_impact": False,
+                "schedule_impact": False,
+            },
+            {
+                "rfi_number": "RFI-004",
+                "subject": "Emergency department ambulance bay canopy",
+                "question": "Ambulance bay canopy height shown as 4.2m but paramedics require "
+                "4.5m clear for raised stretcher entry. Confirm revised height.",
+                "status": "open",
+                "cost_impact": True,
+                "schedule_impact": False,
+            },
+        ],
+        "school-paris": [
+            {
+                "rfi_number": "RFI-001",
+                "subject": "CLT panel junction — fire compartmentation detail",
+                "question": "Connection detail between CLT floor panels and concrete core wall "
+                "not shown. Clarify fire stopping requirement at junction.",
+                "status": "answered",
+                "official_response": "Intumescent strip + mineral wool packing required. Detail DC-15 issued.",
+                "cost_impact": False,
+                "schedule_impact": False,
+            },
+            {
+                "rfi_number": "RFI-002",
+                "subject": "Playground surfacing material",
+                "question": "Specification references EPDM safety surfacing but landscape drawing "
+                "shows gravel. Which material applies for EN 1177 compliance?",
+                "status": "open",
+                "cost_impact": False,
+                "schedule_impact": False,
+            },
+            {
+                "rfi_number": "RFI-003",
+                "subject": "Canteen kitchen ventilation — grease extract",
+                "question": "Kitchen extract ductwork route conflicts with CLT beams at roof level. "
+                "Alternative routing required.",
+                "status": "answered",
+                "official_response": "Route duct through service corridor. See revised drawing V-205B.",
+                "cost_impact": True,
+                "cost_impact_value": "8500",
+                "schedule_impact": False,
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "rfi_number": "RFI-001",
+                "subject": "Steel portal frame — wind load design",
+                "question": "Design wind speed 45 m/s per Dubai Municipality Code. Structural "
+                "report references 40 m/s. Confirm design wind speed.",
+                "status": "answered",
+                "official_response": "45 m/s confirmed per DM code 2024. Columns upsized to UB 610x324.",
+                "cost_impact": True,
+                "cost_impact_value": "65000",
+                "schedule_impact": True,
+                "schedule_impact_days": 5,
+            },
+            {
+                "rfi_number": "RFI-002",
+                "subject": "Cold storage floor insulation — vapor barrier",
+                "question": "Floor insulation for -25C cold store requires vapor barrier below slab. "
+                "Current detail shows insulation above slab only.",
+                "status": "open",
+                "cost_impact": True,
+                "schedule_impact": False,
+            },
+            {
+                "rfi_number": "RFI-003",
+                "subject": "ESFR sprinkler clearance to racking",
+                "question": "ESFR sprinklers require 900mm clear below deflector to top of storage. "
+                "Racking layout shows 600mm. Confirm sprinkler head positioning.",
+                "status": "answered",
+                "official_response": "Raise sprinkler heads 300mm. Rack height max 10.1m confirmed.",
+                "cost_impact": False,
+                "schedule_impact": False,
+            },
+            {
+                "rfi_number": "RFI-004",
+                "subject": "External cladding color — client approval",
+                "question": "Client requested RAL 9010 white but JAFZA zone requires earth tones. "
+                "Confirm approved color range.",
+                "status": "open",
+                "cost_impact": False,
+                "schedule_impact": False,
+            },
+        ],
+    }
+
+    try:
+        rfi_list = _RFIS.get(demo_id, [])
+        for r in rfi_list:
+            session.add(
+                RFI(
+                    id=_id(),
+                    project_id=project_id,
+                    rfi_number=r["rfi_number"],
+                    subject=r["subject"],
+                    question=r["question"],
+                    raised_by=owner_id,
+                    assigned_to=owner_id if r["status"] != "open" else None,
+                    status=r["status"],
+                    official_response=r.get("official_response"),
+                    responded_by=owner_id if r["status"] == "answered" else None,
+                    responded_at=(
+                        (base + timedelta(days=5)).strftime("%Y-%m-%d") if r["status"] == "answered" else None
+                    ),
+                    cost_impact=r.get("cost_impact", False),
+                    cost_impact_value=r.get("cost_impact_value"),
+                    schedule_impact=r.get("schedule_impact", False),
+                    schedule_impact_days=r.get("schedule_impact_days"),
+                    date_required=(base + timedelta(days=14)).strftime("%Y-%m-%d"),
+                    response_due_date=(base + timedelta(days=10)).strftime("%Y-%m-%d"),
+                    created_by=owner_str,
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["rfis"] = len(rfi_list)
+    except Exception:
+        logger.debug("RFI module not loaded, skipping demo RFIs")
+
+    # ── Meetings ─────────────────────────────────────────────────────
+    _MEETINGS: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "meeting_number": "MTG-001",
+                "meeting_type": "site",
+                "title": "Bauanlaufbesprechung",
+                "meeting_date": base.strftime("%Y-%m-%d"),
+                "location": "Baubuero Chausseestr. 45",
+                "status": "completed",
+                "attendees": [
+                    {"name": "Klaus Weber", "company": "BWB", "status": "present"},
+                    {"name": "Hans Mueller", "company": "Hochtief", "status": "present"},
+                    {"name": "Louisa Hutton", "company": "SH Arch", "status": "present"},
+                    {"name": "Thomas Hartmann", "company": "IB Hartmann", "status": "excused"},
+                ],
+                "agenda_items": [
+                    {"number": "1", "topic": "Site logistics plan review", "notes": "Approved with minor adjustments"},
+                    {"number": "2", "topic": "Health and safety briefing", "notes": "All trades briefed"},
+                    {"number": "3", "topic": "Foundation programme review", "notes": "On track for April start"},
+                ],
+                "action_items": [
+                    {
+                        "description": "Submit revised site logistics plan",
+                        "due_date": (base + timedelta(days=7)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                    {
+                        "description": "Arrange crane base survey",
+                        "due_date": (base + timedelta(days=14)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                ],
+                "minutes": "Kick-off meeting held on site. All parties confirmed readiness to start.",
+            },
+            {
+                "meeting_number": "MTG-002",
+                "meeting_type": "site",
+                "title": "Wochenbesprechung KW 16",
+                "meeting_date": (base + timedelta(days=7)).strftime("%Y-%m-%d"),
+                "location": "Baubuero Chausseestr. 45",
+                "status": "completed",
+                "attendees": [
+                    {"name": "Hans Mueller", "company": "Hochtief", "status": "present"},
+                    {"name": "Maria Schmidt", "company": "Sto", "status": "absent"},
+                    {"name": "Juergen Braun", "company": "Imtech", "status": "present"},
+                ],
+                "agenda_items": [
+                    {"number": "1", "topic": "Earthworks progress — 60% complete", "notes": "On programme"},
+                    {"number": "2", "topic": "Dewatering pump issue", "notes": "Pump replaced, running OK"},
+                ],
+                "action_items": [
+                    {
+                        "description": "Order replacement dewatering pump as standby",
+                        "due_date": (base + timedelta(days=14)).strftime("%Y-%m-%d"),
+                        "status": "open",
+                    },
+                ],
+            },
+            {
+                "meeting_number": "MTG-003",
+                "meeting_type": "design",
+                "title": "Fassadendetails Abstimmung",
+                "meeting_date": (base + timedelta(days=21)).strftime("%Y-%m-%d"),
+                "location": "Buero Sauerbruch Hutton",
+                "status": "scheduled",
+                "attendees": [
+                    {"name": "Louisa Hutton", "company": "SH Arch", "status": "present"},
+                    {"name": "Maria Schmidt", "company": "Sto", "status": "present"},
+                ],
+                "agenda_items": [
+                    {"number": "1", "topic": "WDVS detail at window reveals"},
+                    {"number": "2", "topic": "Color scheme final selection"},
+                    {"number": "3", "topic": "Thermal bridge calculations review"},
+                ],
+            },
+        ],
+        "office-london": [
+            {
+                "meeting_number": "MTG-001",
+                "meeting_type": "design",
+                "title": "Stage 3 Design Coordination",
+                "meeting_date": (base - timedelta(days=14)).strftime("%Y-%m-%d"),
+                "location": "Arup London, 13 Fitzroy Street",
+                "status": "completed",
+                "attendees": [
+                    {"name": "James Harrison", "company": "Canary Properties", "status": "present"},
+                    {"name": "Sarah Chen", "company": "Arup", "status": "present"},
+                    {"name": "David Thompson", "company": "Hoare Lea", "status": "present"},
+                    {"name": "Emma Wallace", "company": "G&T", "status": "present"},
+                ],
+                "agenda_items": [
+                    {"number": "1", "topic": "Structural steel tonnage update", "notes": "1285t confirmed"},
+                    {"number": "2", "topic": "MEP riser coordination", "notes": "Clashes resolved in BIM"},
+                    {"number": "3", "topic": "Cost plan alignment", "notes": "Within 3% of budget"},
+                ],
+                "action_items": [
+                    {
+                        "description": "Issue revised riser drawings",
+                        "due_date": (base - timedelta(days=7)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                    {
+                        "description": "Update cost plan with steel tonnage change",
+                        "due_date": (base).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                ],
+                "minutes": "Design freeze confirmed for RIBA Stage 3. All consultants aligned.",
+            },
+            {
+                "meeting_number": "MTG-002",
+                "meeting_type": "site",
+                "title": "Pre-Construction Meeting",
+                "meeting_date": base.strftime("%Y-%m-%d"),
+                "location": "Site office, E14",
+                "status": "completed",
+                "attendees": [
+                    {"name": "Mark Jones", "company": "Severfield", "status": "present"},
+                    {"name": "Andrea Rossi", "company": "Permasteelisa", "status": "present"},
+                    {"name": "Robert White", "company": "Crown House", "status": "present"},
+                ],
+                "agenda_items": [
+                    {"number": "1", "topic": "Construction programme review"},
+                    {"number": "2", "topic": "Tower crane positions"},
+                    {"number": "3", "topic": "Logistics and deliveries plan"},
+                ],
+                "action_items": [
+                    {
+                        "description": "Submit crane base design for approval",
+                        "due_date": (base + timedelta(days=14)).strftime("%Y-%m-%d"),
+                        "status": "open",
+                    },
+                ],
+            },
+        ],
+        "medical-us": [
+            {
+                "meeting_number": "MTG-001",
+                "meeting_type": "design",
+                "title": "Clinical User Group — Surgical Suite",
+                "meeting_date": (base - timedelta(days=7)).strftime("%Y-%m-%d"),
+                "location": "Downtown Health Board Room",
+                "status": "completed",
+                "attendees": [
+                    {"name": "Patricia Martinez", "company": "DHS", "status": "present"},
+                    {"name": "Michael Brooks", "company": "HKS", "status": "present"},
+                    {"name": "Dr. Sarah Kim", "company": "DHS Surgery", "status": "present"},
+                ],
+                "agenda_items": [
+                    {
+                        "number": "1",
+                        "topic": "OR layout review — 8 rooms",
+                        "notes": "Layout approved with minor changes",
+                    },
+                    {"number": "2", "topic": "Medical gas requirements", "notes": "Confirmed per NFPA 99"},
+                    {"number": "3", "topic": "Equipment room adjacencies", "notes": "Sterile processing relocated"},
+                ],
+                "action_items": [
+                    {
+                        "description": "Revise OR layout per clinical feedback",
+                        "due_date": (base + timedelta(days=7)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                    {
+                        "description": "Coordinate equipment clearances with vendors",
+                        "due_date": (base + timedelta(days=21)).strftime("%Y-%m-%d"),
+                        "status": "open",
+                    },
+                ],
+                "minutes": "Surgical suite layout approved with repositioned sterile processing.",
+            },
+            {
+                "meeting_number": "MTG-002",
+                "meeting_type": "site",
+                "title": "Weekly OAC Meeting #4",
+                "meeting_date": (base + timedelta(days=28)).strftime("%Y-%m-%d"),
+                "location": "Job trailer, site",
+                "status": "scheduled",
+                "attendees": [
+                    {"name": "Jennifer Davis", "company": "Turner", "status": "present"},
+                    {"name": "Richard Nguyen", "company": "Southland", "status": "present"},
+                ],
+                "agenda_items": [
+                    {"number": "1", "topic": "Foundation progress update"},
+                    {"number": "2", "topic": "Steel delivery schedule"},
+                    {"number": "3", "topic": "ICRA compliance status"},
+                ],
+            },
+        ],
+        "school-paris": [
+            {
+                "meeting_number": "MTG-001",
+                "meeting_type": "site",
+                "title": "Reunion de chantier hebdomadaire #1",
+                "meeting_date": base.strftime("%Y-%m-%d"),
+                "location": "Base vie, Rue de Belleville",
+                "status": "completed",
+                "attendees": [
+                    {"name": "Sophie Dupont", "company": "Mairie 20e", "status": "present"},
+                    {"name": "Pierre Moreau", "company": "Eiffage", "status": "present"},
+                    {"name": "Frederic Chartier", "company": "Chartier Dalix", "status": "present"},
+                ],
+                "agenda_items": [
+                    {"number": "1", "topic": "Installation chantier — 90% complete", "notes": "Hoarding installed"},
+                    {"number": "2", "topic": "Demolition programme", "notes": "Start Monday"},
+                    {"number": "3", "topic": "Riverains — noise mitigation plan", "notes": "Approved by mairie"},
+                ],
+                "action_items": [
+                    {
+                        "description": "Submit noise monitoring results weekly",
+                        "due_date": (base + timedelta(days=7)).strftime("%Y-%m-%d"),
+                        "status": "open",
+                    },
+                    {
+                        "description": "Install temporary pedestrian walkway",
+                        "due_date": (base + timedelta(days=3)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                ],
+                "minutes": "Site establishment nearly complete. Demolition commences next week.",
+            },
+            {
+                "meeting_number": "MTG-002",
+                "meeting_type": "design",
+                "title": "Revue technique CLT — BET structure",
+                "meeting_date": (base + timedelta(days=14)).strftime("%Y-%m-%d"),
+                "location": "Agence Chartier Dalix",
+                "status": "scheduled",
+                "attendees": [
+                    {"name": "Jean Lefebvre", "company": "Arbonis", "status": "present"},
+                    {"name": "Frederic Chartier", "company": "Chartier Dalix", "status": "present"},
+                ],
+                "agenda_items": [
+                    {"number": "1", "topic": "CLT panel shop drawing review"},
+                    {"number": "2", "topic": "Connection details validation"},
+                    {"number": "3", "topic": "Fire protection treatment"},
+                ],
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "meeting_number": "MTG-001",
+                "meeting_type": "site",
+                "title": "Project Kick-off Meeting",
+                "meeting_date": base.strftime("%Y-%m-%d"),
+                "location": "KEO office, Dubai Design District",
+                "status": "completed",
+                "attendees": [
+                    {"name": "Ahmed Al Maktoum", "company": "Al Futtaim", "status": "present"},
+                    {"name": "Ravi Sharma", "company": "KEO", "status": "present"},
+                    {"name": "Khalid Al Jaber", "company": "AJEC", "status": "present"},
+                    {"name": "George Palmer", "company": "RBG", "status": "present"},
+                ],
+                "agenda_items": [
+                    {"number": "1", "topic": "Programme overview — 12 months", "notes": "Handover March 2027"},
+                    {"number": "2", "topic": "Steel procurement lead time", "notes": "16 weeks from China"},
+                    {"number": "3", "topic": "JAFZA NOC status", "notes": "Approved"},
+                    {"number": "4", "topic": "Summer working hours plan", "notes": "Midday ban 15 Jun-15 Sep"},
+                ],
+                "action_items": [
+                    {
+                        "description": "Submit enabling works programme",
+                        "due_date": (base + timedelta(days=7)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                    {
+                        "description": "Place steel order with fabricator",
+                        "due_date": (base + timedelta(days=14)).strftime("%Y-%m-%d"),
+                        "status": "open",
+                    },
+                ],
+                "minutes": "Project mobilisation confirmed. Steel procurement is critical path.",
+            },
+            {
+                "meeting_number": "MTG-002",
+                "meeting_type": "site",
+                "title": "Weekly Progress Meeting #2",
+                "meeting_date": (base + timedelta(days=14)).strftime("%Y-%m-%d"),
+                "location": "Site office, Jebel Ali",
+                "status": "scheduled",
+                "attendees": [
+                    {"name": "Khalid Al Jaber", "company": "AJEC", "status": "present"},
+                    {"name": "Suresh Nair", "company": "Leminar", "status": "present"},
+                ],
+                "agenda_items": [
+                    {"number": "1", "topic": "Earthworks progress"},
+                    {"number": "2", "topic": "Foundation pour schedule"},
+                    {"number": "3", "topic": "HSE review"},
+                ],
+            },
+        ],
+    }
+
+    try:
+        meeting_list = _MEETINGS.get(demo_id, [])
+        for m in meeting_list:
+            session.add(
+                Meeting(
+                    id=_id(),
+                    project_id=project_id,
+                    meeting_number=m["meeting_number"],
+                    meeting_type=m["meeting_type"],
+                    title=m["title"],
+                    meeting_date=m["meeting_date"],
+                    location=m.get("location"),
+                    status=m.get("status", "scheduled"),
+                    attendees=m.get("attendees", []),
+                    agenda_items=m.get("agenda_items", []),
+                    action_items=m.get("action_items", []),
+                    minutes=m.get("minutes"),
+                    created_by=owner_str,
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["meetings"] = len(meeting_list)
+    except Exception:
+        logger.debug("Meetings module not loaded, skipping demo meetings")
+
+    # ── Safety Incidents ─────────────────────────────────────────────
+    _SAFETY_INCIDENTS: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "incident_number": "INC-001",
+                "title": "Near miss — unsecured scaffold plank",
+                "incident_date": (base + timedelta(days=12)).strftime("%Y-%m-%d"),
+                "location": "Level 2, Grid C-D / 4-5",
+                "incident_type": "near_miss",
+                "severity": "moderate",
+                "description": "Scaffold plank found unsecured on level 2 platform during morning inspection. "
+                "Wind gust could have displaced board onto workers below.",
+                "root_cause": "Scaffolders did not complete toe-board installation before leaving for break",
+                "corrective_actions": [
+                    {
+                        "description": "Retrain scaffold team on completion requirements",
+                        "due_date": (base + timedelta(days=15)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                    {
+                        "description": "Implement scaffold handover checklist",
+                        "due_date": (base + timedelta(days=14)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                ],
+                "status": "closed",
+                "days_lost": 0,
+            },
+            {
+                "incident_number": "INC-002",
+                "title": "Minor hand injury — rebar handling",
+                "incident_date": (base + timedelta(days=35)).strftime("%Y-%m-%d"),
+                "location": "Foundation zone, Grid A-B / 1-3",
+                "incident_type": "first_aid",
+                "severity": "minor",
+                "description": "Worker cut left hand while handling rebar ties. Cut treated on site with first aid.",
+                "treatment_type": "first_aid",
+                "injured_person_details": {"role": "Rebar fitter", "company": "Hochtief AG"},
+                "root_cause": "Worker removed gloves to tie wire, hand slipped on rebar end",
+                "corrective_actions": [
+                    {
+                        "description": "Toolbox talk on mandatory glove use",
+                        "due_date": (base + timedelta(days=36)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                ],
+                "status": "closed",
+                "days_lost": 0,
+            },
+        ],
+        "office-london": [
+            {
+                "incident_number": "INC-001",
+                "title": "Near miss — dropped bolt during steel erection",
+                "incident_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+                "location": "Level 5, perimeter zone",
+                "incident_type": "near_miss",
+                "severity": "serious",
+                "description": "M24 bolt dropped from Level 5 during steel erection. "
+                "Landed in exclusion zone — no one injured.",
+                "root_cause": "Tool tether not attached to impact wrench",
+                "corrective_actions": [
+                    {
+                        "description": "Mandatory tool tethering above Level 2",
+                        "due_date": (base + timedelta(days=61)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                    {
+                        "description": "Extend exclusion zone radius to 6m",
+                        "due_date": (base + timedelta(days=61)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                ],
+                "status": "closed",
+                "days_lost": 0,
+            },
+        ],
+        "medical-us": [
+            {
+                "incident_number": "INC-001",
+                "title": "ICRA barrier breach — surgical wing",
+                "incident_date": (base + timedelta(days=45)).strftime("%Y-%m-%d"),
+                "location": "Level 2, Surgical Suite corridor",
+                "incident_type": "environmental",
+                "severity": "serious",
+                "description": "ICRA Class IV barrier was breached during ductwork installation. "
+                "Negative air pressure lost for 15 minutes in adjacent occupied area.",
+                "root_cause": "Subcontractor cut opening in barrier without notifying ICRA monitor",
+                "corrective_actions": [
+                    {
+                        "description": "Suspend subcontractor crew pending retraining",
+                        "due_date": (base + timedelta(days=46)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                    {
+                        "description": "Install ICRA pressure monitoring with audible alarm",
+                        "due_date": (base + timedelta(days=50)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                    {
+                        "description": "Air quality sampling in adjacent occupied area",
+                        "due_date": (base + timedelta(days=46)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                ],
+                "status": "closed",
+                "days_lost": 0,
+                "reported_to_regulator": True,
+            },
+            {
+                "incident_number": "INC-002",
+                "title": "Slip and fall — wet concrete pour area",
+                "incident_date": (base + timedelta(days=25)).strftime("%Y-%m-%d"),
+                "location": "Level 1, ED wing foundation",
+                "incident_type": "recordable",
+                "severity": "moderate",
+                "description": "Worker slipped on wet concrete near pour area. Bruised knee, "
+                "returned to work next day.",
+                "treatment_type": "first_aid",
+                "injured_person_details": {"role": "Laborer", "company": "Turner Construction"},
+                "root_cause": "Inadequate housekeeping — water not channeled away from work path",
+                "corrective_actions": [
+                    {
+                        "description": "Install drainage channels around active pour areas",
+                        "due_date": (base + timedelta(days=27)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                ],
+                "status": "closed",
+                "days_lost": 0,
+            },
+        ],
+        "school-paris": [
+            {
+                "incident_number": "INC-001",
+                "title": "Chute de materiel — panneau CLT",
+                "incident_date": (base + timedelta(days=50)).strftime("%Y-%m-%d"),
+                "location": "Zone de stockage, aire nord",
+                "incident_type": "near_miss",
+                "severity": "serious",
+                "description": "CLT panel slipped from storage rack due to improper bracing. "
+                "No injuries — area was cordoned off.",
+                "root_cause": "Storage rack not rated for CLT panel weight. Wind loading not considered.",
+                "corrective_actions": [
+                    {
+                        "description": "Replace temporary racks with rated storage system",
+                        "due_date": (base + timedelta(days=55)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                    {
+                        "description": "Review wind loading on all temporary structures",
+                        "due_date": (base + timedelta(days=53)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                ],
+                "status": "closed",
+                "days_lost": 0,
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "incident_number": "INC-001",
+                "title": "Heat exhaustion — steel erector",
+                "incident_date": (base + timedelta(days=75)).strftime("%Y-%m-%d"),
+                "location": "Warehouse bay 3, roof level",
+                "incident_type": "recordable",
+                "severity": "moderate",
+                "description": "Steel erector showed signs of heat exhaustion at 14:00 during "
+                "June operations. Temperature 48C. Worker evacuated and treated.",
+                "treatment_type": "medical_treatment",
+                "injured_person_details": {"role": "Steel erector", "company": "Al Jaber Engineering"},
+                "root_cause": "Worker continued past midday ban period. Supervisor failed to enforce break.",
+                "corrective_actions": [
+                    {
+                        "description": "Strict enforcement of 12:30-15:00 outdoor work ban",
+                        "due_date": (base + timedelta(days=76)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                    {
+                        "description": "Install additional shaded rest areas with cold water",
+                        "due_date": (base + timedelta(days=80)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                ],
+                "status": "closed",
+                "days_lost": 1,
+            },
+            {
+                "incident_number": "INC-002",
+                "title": "Near miss — crane outrigger on soft ground",
+                "incident_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
+                "location": "Eastern yard, crane pad area",
+                "incident_type": "near_miss",
+                "severity": "serious",
+                "description": "Mobile crane outrigger pad sank 150mm into soft ground during "
+                "steel beam lift. Crane immediately halted and load secured.",
+                "root_cause": "Ground bearing capacity not verified at crane position. "
+                "Recent rain softened sandy fill.",
+                "corrective_actions": [
+                    {
+                        "description": "Concrete crane pads at all lifting positions",
+                        "due_date": (base + timedelta(days=35)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                    {
+                        "description": "Mandate ground bearing test before each crane setup",
+                        "due_date": (base + timedelta(days=31)).strftime("%Y-%m-%d"),
+                        "status": "completed",
+                    },
+                ],
+                "status": "closed",
+                "days_lost": 0,
+            },
+        ],
+    }
+
+    try:
+        incident_list = _SAFETY_INCIDENTS.get(demo_id, [])
+        for inc in incident_list:
+            session.add(
+                SafetyIncident(
+                    id=_id(),
+                    project_id=project_id,
+                    incident_number=inc["incident_number"],
+                    title=inc["title"],
+                    incident_date=inc["incident_date"],
+                    location=inc.get("location"),
+                    incident_type=inc["incident_type"],
+                    severity=inc["severity"],
+                    description=inc["description"],
+                    injured_person_details=inc.get("injured_person_details"),
+                    treatment_type=inc.get("treatment_type"),
+                    days_lost=inc.get("days_lost", 0),
+                    root_cause=inc.get("root_cause"),
+                    corrective_actions=inc.get("corrective_actions", []),
+                    reported_to_regulator=inc.get("reported_to_regulator", False),
+                    status=inc["status"],
+                    created_by=owner_str,
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["safety_incidents"] = len(incident_list)
+    except Exception:
+        logger.debug("Safety module not loaded, skipping demo incidents")
+
+    # ── Safety Observations ──────────────────────────────────────────
+    _OBSERVATIONS: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "observation_number": "OBS-001",
+                "observation_type": "unsafe_condition",
+                "description": "Scaffold missing handrail on south elevation, level 3. "
+                "Top lift not yet completed but workers accessing area.",
+                "location": "South elevation, Level 3",
+                "severity": 4,
+                "likelihood": 3,
+                "immediate_action": "Area cordoned off until handrail installed",
+                "corrective_action": "Scaffolders to complete handrails before platform use",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-002",
+                "observation_type": "unsafe_behavior",
+                "description": "Two workers observed not wearing safety glasses during concrete cutting.",
+                "location": "Ground floor slab, Grid E/5",
+                "severity": 3,
+                "likelihood": 4,
+                "immediate_action": "Workers stopped and issued PPE",
+                "corrective_action": "Toolbox talk on mandatory eye protection for cutting works",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-003",
+                "observation_type": "housekeeping",
+                "description": "Debris and loose materials blocking emergency exit route at level 1.",
+                "location": "Stairwell 2, Level 1",
+                "severity": 3,
+                "likelihood": 2,
+                "immediate_action": "Area cleared immediately",
+                "corrective_action": "Weekly housekeeping audit added to site inspection schedule",
+                "status": "resolved",
+            },
+        ],
+        "office-london": [
+            {
+                "observation_number": "OBS-001",
+                "observation_type": "unsafe_condition",
+                "description": "Temporary edge protection gap at lift shaft opening Level 4.",
+                "location": "Core 2, Level 4",
+                "severity": 5,
+                "likelihood": 2,
+                "immediate_action": "Barrier installed within 30 minutes",
+                "corrective_action": "Daily check of all temporary edge protection",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-002",
+                "observation_type": "unsafe_behavior",
+                "description": "Operative working at height without harness clip attached.",
+                "location": "Perimeter, Level 7",
+                "severity": 5,
+                "likelihood": 3,
+                "immediate_action": "Operative removed from site for remainder of day",
+                "corrective_action": "All operatives re-inducted on working at height procedures",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-003",
+                "observation_type": "positive",
+                "description": "Excellent housekeeping maintained in basement during complex "
+                "waterproofing works. Good signage and clear walkways.",
+                "location": "Basement Level -1",
+                "severity": 1,
+                "likelihood": 1,
+                "status": "closed",
+            },
+        ],
+        "medical-us": [
+            {
+                "observation_number": "OBS-001",
+                "observation_type": "unsafe_condition",
+                "description": "ICRA negative air machine filter indicator showing red — filter change overdue.",
+                "location": "Level 2, surgical wing barrier",
+                "severity": 4,
+                "likelihood": 4,
+                "immediate_action": "Filter replaced immediately, air quality test performed",
+                "corrective_action": "Filter change schedule posted on each machine with daily check log",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-002",
+                "observation_type": "unsafe_condition",
+                "description": "Fire exit sign obscured by temporary dust screen in ED corridor.",
+                "location": "Level 1, ED corridor",
+                "severity": 3,
+                "likelihood": 3,
+                "immediate_action": "Temporary illuminated exit sign installed",
+                "corrective_action": "All fire exit signs checked weekly during construction phase",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-003",
+                "observation_type": "housekeeping",
+                "description": "Sharp rebar ends protruding from slab edge not capped.",
+                "location": "Level 3 slab edge, grid D/7",
+                "severity": 4,
+                "likelihood": 3,
+                "immediate_action": "Mushroom caps installed on all exposed rebar",
+                "corrective_action": "Rebar capping added to daily checklist for concrete crew",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-004",
+                "observation_type": "positive",
+                "description": "Excellent silica dust control during concrete cutting — wet saw and "
+                "vacuum extraction in use, all workers with P100 respirators.",
+                "location": "Level 1, radiology suite",
+                "severity": 1,
+                "likelihood": 1,
+                "status": "closed",
+            },
+        ],
+        "school-paris": [
+            {
+                "observation_number": "OBS-001",
+                "observation_type": "unsafe_condition",
+                "description": "Tranchee ouverte sans protection — open trench without barrier "
+                "near school entrance area.",
+                "location": "Acces principal, cote rue",
+                "severity": 4,
+                "likelihood": 4,
+                "immediate_action": "Barriers and warning signs installed",
+                "corrective_action": "Daily perimeter check for public safety hazards",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-002",
+                "observation_type": "noise",
+                "description": "Demolition noise exceeding 85 dB at property boundary at 07:30. "
+                "Mairie restriction is 08:00 start for noisy works.",
+                "location": "Boundary fence, rue de Belleville",
+                "severity": 3,
+                "likelihood": 3,
+                "immediate_action": "Works stopped until 08:00, noise barrier repositioned",
+                "corrective_action": "Site manager to confirm noise levels before 08:00 start",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-003",
+                "observation_type": "housekeeping",
+                "description": "Stockage CLT non bache — CLT panels stored without weather protection.",
+                "location": "Zone de stockage nord",
+                "severity": 3,
+                "likelihood": 4,
+                "immediate_action": "Panels covered with tarpaulin",
+                "corrective_action": "All CLT deliveries to be stored in covered area only",
+                "status": "resolved",
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "observation_number": "OBS-001",
+                "observation_type": "unsafe_condition",
+                "description": "Water cooler empty at steel erection area during 42C heat.",
+                "location": "Bay 2, steel erection zone",
+                "severity": 4,
+                "likelihood": 4,
+                "immediate_action": "Water replenished, additional cooler boxes provided",
+                "corrective_action": "Hourly water station checks during summer months",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-002",
+                "observation_type": "unsafe_condition",
+                "description": "Sandstorm warning issued — temporary materials not secured.",
+                "location": "External laydown area",
+                "severity": 3,
+                "likelihood": 3,
+                "immediate_action": "All loose materials secured, lightweight items moved to warehouse",
+                "corrective_action": "Weather alert response procedure updated and drilled",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-003",
+                "observation_type": "unsafe_behavior",
+                "description": "Welding in progress without fire watch posted nearby.",
+                "location": "Bay 4, steel connection area",
+                "severity": 4,
+                "likelihood": 3,
+                "immediate_action": "Welding stopped, fire watch assigned",
+                "corrective_action": "Hot work permit must include fire watch name before issuance",
+                "status": "resolved",
+            },
+            {
+                "observation_number": "OBS-004",
+                "observation_type": "positive",
+                "description": "Good practice — all workers observed wearing high-viz vests and "
+                "hard hats in extreme heat conditions without complaint.",
+                "location": "General site",
+                "severity": 1,
+                "likelihood": 1,
+                "status": "closed",
+            },
+        ],
+    }
+
+    try:
+        obs_list = _OBSERVATIONS.get(demo_id, [])
+        for obs in obs_list:
+            sev = obs.get("severity", 1)
+            lik = obs.get("likelihood", 1)
+            session.add(
+                SafetyObservation(
+                    id=_id(),
+                    project_id=project_id,
+                    observation_number=obs["observation_number"],
+                    observation_type=obs["observation_type"],
+                    description=obs["description"],
+                    location=obs.get("location"),
+                    severity=sev,
+                    likelihood=lik,
+                    risk_score=sev * lik,
+                    immediate_action=obs.get("immediate_action"),
+                    corrective_action=obs.get("corrective_action"),
+                    status=obs["status"],
+                    created_by=owner_str,
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["safety_observations"] = len(obs_list)
+    except Exception:
+        logger.debug("Safety observations not loaded, skipping")
+
+    # ── Quality Inspections ──────────────────────────────────────────
+    _INSPECTIONS: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "inspection_number": "INS-001",
+                "inspection_type": "concrete",
+                "title": "Bodenplatte Betonage — Slab Pour Inspection",
+                "description": "Inspection of foundation slab concrete pour C30/37",
+                "location": "Foundation zone, full area",
+                "status": "completed",
+                "result": "pass",
+                "inspection_date": (base + timedelta(days=28)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Pre-pour",
+                        "question": "Formwork clean and oiled?",
+                        "response": "yes",
+                        "critical": True,
+                    },
+                    {
+                        "id": "2",
+                        "category": "Pre-pour",
+                        "question": "Rebar as per drawing?",
+                        "response": "yes",
+                        "critical": True,
+                    },
+                    {
+                        "id": "3",
+                        "category": "Concrete",
+                        "question": "Slump test within spec?",
+                        "response": "yes",
+                        "notes": "S4 class, 180mm",
+                    },
+                    {
+                        "id": "4",
+                        "category": "Concrete",
+                        "question": "Cube samples taken?",
+                        "response": "yes",
+                        "notes": "6 cubes taken",
+                    },
+                    {"id": "5", "category": "Curing", "question": "Curing compound applied?", "response": "yes"},
+                ],
+            },
+            {
+                "inspection_number": "INS-002",
+                "inspection_type": "waterproofing",
+                "title": "Kellerabdichtung — Basement Waterproofing",
+                "description": "Inspection of KMB waterproofing membrane to basement walls",
+                "location": "Basement walls, south and east",
+                "status": "completed",
+                "result": "pass",
+                "inspection_date": (base + timedelta(days=42)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Surface",
+                        "question": "Substrate clean and dry?",
+                        "response": "yes",
+                        "critical": True,
+                    },
+                    {
+                        "id": "2",
+                        "category": "Application",
+                        "question": "Correct thickness applied?",
+                        "response": "yes",
+                        "notes": "4mm DFT verified",
+                    },
+                    {"id": "3", "category": "Details", "question": "Pipe penetrations sealed?", "response": "yes"},
+                    {"id": "4", "category": "Protection", "question": "Protection board installed?", "response": "yes"},
+                ],
+            },
+            {
+                "inspection_number": "INS-003",
+                "inspection_type": "fire_stopping",
+                "title": "Brandschutz Durchfuehrungen — Fire Stopping",
+                "description": "Inspection of fire stopping at service penetrations Level 1-2",
+                "location": "Levels 1-2, all risers",
+                "status": "completed",
+                "result": "fail",
+                "inspection_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Penetrations",
+                        "question": "All penetrations fire stopped?",
+                        "response": "no",
+                        "critical": True,
+                        "notes": "3 penetrations in riser R2 missing fire collars",
+                    },
+                    {
+                        "id": "2",
+                        "category": "Documentation",
+                        "question": "Product datasheets available?",
+                        "response": "yes",
+                    },
+                    {
+                        "id": "3",
+                        "category": "Installation",
+                        "question": "Installation per manufacturer spec?",
+                        "response": "partial",
+                        "notes": "Some intumescent strips incorrectly oriented",
+                    },
+                ],
+            },
+            {
+                "inspection_number": "INS-004",
+                "inspection_type": "structural",
+                "title": "Rohbau Abnahme OG 2 — Structural Inspection Level 2",
+                "description": "Structural inspection of completed RC frame Level 2",
+                "location": "Level 2, full floor",
+                "status": "completed",
+                "result": "pass",
+                "inspection_date": (base + timedelta(days=65)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Geometry",
+                        "question": "Column positions within tolerance?",
+                        "response": "yes",
+                    },
+                    {"id": "2", "category": "Geometry", "question": "Slab level within ±5mm?", "response": "yes"},
+                    {"id": "3", "category": "Quality", "question": "No honeycombing visible?", "response": "yes"},
+                    {
+                        "id": "4",
+                        "category": "Cover",
+                        "question": "Concrete cover verified?",
+                        "response": "yes",
+                        "notes": "Covermeter readings all >30mm",
+                    },
+                ],
+            },
+        ],
+        "office-london": [
+            {
+                "inspection_number": "INS-001",
+                "inspection_type": "structural",
+                "title": "Steel Frame Erection — Level 3-4",
+                "description": "Inspection of structural steelwork erection levels 3-4",
+                "location": "Levels 3-4, full floor plate",
+                "status": "completed",
+                "result": "pass",
+                "inspection_date": (base + timedelta(days=55)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Bolts",
+                        "question": "All HSFG bolts fully tensioned?",
+                        "response": "yes",
+                        "critical": True,
+                    },
+                    {
+                        "id": "2",
+                        "category": "Alignment",
+                        "question": "Beam levels within 10mm tolerance?",
+                        "response": "yes",
+                    },
+                    {
+                        "id": "3",
+                        "category": "Welds",
+                        "question": "Site welds inspected (MPI)?",
+                        "response": "yes",
+                        "notes": "100% MPI on CJP welds",
+                    },
+                ],
+            },
+            {
+                "inspection_number": "INS-002",
+                "inspection_type": "waterproofing",
+                "title": "Basement Waterproofing — Type A Cavity Drain",
+                "description": "Inspection of cavity drain membrane installation",
+                "location": "Basement levels -1 and -2",
+                "status": "completed",
+                "result": "pass",
+                "inspection_date": (base + timedelta(days=35)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Membrane",
+                        "question": "Cavity drain plugs secure?",
+                        "response": "yes",
+                        "critical": True,
+                    },
+                    {
+                        "id": "2",
+                        "category": "Drainage",
+                        "question": "Channel drain connected to sump?",
+                        "response": "yes",
+                    },
+                    {
+                        "id": "3",
+                        "category": "Pump",
+                        "question": "Sump pump operational?",
+                        "response": "yes",
+                        "notes": "Dual pump with auto-changeover",
+                    },
+                ],
+            },
+            {
+                "inspection_number": "INS-003",
+                "inspection_type": "curtain_wall",
+                "title": "Curtain Wall Mock-up Test",
+                "description": "Performance testing of curtain wall mock-up panel",
+                "location": "Off-site testing facility",
+                "status": "completed",
+                "result": "fail",
+                "inspection_date": (base + timedelta(days=80)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {"id": "1", "category": "Air", "question": "Air leakage within spec?", "response": "yes"},
+                    {
+                        "id": "2",
+                        "category": "Water",
+                        "question": "Water tightness at 600Pa?",
+                        "response": "no",
+                        "critical": True,
+                        "notes": "Leak at transom-mullion junction",
+                    },
+                    {"id": "3", "category": "Structural", "question": "Deflection within L/200?", "response": "yes"},
+                ],
+            },
+        ],
+        "medical-us": [
+            {
+                "inspection_number": "INS-001",
+                "inspection_type": "concrete",
+                "title": "Foundation Mat Pour — ED Wing",
+                "description": "Inspection of mass concrete mat foundation pour",
+                "location": "ED wing foundation",
+                "status": "completed",
+                "result": "pass",
+                "inspection_date": (base + timedelta(days=20)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Pre-pour",
+                        "question": "Rebar placement per shop drawings?",
+                        "response": "yes",
+                        "critical": True,
+                    },
+                    {"id": "2", "category": "Concrete", "question": "Mix design 5000 PSI verified?", "response": "yes"},
+                    {
+                        "id": "3",
+                        "category": "Temperature",
+                        "question": "Mass concrete thermal plan in place?",
+                        "response": "yes",
+                        "notes": "Thermocouples installed",
+                    },
+                ],
+            },
+            {
+                "inspection_number": "INS-002",
+                "inspection_type": "mep",
+                "title": "Medical Gas Rough-in — Surgical Suite",
+                "description": "Inspection of medical gas piping installation",
+                "location": "Level 2, Surgical suite",
+                "status": "completed",
+                "result": "pass",
+                "inspection_date": (base + timedelta(days=75)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Piping",
+                        "question": "Pipe material Type L copper?",
+                        "response": "yes",
+                        "critical": True,
+                    },
+                    {
+                        "id": "2",
+                        "category": "Brazing",
+                        "question": "Nitrogen purge during brazing?",
+                        "response": "yes",
+                        "critical": True,
+                    },
+                    {
+                        "id": "3",
+                        "category": "Testing",
+                        "question": "Standing pressure test 24hr?",
+                        "response": "yes",
+                        "notes": "150 PSI held for 24 hours",
+                    },
+                ],
+            },
+            {
+                "inspection_number": "INS-003",
+                "inspection_type": "radiation_shielding",
+                "title": "CT Room Radiation Shielding",
+                "description": "Inspection of lead-lined walls and door in CT room 2-104",
+                "location": "Level 2, Room 2-104",
+                "status": "scheduled",
+                "result": None,
+                "inspection_date": (base + timedelta(days=120)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {"id": "1", "category": "Walls", "question": "Lead sheet thickness verified?", "critical": True},
+                    {"id": "2", "category": "Joints", "question": "Lead sheet overlap at joints?", "critical": True},
+                    {
+                        "id": "3",
+                        "category": "Door",
+                        "question": "Lead-lined door installed with overlap?",
+                        "critical": True,
+                    },
+                ],
+            },
+        ],
+        "school-paris": [
+            {
+                "inspection_number": "INS-001",
+                "inspection_type": "structural",
+                "title": "CLT Panel Installation — Level 1",
+                "description": "Inspection of CLT panel erection and connections",
+                "location": "Level 1, full floor",
+                "status": "completed",
+                "result": "pass",
+                "inspection_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Panels",
+                        "question": "Panel grade GL28h verified?",
+                        "response": "yes",
+                        "critical": True,
+                    },
+                    {
+                        "id": "2",
+                        "category": "Connections",
+                        "question": "Steel angle connectors torqued?",
+                        "response": "yes",
+                    },
+                    {"id": "3", "category": "Tolerance", "question": "Panel alignment within 3mm?", "response": "yes"},
+                ],
+            },
+            {
+                "inspection_number": "INS-002",
+                "inspection_type": "acoustic",
+                "title": "Gymnase Isolation Acoustique",
+                "description": "Acoustic testing of gymnasium wall and ceiling treatment",
+                "location": "Gymnasium",
+                "status": "scheduled",
+                "result": None,
+                "inspection_date": (base + timedelta(days=150)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Walls",
+                        "question": "Acoustic panels installed per spec?",
+                        "critical": True,
+                    },
+                    {
+                        "id": "2",
+                        "category": "Ceiling",
+                        "question": "Suspended baffles at correct spacing?",
+                        "critical": True,
+                    },
+                    {
+                        "id": "3",
+                        "category": "Testing",
+                        "question": "Reverberation time < 1.2s at 500Hz?",
+                        "critical": True,
+                    },
+                ],
+            },
+            {
+                "inspection_number": "INS-003",
+                "inspection_type": "fire_stopping",
+                "title": "Recoupement coupe-feu CLT",
+                "description": "Fire compartmentation inspection at CLT junctions",
+                "location": "All CLT junctions, Levels 0-2",
+                "status": "completed",
+                "result": "pass",
+                "inspection_date": (base + timedelta(days=85)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Joints",
+                        "question": "Intumescent strips at all CLT joints?",
+                        "response": "yes",
+                        "critical": True,
+                    },
+                    {
+                        "id": "2",
+                        "category": "Penetrations",
+                        "question": "Service penetrations fire stopped?",
+                        "response": "yes",
+                    },
+                ],
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "inspection_number": "INS-001",
+                "inspection_type": "structural",
+                "title": "Steel Portal Frame — Bay 1-3 Erection",
+                "description": "Structural inspection of portal frame erection first 3 bays",
+                "location": "Bays 1-3, full height",
+                "status": "completed",
+                "result": "pass",
+                "inspection_date": (base + timedelta(days=45)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Bolts",
+                        "question": "All base plate anchor bolts grouted?",
+                        "response": "yes",
+                        "critical": True,
+                    },
+                    {"id": "2", "category": "Alignment", "question": "Column plumb within 1:600?", "response": "yes"},
+                    {
+                        "id": "3",
+                        "category": "Connections",
+                        "question": "Apex haunch bolts fully tensioned?",
+                        "response": "yes",
+                    },
+                ],
+            },
+            {
+                "inspection_number": "INS-002",
+                "inspection_type": "fire_protection",
+                "title": "ESFR Sprinkler Installation — Zone 1",
+                "description": "Inspection of ESFR sprinkler system installation",
+                "location": "Warehouse Zone 1",
+                "status": "completed",
+                "result": "fail",
+                "inspection_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Heads",
+                        "question": "Head spacing per FM Global DS 8-9?",
+                        "response": "no",
+                        "critical": True,
+                        "notes": "3 heads exceed max 3.0m spacing",
+                    },
+                    {"id": "2", "category": "Piping", "question": "Pipe size per hydraulic calc?", "response": "yes"},
+                    {"id": "3", "category": "Clearance", "question": "900mm clear below deflector?", "response": "yes"},
+                ],
+            },
+            {
+                "inspection_number": "INS-003",
+                "inspection_type": "slab",
+                "title": "Warehouse Floor Slab Flatness",
+                "description": "Floor flatness survey for high-bay racking areas",
+                "location": "Warehouse main floor, full area",
+                "status": "completed",
+                "result": "pass",
+                "inspection_date": (base + timedelta(days=55)).strftime("%Y-%m-%d"),
+                "checklist_data": [
+                    {
+                        "id": "1",
+                        "category": "Flatness",
+                        "question": "FM2 flatness achieved?",
+                        "response": "yes",
+                        "critical": True,
+                        "notes": "FF50/FL30 achieved",
+                    },
+                    {"id": "2", "category": "Joints", "question": "Saw cuts within 24 hours?", "response": "yes"},
+                    {"id": "3", "category": "Curing", "question": "Curing compound applied?", "response": "yes"},
+                ],
+            },
+        ],
+    }
+
+    try:
+        insp_list = _INSPECTIONS.get(demo_id, [])
+        for insp in insp_list:
+            session.add(
+                QualityInspection(
+                    id=_id(),
+                    project_id=project_id,
+                    inspection_number=insp["inspection_number"],
+                    inspection_type=insp["inspection_type"],
+                    title=insp["title"],
+                    description=insp.get("description"),
+                    location=insp.get("location"),
+                    inspection_date=insp.get("inspection_date"),
+                    status=insp["status"],
+                    result=insp.get("result"),
+                    checklist_data=insp.get("checklist_data", []),
+                    created_by=owner_str,
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["inspections"] = len(insp_list)
+    except Exception:
+        logger.debug("Inspections module not loaded, skipping")
+
+    # ── Finance — Invoices ───────────────────────────────────────────
+    _INVOICES: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "invoice_number": "INV-2026-001",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+                "currency_code": "EUR",
+                "status": "paid",
+                "notes": "Hochtief — 1. Abschlagsrechnung Erdarbeiten",
+                "line_items": [
+                    {
+                        "description": "Aushub Baugrube 2500 m3",
+                        "quantity": "2500",
+                        "unit": "m3",
+                        "unit_rate": "14.50",
+                        "amount": "36250.00",
+                    },
+                    {
+                        "description": "Bodenabtransport 2200 m3",
+                        "quantity": "2200",
+                        "unit": "m3",
+                        "unit_rate": "22.00",
+                        "amount": "48400.00",
+                    },
+                ],
+            },
+            {
+                "invoice_number": "INV-2026-002",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+                "currency_code": "EUR",
+                "status": "approved",
+                "notes": "Hochtief — 2. Abschlagsrechnung Gruendung",
+                "line_items": [
+                    {
+                        "description": "Bohrpfaehle d=600mm 480 m",
+                        "quantity": "480",
+                        "unit": "m",
+                        "unit_rate": "145.00",
+                        "amount": "69600.00",
+                    },
+                    {
+                        "description": "Bodenplatte Beton C30/37",
+                        "quantity": "420",
+                        "unit": "m3",
+                        "unit_rate": "285.00",
+                        "amount": "119700.00",
+                    },
+                ],
+            },
+            {
+                "invoice_number": "INV-2026-003",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=120)).strftime("%Y-%m-%d"),
+                "currency_code": "EUR",
+                "status": "submitted",
+                "notes": "Sto SE — 1. Abschlagsrechnung Fassade WDVS",
+                "line_items": [
+                    {
+                        "description": "WDVS Mineralwolle 160mm 2400 m2",
+                        "quantity": "2400",
+                        "unit": "m2",
+                        "unit_rate": "98.00",
+                        "amount": "235200.00",
+                    },
+                ],
+            },
+        ],
+        "office-london": [
+            {
+                "invoice_number": "INV-2026-001",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=45)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=75)).strftime("%Y-%m-%d"),
+                "currency_code": "GBP",
+                "status": "paid",
+                "notes": "Severfield — Valuation 1 — Steel erection Levels 1-3",
+                "line_items": [
+                    {
+                        "description": "Structural steel columns 160t",
+                        "quantity": "160",
+                        "unit": "t",
+                        "unit_rate": "3200.00",
+                        "amount": "512000.00",
+                    },
+                    {
+                        "description": "Steel beams 240t",
+                        "quantity": "240",
+                        "unit": "t",
+                        "unit_rate": "2950.00",
+                        "amount": "708000.00",
+                    },
+                ],
+            },
+            {
+                "invoice_number": "INV-2026-002",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=75)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=105)).strftime("%Y-%m-%d"),
+                "currency_code": "GBP",
+                "status": "approved",
+                "notes": "Permasteelisa — Advance payment for curtain wall fabrication",
+                "line_items": [
+                    {
+                        "description": "Curtain wall advance — 30% of contract",
+                        "quantity": "1",
+                        "unit": "lsum",
+                        "unit_rate": "1716000.00",
+                        "amount": "1716000.00",
+                    },
+                ],
+            },
+            {
+                "invoice_number": "INV-2026-003",
+                "invoice_direction": "receivable",
+                "invoice_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+                "currency_code": "GBP",
+                "status": "paid",
+                "notes": "Client interim payment certificate 1",
+                "line_items": [
+                    {
+                        "description": "Works to date — Certificate 1",
+                        "quantity": "1",
+                        "unit": "lsum",
+                        "unit_rate": "2850000.00",
+                        "amount": "2850000.00",
+                    },
+                ],
+            },
+        ],
+        "medical-us": [
+            {
+                "invoice_number": "INV-2026-001",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+                "currency_code": "USD",
+                "status": "paid",
+                "notes": "Turner — Pay application #1 — Foundation & site work",
+                "line_items": [
+                    {
+                        "description": "Site preparation and earthwork",
+                        "quantity": "1",
+                        "unit": "lsum",
+                        "unit_rate": "485000.00",
+                        "amount": "485000.00",
+                    },
+                    {
+                        "description": "Foundation mat pour — ED wing",
+                        "quantity": "1",
+                        "unit": "lsum",
+                        "unit_rate": "312000.00",
+                        "amount": "312000.00",
+                    },
+                ],
+            },
+            {
+                "invoice_number": "INV-2026-002",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+                "currency_code": "USD",
+                "status": "approved",
+                "notes": "Southland Industries — MEP rough-in progress billing",
+                "line_items": [
+                    {
+                        "description": "Underground utilities 60%",
+                        "quantity": "1",
+                        "unit": "lsum",
+                        "unit_rate": "280000.00",
+                        "amount": "280000.00",
+                    },
+                    {
+                        "description": "Medical gas rough-in surgical wing",
+                        "quantity": "1",
+                        "unit": "lsum",
+                        "unit_rate": "145000.00",
+                        "amount": "145000.00",
+                    },
+                ],
+            },
+            {
+                "invoice_number": "INV-2026-003",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=120)).strftime("%Y-%m-%d"),
+                "currency_code": "USD",
+                "status": "submitted",
+                "notes": "Siemens Healthineers — 3T MRI equipment deposit",
+                "line_items": [
+                    {
+                        "description": "Siemens MAGNETOM Vida 3T — 50% deposit",
+                        "quantity": "1",
+                        "unit": "pcs",
+                        "unit_rate": "1250000.00",
+                        "amount": "1250000.00",
+                    },
+                ],
+            },
+        ],
+        "school-paris": [
+            {
+                "invoice_number": "INV-2026-001",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=75)).strftime("%Y-%m-%d"),
+                "currency_code": "EUR",
+                "status": "paid",
+                "notes": "Eiffage — Situation 1 — Terrassement et fondations",
+                "line_items": [
+                    {
+                        "description": "Terrassement general 1200 m3",
+                        "quantity": "1200",
+                        "unit": "m3",
+                        "unit_rate": "18.00",
+                        "amount": "21600.00",
+                    },
+                    {
+                        "description": "Fondations beton 85 m3",
+                        "quantity": "85",
+                        "unit": "m3",
+                        "unit_rate": "285.00",
+                        "amount": "24225.00",
+                    },
+                ],
+            },
+            {
+                "invoice_number": "INV-2026-002",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=105)).strftime("%Y-%m-%d"),
+                "currency_code": "EUR",
+                "status": "approved",
+                "notes": "Arbonis — Acompte panneaux CLT",
+                "line_items": [
+                    {
+                        "description": "CLT panels — 40% advance on fabrication",
+                        "quantity": "1",
+                        "unit": "lsum",
+                        "unit_rate": "380000.00",
+                        "amount": "380000.00",
+                    },
+                ],
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "invoice_number": "INV-2026-001",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+                "currency_code": "AED",
+                "status": "paid",
+                "notes": "Al Jaber — IPC 1 — Earthworks and foundations",
+                "line_items": [
+                    {
+                        "description": "Earthworks and grading 45000 m2",
+                        "quantity": "45000",
+                        "unit": "m2",
+                        "unit_rate": "12.00",
+                        "amount": "540000.00",
+                    },
+                    {
+                        "description": "Foundation pads and ground beams",
+                        "quantity": "1",
+                        "unit": "lsum",
+                        "unit_rate": "680000.00",
+                        "amount": "680000.00",
+                    },
+                ],
+            },
+            {
+                "invoice_number": "INV-2026-002",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+                "currency_code": "AED",
+                "status": "approved",
+                "notes": "Al Jaber — IPC 2 — Steel structure fabrication deposit",
+                "line_items": [
+                    {
+                        "description": "Portal frame steel — 40% fabrication advance",
+                        "quantity": "1",
+                        "unit": "lsum",
+                        "unit_rate": "1850000.00",
+                        "amount": "1850000.00",
+                    },
+                ],
+            },
+            {
+                "invoice_number": "INV-2026-003",
+                "invoice_direction": "payable",
+                "invoice_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
+                "due_date": (base + timedelta(days=120)).strftime("%Y-%m-%d"),
+                "currency_code": "AED",
+                "status": "submitted",
+                "notes": "EFFE — Fire protection system advance",
+                "line_items": [
+                    {
+                        "description": "ESFR sprinkler system — 30% advance",
+                        "quantity": "1",
+                        "unit": "lsum",
+                        "unit_rate": "420000.00",
+                        "amount": "420000.00",
+                    },
+                ],
+            },
+        ],
+    }
+
+    try:
+        inv_list = _INVOICES.get(demo_id, [])
+        for inv in inv_list:
+            items_data = inv.pop("line_items", [])
+            subtotal = sum(float(li["amount"]) for li in items_data)
+            tax_rate = (
+                0.19
+                if template.currency == "EUR"
+                else (0.20 if template.currency == "GBP" else (0.05 if template.currency == "AED" else 0.0))
+            )
+            tax = round(subtotal * tax_rate, 2)
+            inv_obj = Invoice(
+                id=_id(),
+                project_id=project_id,
+                invoice_direction=inv["invoice_direction"],
+                invoice_number=inv["invoice_number"],
+                invoice_date=inv["invoice_date"],
+                due_date=inv.get("due_date"),
+                currency_code=inv.get("currency_code", template.currency),
+                amount_subtotal=str(round(subtotal, 2)),
+                tax_amount=str(tax),
+                retention_amount="0",
+                amount_total=str(round(subtotal + tax, 2)),
+                status=inv["status"],
+                notes=inv.get("notes"),
+                created_by=owner_id,
+                metadata_={"demo_id": demo_id},
+            )
+            session.add(inv_obj)
+            await session.flush()
+            for li_idx, li in enumerate(items_data):
+                session.add(
+                    InvoiceLineItem(
+                        id=_id(),
+                        invoice_id=inv_obj.id,
+                        description=li["description"],
+                        quantity=li.get("quantity", "1"),
+                        unit=li.get("unit"),
+                        unit_rate=li.get("unit_rate", "0"),
+                        amount=li["amount"],
+                        sort_order=li_idx + 1,
+                    )
+                )
+        results["invoices"] = len(inv_list)
+    except Exception:
+        logger.debug("Finance module not loaded, skipping demo invoices")
+
+    # ── Finance — Project Budget Lines ───────────────────────────────
+    _BUDGETS: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "category": "Erdarbeiten",
+                "original_budget": "450000",
+                "revised_budget": "465000",
+                "committed": "420000",
+                "actual": "395000",
+                "forecast_final": "462000",
+            },
+            {
+                "category": "Gruendung",
+                "original_budget": "680000",
+                "revised_budget": "680000",
+                "committed": "650000",
+                "actual": "380000",
+                "forecast_final": "675000",
+            },
+            {
+                "category": "Rohbau",
+                "original_budget": "2850000",
+                "revised_budget": "2920000",
+                "committed": "2100000",
+                "actual": "1250000",
+                "forecast_final": "2900000",
+            },
+            {
+                "category": "Fassade/Dach",
+                "original_budget": "1450000",
+                "revised_budget": "1450000",
+                "committed": "900000",
+                "actual": "0",
+                "forecast_final": "1480000",
+            },
+            {
+                "category": "HLS/Elektro",
+                "original_budget": "2100000",
+                "revised_budget": "2100000",
+                "committed": "1800000",
+                "actual": "0",
+                "forecast_final": "2150000",
+            },
+        ],
+        "office-london": [
+            {
+                "category": "Substructure",
+                "original_budget": "3200000",
+                "revised_budget": "3350000",
+                "committed": "3100000",
+                "actual": "2850000",
+                "forecast_final": "3300000",
+            },
+            {
+                "category": "Steel Frame",
+                "original_budget": "5800000",
+                "revised_budget": "5800000",
+                "committed": "5200000",
+                "actual": "3100000",
+                "forecast_final": "5750000",
+            },
+            {
+                "category": "Envelope",
+                "original_budget": "7200000",
+                "revised_budget": "7450000",
+                "committed": "5720000",
+                "actual": "0",
+                "forecast_final": "7400000",
+            },
+            {
+                "category": "MEP Services",
+                "original_budget": "8500000",
+                "revised_budget": "8500000",
+                "committed": "4200000",
+                "actual": "0",
+                "forecast_final": "8600000",
+            },
+        ],
+        "medical-us": [
+            {
+                "category": "Site & Foundation",
+                "original_budget": "3500000",
+                "revised_budget": "3500000",
+                "committed": "3200000",
+                "actual": "2100000",
+                "forecast_final": "3450000",
+            },
+            {
+                "category": "Structure",
+                "original_budget": "5200000",
+                "revised_budget": "5200000",
+                "committed": "4800000",
+                "actual": "1500000",
+                "forecast_final": "5150000",
+            },
+            {
+                "category": "MEP Systems",
+                "original_budget": "8500000",
+                "revised_budget": "8900000",
+                "committed": "5200000",
+                "actual": "0",
+                "forecast_final": "8800000",
+            },
+            {
+                "category": "Medical Equipment",
+                "original_budget": "4200000",
+                "revised_budget": "4580000",
+                "committed": "2500000",
+                "actual": "1250000",
+                "forecast_final": "4550000",
+            },
+            {
+                "category": "Interior Finishes",
+                "original_budget": "3800000",
+                "revised_budget": "3800000",
+                "committed": "0",
+                "actual": "0",
+                "forecast_final": "3850000",
+            },
+        ],
+        "school-paris": [
+            {
+                "category": "Terrassement/Fondations",
+                "original_budget": "850000",
+                "revised_budget": "850000",
+                "committed": "780000",
+                "actual": "620000",
+                "forecast_final": "840000",
+            },
+            {
+                "category": "Structure CLT/Beton",
+                "original_budget": "3200000",
+                "revised_budget": "3200000",
+                "committed": "2800000",
+                "actual": "0",
+                "forecast_final": "3250000",
+            },
+            {
+                "category": "Enveloppe",
+                "original_budget": "1800000",
+                "revised_budget": "1800000",
+                "committed": "1200000",
+                "actual": "0",
+                "forecast_final": "1820000",
+            },
+            {
+                "category": "Equipements techniques",
+                "original_budget": "2400000",
+                "revised_budget": "2400000",
+                "committed": "800000",
+                "actual": "0",
+                "forecast_final": "2450000",
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "category": "Earthworks & Foundation",
+                "original_budget": "2800000",
+                "revised_budget": "2800000",
+                "committed": "2600000",
+                "actual": "1800000",
+                "forecast_final": "2750000",
+            },
+            {
+                "category": "Steel Structure",
+                "original_budget": "4500000",
+                "revised_budget": "4650000",
+                "committed": "4200000",
+                "actual": "0",
+                "forecast_final": "4600000",
+            },
+            {
+                "category": "Cladding & Roofing",
+                "original_budget": "2200000",
+                "revised_budget": "2200000",
+                "committed": "0",
+                "actual": "0",
+                "forecast_final": "2250000",
+            },
+            {
+                "category": "Fire Protection",
+                "original_budget": "1400000",
+                "revised_budget": "1400000",
+                "committed": "850000",
+                "actual": "0",
+                "forecast_final": "1420000",
+            },
+            {
+                "category": "Cold Storage",
+                "original_budget": "1800000",
+                "revised_budget": "2220000",
+                "committed": "1500000",
+                "actual": "0",
+                "forecast_final": "2200000",
+            },
+        ],
+    }
+
+    try:
+        budget_list = _BUDGETS.get(demo_id, [])
+        for bl in budget_list:
+            session.add(
+                ProjectBudget(
+                    id=_id(),
+                    project_id=project_id,
+                    category=bl["category"],
+                    original_budget=bl["original_budget"],
+                    revised_budget=bl["revised_budget"],
+                    committed=bl["committed"],
+                    actual=bl["actual"],
+                    forecast_final=bl["forecast_final"],
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["finance_budgets"] = len(budget_list)
+    except Exception:
+        logger.debug("Finance budget not loaded, skipping")
+
+    # ── Punch List ───────────────────────────────────────────────────
+    _PUNCHLIST: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "title": "Riss in Bodenplatte Tiefgarage Feld C3",
+                "description": "Hairline crack (0.3mm) in basement slab at grid C3. Needs epoxy injection.",
+                "priority": "medium",
+                "status": "open",
+                "category": "structural",
+                "trade": "Concrete",
+                "location_x": 0.35,
+                "location_y": 0.42,
+            },
+            {
+                "title": "WDVS Blasenbildung Suedseite OG2",
+                "description": "EIFS adhesive blistering on south facade Level 2, approx 2m2 area.",
+                "priority": "high",
+                "status": "open",
+                "category": "facade",
+                "trade": "WDVS/Facade",
+                "location_x": 0.65,
+                "location_y": 0.58,
+            },
+            {
+                "title": "Fehlende Brandschutzmanschetten Steigzone R2",
+                "description": "3 missing fire collars at service penetrations in riser R2 (per INS-003).",
+                "priority": "high",
+                "status": "in_progress",
+                "category": "fire_protection",
+                "trade": "Fire stopping",
+                "resolution_notes": "Fire collars ordered, installation scheduled for next week",
+            },
+            {
+                "title": "Fussbodenheizungsverteiler Wohnung 3.04 undicht",
+                "description": "Minor leak at manifold connection in apartment 3.04.",
+                "priority": "medium",
+                "status": "resolved",
+                "category": "mep",
+                "trade": "Plumbing",
+                "resolution_notes": "Fitting retightened, pressure test passed",
+            },
+        ],
+        "office-london": [
+            {
+                "title": "Curtain wall water ingress — Level 5 transom",
+                "description": "Water staining at transom-mullion junction Level 5, south elevation (per INS-003 mock-up failure).",
+                "priority": "high",
+                "status": "open",
+                "category": "envelope",
+                "trade": "Curtain wall",
+            },
+            {
+                "title": "Missing fire stopping — riser 2, Level 6",
+                "description": "Fire stopping incomplete at 4 cable tray penetrations in riser 2.",
+                "priority": "high",
+                "status": "in_progress",
+                "category": "fire_protection",
+                "trade": "Fire stopping",
+            },
+            {
+                "title": "Access floor tile damaged — Level 3 NE corner",
+                "description": "Cracked access floor tile from equipment delivery.",
+                "priority": "low",
+                "status": "open",
+                "category": "finishes",
+                "trade": "Raised floor",
+            },
+            {
+                "title": "Basement sump pump alarm fault",
+                "description": "High-level alarm not triggering on sump pump test.",
+                "priority": "medium",
+                "status": "resolved",
+                "category": "mep",
+                "trade": "Plumbing",
+                "resolution_notes": "Float switch replaced and tested OK",
+            },
+        ],
+        "medical-us": [
+            {
+                "title": "OR 2-201 ceiling grid misaligned",
+                "description": "Ceiling grid in Operating Room 2-201 is 15mm off center from surgical light rough-in.",
+                "priority": "high",
+                "status": "open",
+                "category": "finishes",
+                "trade": "Ceiling",
+            },
+            {
+                "title": "Medical gas outlet — wrong gas at 2-305",
+                "description": "Nitrogen outlet installed where oxygen should be in Room 2-305.",
+                "priority": "critical",
+                "status": "in_progress",
+                "category": "mep",
+                "trade": "Medical gas",
+                "resolution_notes": "Outlet being replaced. Zone valve shut off pending correction.",
+            },
+            {
+                "title": "ED corridor floor tile lifting",
+                "description": "Vinyl floor tile lifting at expansion joint in ED main corridor.",
+                "priority": "medium",
+                "status": "open",
+                "category": "finishes",
+                "trade": "Flooring",
+            },
+            {
+                "title": "Generator room ventilation louvre blocked",
+                "description": "Construction debris blocking intake louvre to emergency generator room.",
+                "priority": "medium",
+                "status": "resolved",
+                "category": "mep",
+                "trade": "HVAC",
+                "resolution_notes": "Debris removed, screen installed to prevent recurrence",
+            },
+            {
+                "title": "Handrail loose — main stairwell Level 2-3",
+                "description": "Stainless steel handrail bracket loose at Level 2-3 landing.",
+                "priority": "low",
+                "status": "open",
+                "category": "architectural",
+                "trade": "Metalwork",
+            },
+        ],
+        "school-paris": [
+            {
+                "title": "Joint CLT visible — salle de classe 1.02",
+                "description": "CLT panel joint visible and not flush in classroom 1.02. Needs filling and sanding.",
+                "priority": "medium",
+                "status": "open",
+                "category": "structural",
+                "trade": "CLT/Timber",
+            },
+            {
+                "title": "Porte coupe-feu gymnase — ferme-porte defectueux",
+                "description": "Gymnasium fire door closer not achieving full closure.",
+                "priority": "high",
+                "status": "in_progress",
+                "category": "fire_protection",
+                "trade": "Doors",
+            },
+            {
+                "title": "Peinture ecaillee hall entree",
+                "description": "Paint peeling in entrance hall near external door — moisture ingress suspected.",
+                "priority": "medium",
+                "status": "open",
+                "category": "finishes",
+                "trade": "Painting",
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "title": "Floor slab crack at column base B7",
+                "description": "2mm crack radiating from column base at B7. Structural review needed.",
+                "priority": "high",
+                "status": "open",
+                "category": "structural",
+                "trade": "Concrete",
+            },
+            {
+                "title": "ESFR heads over-spaced Zone 1 (per INS-002)",
+                "description": "3 sprinkler heads exceed maximum 3.0m spacing in Zone 1.",
+                "priority": "high",
+                "status": "in_progress",
+                "category": "fire_protection",
+                "trade": "Fire protection",
+                "resolution_notes": "Additional heads being installed to meet FM Global spacing",
+            },
+            {
+                "title": "Cold store insulated panel gap — Door 3",
+                "description": "5mm gap at insulated panel junction near cold store Door 3.",
+                "priority": "medium",
+                "status": "open",
+                "category": "envelope",
+                "trade": "Cold storage panels",
+            },
+            {
+                "title": "Dock leveller hydraulic leak — Dock 5",
+                "description": "Hydraulic fluid leak on dock leveller 5. Leveller operational but needs seal replacement.",
+                "priority": "low",
+                "status": "resolved",
+                "category": "mechanical",
+                "trade": "Dock equipment",
+                "resolution_notes": "Hydraulic seal replaced, tested OK under full load",
+            },
+        ],
+    }
+
+    try:
+        punch_list = _PUNCHLIST.get(demo_id, [])
+        for p in punch_list:
+            session.add(
+                PunchItem(
+                    id=_id(),
+                    project_id=project_id,
+                    title=p["title"],
+                    description=p.get("description", ""),
+                    priority=p.get("priority", "medium"),
+                    status=p["status"],
+                    category=p.get("category"),
+                    trade=p.get("trade"),
+                    location_x=p.get("location_x"),
+                    location_y=p.get("location_y"),
+                    resolution_notes=p.get("resolution_notes"),
+                    created_by=owner_str,
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["punchlist"] = len(punch_list)
+    except Exception:
+        logger.debug("Punchlist module not loaded, skipping")
+
+    # ── Field Reports ────────────────────────────────────────────────
+    _FIELD_REPORTS: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "report_date": date(2026, 4, 7),
+                "report_type": "daily",
+                "weather_condition": "partly_cloudy",
+                "temperature_c": 12.0,
+                "work_performed": "Spundwandverbau Larssen 603 installation completed south wall. "
+                "Dewatering pumps operational. Excavation proceeding grid A-C.",
+                "workforce": [
+                    {"trade": "Piling crew", "headcount": 8, "hours": "9"},
+                    {"trade": "Excavation crew", "headcount": 6, "hours": "8"},
+                ],
+                "equipment_on_site": ["Liebherr LB 36 piling rig", "CAT 330 excavator", "Wellpoint dewatering system"],
+                "status": "approved",
+            },
+            {
+                "report_date": date(2026, 4, 14),
+                "report_type": "daily",
+                "weather_condition": "rain",
+                "temperature_c": 8.0,
+                "work_performed": "Excavation paused due to heavy rain. Dewatering pumps running at full capacity. "
+                "Formwork preparation in covered area.",
+                "delays": "Heavy rain — excavation paused for 4 hours",
+                "delay_hours": 4.0,
+                "workforce": [{"trade": "General labor", "headcount": 4, "hours": "4"}],
+                "status": "approved",
+            },
+        ],
+        "office-london": [
+            {
+                "report_date": date(2026, 4, 7),
+                "report_type": "daily",
+                "weather_condition": "overcast",
+                "temperature_c": 14.0,
+                "work_performed": "Piled foundation CFA installation — 12 piles completed. "
+                "Steel delivery for erection next week.",
+                "workforce": [
+                    {"trade": "Piling crew", "headcount": 10, "hours": "10"},
+                    {"trade": "General labor", "headcount": 6, "hours": "8"},
+                ],
+                "equipment_on_site": ["Bauer BG 28 piling rig", "Concrete pump", "Tower crane TC1 (erected)"],
+                "status": "approved",
+            },
+        ],
+        "medical-us": [
+            {
+                "report_date": date(2026, 4, 7),
+                "report_type": "daily",
+                "weather_condition": "clear",
+                "temperature_c": 22.0,
+                "work_performed": "Foundation mat pour ED wing — 285 CY placed. "
+                "Thermocouples installed for mass concrete temperature monitoring. "
+                "ICRA barriers in place for adjacent occupied area.",
+                "workforce": [
+                    {"trade": "Concrete crew", "headcount": 14, "hours": "12"},
+                    {"trade": "Pump operator", "headcount": 2, "hours": "12"},
+                    {"trade": "Finishers", "headcount": 6, "hours": "10"},
+                ],
+                "equipment_on_site": ["Concrete pump 42m boom", "Vibrators x6", "Laser screed"],
+                "visitors": "County building inspector — foundation observation",
+                "status": "approved",
+            },
+        ],
+        "school-paris": [
+            {
+                "report_date": date(2026, 4, 7),
+                "report_type": "daily",
+                "weather_condition": "partly_cloudy",
+                "temperature_c": 15.0,
+                "work_performed": "Demolition of existing structure 80% complete. "
+                "Sorting of demolition waste for recycling ongoing.",
+                "workforce": [
+                    {"trade": "Demolition crew", "headcount": 8, "hours": "8"},
+                    {"trade": "Waste sorting", "headcount": 3, "hours": "8"},
+                ],
+                "equipment_on_site": [
+                    "Liebherr R 946 demolition excavator",
+                    "Concrete crusher",
+                    "Dust suppression system",
+                ],
+                "status": "approved",
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "report_date": date(2026, 4, 7),
+                "report_type": "daily",
+                "weather_condition": "clear",
+                "temperature_c": 35.0,
+                "work_performed": "Earthworks grading 60% complete. Foundation pad excavation started bays 1-3. "
+                "Steel fabrication order confirmed with factory in Jebel Ali.",
+                "workforce": [
+                    {"trade": "Earthworks crew", "headcount": 12, "hours": "9"},
+                    {"trade": "Survey team", "headcount": 3, "hours": "8"},
+                ],
+                "equipment_on_site": ["CAT D8 dozer", "CAT 390F excavator", "Bomag BW 226 roller", "Water tanker"],
+                "status": "approved",
+            },
+            {
+                "report_date": date(2026, 4, 14),
+                "report_type": "daily",
+                "weather_condition": "hazy",
+                "temperature_c": 38.0,
+                "work_performed": "Foundation pads poured bays 1-2. Earthworks grading 85% complete. "
+                "Rebar delivery received for bay 3-6 foundations.",
+                "workforce": [
+                    {"trade": "Concrete crew", "headcount": 10, "hours": "9"},
+                    {"trade": "Steel fixers", "headcount": 6, "hours": "8"},
+                ],
+                "equipment_on_site": ["Concrete pump", "Vibrators x4", "CAT 390F excavator"],
+                "deliveries": "Rebar delivery 45t for foundation zones 3-6",
+                "status": "approved",
+            },
+        ],
+    }
+
+    try:
+        fr_list = _FIELD_REPORTS.get(demo_id, [])
+        for fr in fr_list:
+            session.add(
+                FieldReport(
+                    id=_id(),
+                    project_id=project_id,
+                    report_date=fr["report_date"],
+                    report_type=fr.get("report_type", "daily"),
+                    weather_condition=fr.get("weather_condition", "clear"),
+                    temperature_c=fr.get("temperature_c"),
+                    work_performed=fr.get("work_performed", ""),
+                    workforce=fr.get("workforce", []),
+                    equipment_on_site=fr.get("equipment_on_site", []),
+                    delays=fr.get("delays"),
+                    delay_hours=fr.get("delay_hours", 0.0),
+                    visitors=fr.get("visitors"),
+                    deliveries=fr.get("deliveries"),
+                    status=fr.get("status", "draft"),
+                    created_by=owner_str,
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["field_reports"] = len(fr_list)
+    except Exception:
+        logger.debug("Field Reports module not loaded, skipping")
+
+    # ── Submittals ───────────────────────────────────────────────────
+    _SUBMITTALS: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "submittal_number": "SUB-001",
+                "title": "WDVS Sto StoTherm Classic — product data",
+                "spec_section": "KG 330",
+                "submittal_type": "product_data",
+                "status": "approved",
+                "date_submitted": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
+                "date_returned": (base + timedelta(days=44)).strftime("%Y-%m-%d"),
+            },
+            {
+                "submittal_number": "SUB-002",
+                "title": "Bohrpfahl Ausfuehrungsplan",
+                "spec_section": "KG 320",
+                "submittal_type": "shop_drawing",
+                "status": "approved",
+                "date_submitted": (base + timedelta(days=10)).strftime("%Y-%m-%d"),
+                "date_returned": (base + timedelta(days=24)).strftime("%Y-%m-%d"),
+            },
+            {
+                "submittal_number": "SUB-003",
+                "title": "Aufzug KONE MonoSpace — Werkplanung",
+                "spec_section": "KG 500",
+                "submittal_type": "shop_drawing",
+                "status": "under_review",
+                "date_submitted": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+            },
+        ],
+        "office-london": [
+            {
+                "submittal_number": "SUB-001",
+                "title": "Structural steel — fabrication drawings Level 1-4",
+                "spec_section": "NRM 2.1",
+                "submittal_type": "shop_drawing",
+                "status": "approved",
+                "date_submitted": (base + timedelta(days=20)).strftime("%Y-%m-%d"),
+                "date_returned": (base + timedelta(days=34)).strftime("%Y-%m-%d"),
+            },
+            {
+                "submittal_number": "SUB-002",
+                "title": "Curtain wall mock-up — test results",
+                "spec_section": "NRM 5.1",
+                "submittal_type": "test_report",
+                "status": "rejected",
+                "date_submitted": (base + timedelta(days=80)).strftime("%Y-%m-%d"),
+                "date_returned": (base + timedelta(days=85)).strftime("%Y-%m-%d"),
+            },
+            {
+                "submittal_number": "SUB-003",
+                "title": "Fire protection intumescent — product data",
+                "spec_section": "NRM 2.4",
+                "submittal_type": "product_data",
+                "status": "approved",
+                "date_submitted": (base + timedelta(days=40)).strftime("%Y-%m-%d"),
+                "date_returned": (base + timedelta(days=50)).strftime("%Y-%m-%d"),
+            },
+        ],
+        "medical-us": [
+            {
+                "submittal_number": "SUB-001",
+                "title": "Medical gas piping — Type L copper shop drawings",
+                "spec_section": "23 52 00",
+                "submittal_type": "shop_drawing",
+                "status": "approved",
+                "date_submitted": (base + timedelta(days=25)).strftime("%Y-%m-%d"),
+                "date_returned": (base + timedelta(days=39)).strftime("%Y-%m-%d"),
+            },
+            {
+                "submittal_number": "SUB-002",
+                "title": "RF shielding copper room — fabrication details",
+                "spec_section": "13 49 00",
+                "submittal_type": "shop_drawing",
+                "status": "under_review",
+                "date_submitted": (base + timedelta(days=50)).strftime("%Y-%m-%d"),
+            },
+            {
+                "submittal_number": "SUB-003",
+                "title": "HVAC air handling units — product data",
+                "spec_section": "23 73 00",
+                "submittal_type": "product_data",
+                "status": "approved",
+                "date_submitted": (base + timedelta(days=35)).strftime("%Y-%m-%d"),
+                "date_returned": (base + timedelta(days=49)).strftime("%Y-%m-%d"),
+            },
+        ],
+        "school-paris": [
+            {
+                "submittal_number": "SUB-001",
+                "title": "Panneaux CLT — plans de fabrication",
+                "spec_section": "Lot 2",
+                "submittal_type": "shop_drawing",
+                "status": "approved",
+                "date_submitted": (base + timedelta(days=20)).strftime("%Y-%m-%d"),
+                "date_returned": (base + timedelta(days=34)).strftime("%Y-%m-%d"),
+            },
+            {
+                "submittal_number": "SUB-002",
+                "title": "Menuiserie exterieure alu — fiches techniques",
+                "spec_section": "Lot 5",
+                "submittal_type": "product_data",
+                "status": "under_review",
+                "date_submitted": (base + timedelta(days=45)).strftime("%Y-%m-%d"),
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "submittal_number": "SUB-001",
+                "title": "Portal frame steel — shop drawings",
+                "spec_section": "05 12 00",
+                "submittal_type": "shop_drawing",
+                "status": "approved",
+                "date_submitted": (base + timedelta(days=15)).strftime("%Y-%m-%d"),
+                "date_returned": (base + timedelta(days=29)).strftime("%Y-%m-%d"),
+            },
+            {
+                "submittal_number": "SUB-002",
+                "title": "ESFR sprinkler system — hydraulic calculations",
+                "spec_section": "21 13 00",
+                "submittal_type": "calculation",
+                "status": "under_review",
+                "date_submitted": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
+            },
+            {
+                "submittal_number": "SUB-003",
+                "title": "Insulated panels — cold store specification",
+                "spec_section": "07 42 00",
+                "submittal_type": "product_data",
+                "status": "approved",
+                "date_submitted": (base + timedelta(days=40)).strftime("%Y-%m-%d"),
+                "date_returned": (base + timedelta(days=52)).strftime("%Y-%m-%d"),
+            },
+        ],
+    }
+
+    try:
+        sub_list = _SUBMITTALS.get(demo_id, [])
+        for s in sub_list:
+            session.add(
+                Submittal(
+                    id=_id(),
+                    project_id=project_id,
+                    submittal_number=s["submittal_number"],
+                    title=s["title"],
+                    spec_section=s.get("spec_section"),
+                    submittal_type=s["submittal_type"],
+                    status=s["status"],
+                    date_submitted=s.get("date_submitted"),
+                    date_returned=s.get("date_returned"),
+                    created_by=owner_str,
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["submittals"] = len(sub_list)
+    except Exception:
+        logger.debug("Submittals module not loaded, skipping")
+
+    # ── NCRs ─────────────────────────────────────────────────────────
+    _NCRS: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "ncr_number": "NCR-001",
+                "title": "Brandschutz Durchfuehrungen fehlend",
+                "description": "3 fire stopping penetrations missing in riser R2 (identified in INS-003).",
+                "ncr_type": "workmanship",
+                "severity": "major",
+                "root_cause": "Subcontractor skipped fire collar installation on small-diameter pipes",
+                "root_cause_category": "workmanship",
+                "corrective_action": "Install missing fire collars, re-inspect all risers",
+                "preventive_action": "Add fire stopping to mandatory hold-point inspection list",
+                "status": "corrective_action",
+                "cost_impact": "4500",
+                "schedule_impact_days": 3,
+            },
+        ],
+        "office-london": [
+            {
+                "ncr_number": "NCR-001",
+                "title": "Curtain wall water ingress at transom junction",
+                "description": "Water penetration at transom-mullion junction during mock-up test at 600Pa.",
+                "ncr_type": "design",
+                "severity": "major",
+                "root_cause": "Gasket detail insufficient for wind-driven rain at height",
+                "root_cause_category": "design_error",
+                "corrective_action": "Redesign gasket detail, retest mock-up",
+                "preventive_action": "All gasket details to be reviewed by building physics consultant",
+                "status": "corrective_action",
+                "cost_impact": "65000",
+                "schedule_impact_days": 14,
+            },
+        ],
+        "medical-us": [
+            {
+                "ncr_number": "NCR-001",
+                "title": "Wrong medical gas outlet installed — Room 2-305",
+                "description": "Nitrogen outlet installed at oxygen position in patient room 2-305.",
+                "ncr_type": "workmanship",
+                "severity": "critical",
+                "root_cause": "Installer misread room schedule. No independent verification performed.",
+                "root_cause_category": "human_error",
+                "corrective_action": "Replace outlet, 100% verification of all med gas outlets",
+                "preventive_action": "Dual-verification protocol for all medical gas installations",
+                "status": "corrective_action",
+                "cost_impact": "2500",
+                "schedule_impact_days": 2,
+            },
+        ],
+        "school-paris": [
+            {
+                "ncr_number": "NCR-001",
+                "title": "CLT panel surface defect — salle 1.02",
+                "description": "Visible joint gap in CLT panel in classroom 1.02. Not meeting exposed finish spec.",
+                "ncr_type": "material",
+                "severity": "minor",
+                "root_cause": "Panel manufactured with visible knot at junction",
+                "root_cause_category": "material_defect",
+                "corrective_action": "Fill and sand joint, apply matching finish",
+                "status": "corrective_action",
+                "cost_impact": "800",
+                "schedule_impact_days": 1,
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "ncr_number": "NCR-001",
+                "title": "ESFR sprinkler head spacing exceeded",
+                "description": "3 ESFR heads in Zone 1 exceed 3.0m max spacing per FM Global DS 8-9.",
+                "ncr_type": "workmanship",
+                "severity": "major",
+                "root_cause": "Installer used wrong drawing revision for head layout",
+                "root_cause_category": "human_error",
+                "corrective_action": "Install additional heads to meet spacing requirements",
+                "preventive_action": "Document control: latest revision stamps on all installation drawings",
+                "status": "corrective_action",
+                "cost_impact": "8500",
+                "schedule_impact_days": 5,
+            },
+        ],
+    }
+
+    try:
+        ncr_list = _NCRS.get(demo_id, [])
+        for n in ncr_list:
+            session.add(
+                NCR(
+                    id=_id(),
+                    project_id=project_id,
+                    ncr_number=n["ncr_number"],
+                    title=n["title"],
+                    description=n["description"],
+                    ncr_type=n["ncr_type"],
+                    severity=n["severity"],
+                    root_cause=n.get("root_cause"),
+                    root_cause_category=n.get("root_cause_category"),
+                    corrective_action=n.get("corrective_action"),
+                    preventive_action=n.get("preventive_action"),
+                    status=n["status"],
+                    cost_impact=n.get("cost_impact"),
+                    schedule_impact_days=n.get("schedule_impact_days"),
+                    created_by=owner_str,
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["ncrs"] = len(ncr_list)
+    except Exception:
+        logger.debug("NCR module not loaded, skipping")
+
+    # ── Correspondence ───────────────────────────────────────────────
+    _CORRESPONDENCE: dict[str, list[dict]] = {
+        "residential-berlin": [
+            {
+                "reference_number": "OUT-2026-001",
+                "direction": "outgoing",
+                "subject": "Baubeginnanzeige an Bauaufsichtsamt",
+                "correspondence_type": "letter",
+                "date_sent": base.strftime("%Y-%m-%d"),
+                "notes": "Official notification of construction start to building authority",
+            },
+            {
+                "reference_number": "IN-2026-001",
+                "direction": "incoming",
+                "subject": "Brandschutzauflagen — Stellungnahme Feuerwehr",
+                "correspondence_type": "letter",
+                "date_received": (base + timedelta(days=21)).strftime("%Y-%m-%d"),
+                "notes": "Fire authority comments on smoke extract and pressurisation",
+            },
+        ],
+        "office-london": [
+            {
+                "reference_number": "OUT-2026-001",
+                "direction": "outgoing",
+                "subject": "Commencement notice to London Borough of Tower Hamlets",
+                "correspondence_type": "letter",
+                "date_sent": base.strftime("%Y-%m-%d"),
+                "notes": "Official commencement notice under planning condition 3",
+            },
+            {
+                "reference_number": "IN-2026-001",
+                "direction": "incoming",
+                "subject": "Building control initial inspection report",
+                "correspondence_type": "report",
+                "date_received": (base + timedelta(days=14)).strftime("%Y-%m-%d"),
+                "notes": "Approved Inspectors initial inspection — no issues",
+            },
+        ],
+        "medical-us": [
+            {
+                "reference_number": "OUT-2026-001",
+                "direction": "outgoing",
+                "subject": "OSHPD construction permit application",
+                "correspondence_type": "letter",
+                "date_sent": (base - timedelta(days=60)).strftime("%Y-%m-%d"),
+                "notes": "State hospital construction permit application submitted",
+            },
+            {
+                "reference_number": "IN-2026-001",
+                "direction": "incoming",
+                "subject": "JCAHO compliance pre-assessment report",
+                "correspondence_type": "report",
+                "date_received": (base - timedelta(days=30)).strftime("%Y-%m-%d"),
+                "notes": "Joint Commission pre-assessment — 3 observations to address",
+            },
+        ],
+        "school-paris": [
+            {
+                "reference_number": "OUT-2026-001",
+                "direction": "outgoing",
+                "subject": "Declaration ouverture de chantier (DOC)",
+                "correspondence_type": "letter",
+                "date_sent": base.strftime("%Y-%m-%d"),
+                "notes": "Official construction start declaration to mairie",
+            },
+        ],
+        "warehouse-dubai": [
+            {
+                "reference_number": "OUT-2026-001",
+                "direction": "outgoing",
+                "subject": "Building permit application to Dubai Municipality",
+                "correspondence_type": "letter",
+                "date_sent": (base - timedelta(days=90)).strftime("%Y-%m-%d"),
+                "notes": "Building permit application with all NOCs",
+            },
+            {
+                "reference_number": "IN-2026-001",
+                "direction": "incoming",
+                "subject": "Dubai Civil Defence approval — fire protection design",
+                "correspondence_type": "letter",
+                "date_received": (base - timedelta(days=14)).strftime("%Y-%m-%d"),
+                "notes": "Fire protection design approved with conditions",
+            },
+        ],
+    }
+
+    try:
+        corr_list = _CORRESPONDENCE.get(demo_id, [])
+        for c in corr_list:
+            session.add(
+                Correspondence(
+                    id=_id(),
+                    project_id=project_id,
+                    reference_number=c["reference_number"],
+                    direction=c["direction"],
+                    subject=c["subject"],
+                    correspondence_type=c["correspondence_type"],
+                    date_sent=c.get("date_sent"),
+                    date_received=c.get("date_received"),
+                    notes=c.get("notes"),
+                    created_by=owner_str,
+                    metadata_={"demo_id": demo_id},
+                )
+            )
+        results["correspondence"] = len(corr_list)
+    except Exception:
+        logger.debug("Correspondence module not loaded, skipping")
+
+    await session.flush()
+    return results
+
+
 async def install_demo_project(session: AsyncSession, demo_id: str) -> dict:
     """Install a demo project with full BOQ, Schedule, Budget, and Tendering data.
 
@@ -4269,6 +7761,16 @@ async def install_demo_project(session: AsyncSession, demo_id: str) -> dict:
 
     await session.flush()
 
+    # ── 13. Module data (Contacts, Tasks, RFIs, Meetings, Safety, etc.) ──
+    module_data = await _seed_module_data(
+        session,
+        project.id,
+        owner_id,
+        demo_id,
+        template,
+    )
+    logger.info("Demo module data for %s: %s", demo_id, module_data)
+
     return {
         "project_id": str(project.id),
         "project_name": template.project_name,
@@ -4283,4 +7785,5 @@ async def install_demo_project(session: AsyncSession, demo_id: str) -> dict:
         "risks": risk_count,
         "change_orders": co_count,
         "documents": doc_count,
+        **module_data,
     }
