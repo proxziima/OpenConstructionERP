@@ -294,6 +294,14 @@ export interface BOQGridProps {
    */
   fxRates?: { currency: string; rate: number; label?: string }[];
   /**
+   * ── Display-currency override (Issue #88 follow-up).
+   * When set, all monetary aggregates rendered by the grid (per-position
+   * total, section subtotals, footer rows) are formatted in `code` using
+   * `rate` for conversion. View-only — does NOT alter what the server
+   * persists. `null` / undefined ⇒ render in project base currency.
+   */
+  displayCurrency?: { code: string; rate: number } | null;
+  /**
    * Issue #105 — open-handler for the Project Settings → FX Rates page.
    * Wired by BOQEditorPage to `navigate('/projects/:id/settings#fx-rates')`.
    * When omitted, the warning badge stays a non-clickable info chip.
@@ -372,6 +380,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   currencySymbol,
   currencyCode,
   fxRates,
+  displayCurrency,
   onOpenFxRateSettings,
   locale,
   footerRows,
@@ -741,6 +750,11 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       currencySymbol,
       currencyCode,
       fxRates: fxRates ?? [],
+      // Issue #88 — display-currency view-only override. The
+      // `totalFormatter` in columnDefs reads this and reformats every
+      // aggregate (footer rows, section subtotals, per-position totals)
+      // through the configured rate. Null when the user is on base.
+      displayCurrency: displayCurrency ?? null,
       onOpenFxRateSettings,
       locale,
       fmt,
@@ -786,7 +800,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       // because the Quantity column doesn't supply cellEditorParams.
       onFormulaApplied,
     }) as FullGridContext,
-    [currencySymbol, currencyCode, fxRates, onOpenFxRateSettings, locale, fmt, t, collapsedSections, onToggleSection, onAddPosition,
+    [currencySymbol, currencyCode, fxRates, displayCurrency, onOpenFxRateSettings, locale, fmt, t, collapsedSections, onToggleSection, onAddPosition,
      expandedPositions, toggleResources, onRemoveResource, onUpdateResource, onUpdateResourceFields,
      onSaveResourceToCatalog, onSaveVariantHeaderToCatalog, onOpenCostDbForPosition, onOpenCatalogForPosition, onRepickResourceVariant,
      openVariantPickerSignal, openVariantPickerFor, clearOpenVariantPicker, openPositionVariantPicker, onUpdateVariantHeader,
@@ -797,7 +811,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
 
   /* ── Column defs (standard + custom) ─────────────────────────────── */
   const columnDefs = useMemo(() => {
-    const defs = getColumnDefs({ currencySymbol, currencyCode, locale, fmt, t });
+    const defs = getColumnDefs({ currencySymbol, currencyCode, locale, fmt, t, displayCurrency: displayCurrency ?? null });
     // Override ordinal column with custom renderer
     const ordinalCol = defs.find((c) => c.field === 'ordinal');
     if (ordinalCol) {
@@ -834,7 +848,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       }
     }
     return defs;
-  }, [currencySymbol, currencyCode, locale, fmt, t, customColumns, positions, boqVariables]);
+  }, [currencySymbol, currencyCode, locale, fmt, t, customColumns, positions, boqVariables, displayCurrency]);
 
   /* ── Calculated-column refresh on positions change ──────────────────
    * AG Grid re-runs `valueGetter` on every refresh; for cross-position
@@ -850,6 +864,18 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
     if (calculatedCols.length === 0) return;
     gridApiRef.current.refreshCells({ columns: calculatedCols, force: true });
   }, [positions, boqVariables, customColumns]);
+
+  /* ── Display-currency refresh (Issue #88) ────────────────────────────
+   * When the user flips the active display currency the column-defs
+   * memo rebuilds (it depends on `displayCurrency`), but AG Grid keeps
+   * the prior formatted strings cached for already-rendered cells.
+   * Force a cell refresh on the total column so every footer / section
+   * subtotal / per-position total reformats in lock-step. */
+  useEffect(() => {
+    if (!gridApiRef.current) return;
+    gridApiRef.current.refreshCells({ columns: ['total'], force: true });
+    gridApiRef.current.refreshHeader();
+  }, [displayCurrency?.code, displayCurrency?.rate]);
 
   /* ── Helper: insert resource sub-rows after an expanded position ── */
   const insertResourceRows = useCallback((rows: GridRow[], pos: Position) => {

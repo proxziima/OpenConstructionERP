@@ -89,6 +89,36 @@ export interface BOQToolbarProps {
   qualityScoreRing: React.ReactNode;
   // Keyboard shortcuts overlay
   onShowShortcuts?: () => void;
+  /**
+   * ── Inline mini-summary (merged into toolbar instead of a second row).
+   * Renders at the right end with `ml-auto` so on wide screens the toolbar
+   * is a single visual band. Falls back to a wrapped row on narrow screens
+   * via the toolbar's existing `flex-wrap`. Pass `null` to hide entirely
+   * (e.g. on the empty-state of a BOQ with zero positions).
+   */
+  summary?: {
+    sectionCount: number;
+    positionCount: number;
+    errorCount: number;
+    warningCount: number;
+    /** Project base currency symbol (e.g. "€"). Used for the Grand Total render. */
+    currencySymbol: string;
+    /** Project base currency code (e.g. "EUR") — drives the "Display in" default option. */
+    currencyCode: string;
+    /** FX rate templates configured at project level. Empty array hides the selector. */
+    fxRates: { currency: string; rate: number; label?: string }[];
+    /** Currently picked display currency (empty string ⇒ base). */
+    displayCurrency: string;
+    onChangeDisplayCurrency: (code: string) => void;
+    /** Live total in base currency. */
+    grossTotal: number;
+    /** Live total converted to display currency (or base when display === base). */
+    grossTotalDisplay: number;
+    /** Symbol/code of the active display currency (mirrors `displayCurrency` once resolved). */
+    displaySymbol: string;
+    /** Resolved FX rate for the display currency, used in the conversion tooltip. */
+    displayRate: number | null;
+  } | null;
 }
 
 export function BOQToolbar({
@@ -132,6 +162,7 @@ export function BOQToolbar({
   hasPositions,
   qualityScoreRing,
   onShowShortcuts,
+  summary,
 }: BOQToolbarProps) {
   /* ── Export dropdown state ─────────────────────────────────────────── */
   const [showExportMenu, setShowExportMenu] = useState(false);
@@ -409,6 +440,104 @@ export function BOQToolbar({
           </>
         )}
       </div>
+
+      {/* ── Inline mini-summary (right side, merged from the old second row).
+          Sits at `ml-auto` so on wide screens the toolbar reads as a single
+          horizontal band with action buttons on the left and the live
+          Grand-Total / status pills on the right. On narrow screens it
+          wraps under the toolbar via the parent `flex-wrap`. Renders only
+          when `summary` is provided and the BOQ has at least one row. */}
+      {summary && hasPositions && (
+        <div className="ml-auto flex items-center gap-2 sm:gap-3 text-2xs text-content-tertiary tabular-nums">
+          <span className="hidden md:inline">
+            <span className="font-semibold text-content-secondary">{summary.sectionCount}</span>{' '}
+            {t('boq.sections', { defaultValue: 'sections' })}
+          </span>
+          <span className="text-border-light hidden md:inline">·</span>
+          <span>
+            <span className="font-semibold text-content-secondary">{summary.positionCount}</span>{' '}
+            {t('boq.positions_label', { defaultValue: 'positions' })}
+          </span>
+          {summary.errorCount > 0 && (
+            <>
+              <span className="text-border-light">·</span>
+              <span className="text-red-600 dark:text-red-400 font-medium">
+                {summary.errorCount} {t('boq.errors', { defaultValue: 'errors' })}
+              </span>
+            </>
+          )}
+          {summary.warningCount > 0 && (
+            <>
+              <span className="text-border-light">·</span>
+              <span className="text-amber-600 dark:text-amber-400 font-medium">
+                {summary.warningCount} {t('boq.warnings', { defaultValue: 'warnings' })}
+              </span>
+            </>
+          )}
+
+          {/* Display-in selector — opt-in, hidden when no FX rates configured. */}
+          {summary.fxRates.length > 0 && (
+            <>
+              <span className="w-px h-4 bg-border-light hidden sm:block" />
+              <span className="inline-flex items-center gap-1 normal-case">
+                <span className="hidden lg:inline text-content-tertiary">
+                  {t('boq.display_in', { defaultValue: 'Display in' })}:
+                </span>
+                <select
+                  value={summary.displayCurrency}
+                  onChange={(e) => summary.onChangeDisplayCurrency(e.target.value)}
+                  aria-label={t('boq.display_currency_aria', {
+                    defaultValue: 'Choose currency for grand total display',
+                  })}
+                  className="bg-surface-elevated border border-border-light rounded px-1.5 py-0.5
+                             text-content-primary text-2xs cursor-pointer
+                             focus:outline-none focus:ring-1 focus:ring-oe-blue/40"
+                >
+                  <option value="">
+                    {summary.currencyCode || t('boq.display_base', { defaultValue: 'Base' })}
+                  </option>
+                  {summary.fxRates.map((fx) => (
+                    <option key={fx.currency} value={fx.currency}>
+                      {fx.currency}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            </>
+          )}
+
+          {/* Grand Total — bold, anchored at the very end. The tooltip
+              spells out the FX rate so the converted figure is auditable.
+              When display ≠ base the entire BOQ (per-position totals,
+              section subtotals, footer rows, this grand total) renders in
+              the chosen currency in lock-step. Edits stay locked to the
+              base currency: switch back to "Base" to change a unit_rate. */}
+          <span className="w-px h-4 bg-border-light hidden sm:block" />
+          <span
+            className="font-semibold text-content-primary text-xs"
+            title={
+              summary.displayRate != null && summary.displayCurrency
+                ? t('boq.grand_total_conversion_tooltip_v2', {
+                    defaultValue:
+                      'Whole BOQ rendered in {{disp}} at rate {{rate}} ({{base}} → {{disp}}). View-only — server keeps base values. Switch to "Base" to edit prices.',
+                    base: summary.currencyCode || summary.currencySymbol,
+                    disp: summary.displayCurrency,
+                    rate: summary.displayRate.toLocaleString(undefined, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 6,
+                    }),
+                  })
+                : undefined
+            }
+          >
+            {t('boq.grand_total', { defaultValue: 'Grand Total' })}: {summary.displaySymbol}{' '}
+            {summary.grossTotalDisplay.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

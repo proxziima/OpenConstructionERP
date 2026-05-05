@@ -148,8 +148,13 @@ export function Header({ title, onMenuClick }: HeaderProps) {
         {/* Hairline divider between Zone 2 and Zone 3. */}
         <div className="hidden sm:block h-4 w-px bg-border-light/70" aria-hidden />
 
-        {/* ── Zone 3 (Notifications + Help) ───────────────────────── */}
+        {/* ── Zone 3 (Notifications + Bug + Help) ──────────────────
+            BugReportMenu is its own button (not buried inside Help) so a
+            user can fire off a report in one click without scanning the
+            help dropdown. The little red dot turns on when errors were
+            captured this session. */}
         <NotificationBell />
+        <BugReportMenu />
         <HelpMenu />
 
         {/* Hairline divider between Zone 3 and Zone 4. */}
@@ -204,6 +209,239 @@ function ThemeToggle() {
     >
       <Icon size={16} strokeWidth={1.75} />
     </button>
+  );
+}
+
+/* ── Bug Report Menu (standalone, prominent) ─────────────────────────
+   Dedicated header button so reporting an issue is one obvious click,
+   not a multi-step "open help → scroll → click bug". The popover lets
+   the user pick the channel:
+
+     - GitHub Issue (pre-filled with last error + env)
+     - Email the team (mailto: with the same payload)
+     - Web feedback form (richer fields, captures attachments server-side)
+     - Download log JSON (for manual sharing)
+
+   A red dot on the icon flags that errors were captured this session,
+   so the user notices the entry point is relevant to them. */
+
+function BugReportMenu() {
+  const { t } = useTranslation();
+  const addToast = useToastStore((s) => s.addToast);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const errorCount = getErrorCount();
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [open]);
+
+  const handleGithub = () => {
+    setOpen(false);
+    const { url, body } = buildBugReportUrl(t);
+    if (url) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    void navigator.clipboard.writeText(body).then(
+      () => {
+        addToast({
+          type: 'info',
+          title: t('app.report_bug_not_configured', { defaultValue: 'GitHub repo not configured' }),
+          message: t('app.report_bug_copied', { defaultValue: 'Report copied to clipboard' }),
+        });
+      },
+      () => {
+        addToast({
+          type: 'warning',
+          title: t('app.report_bug_not_configured', { defaultValue: 'GitHub repo not configured' }),
+        });
+      },
+    );
+  };
+
+  const handleEmail = () => {
+    setOpen(false);
+    const { body, title } = buildBugReportUrl(t);
+    const subject = `OpenConstructionERP Issue — ${title}`;
+    // mailto bodies are also length-limited (~2000 chars in Chrome),
+    // so we trim aggressively. The downloaded log JSON is the long form.
+    const safeBody = body.length > 1500 ? `${body.slice(0, 1500)}\n\n_[truncated — attach the JSON log if needed]_` : body;
+    const href = `mailto:info@datadrivenconstruction.io?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(safeBody)}`;
+    window.location.href = href;
+  };
+
+  const handleFeedbackForm = () => {
+    setOpen(false);
+    if (errorCount > 0) {
+      const blob = exportErrorReport();
+      const blobUrl = URL.createObjectURL(blob);
+      const dl = document.createElement('a');
+      dl.href = blobUrl;
+      dl.download = `openconstructionerp-log-${new Date().toISOString().slice(0, 10)}.json`;
+      dl.click();
+      URL.revokeObjectURL(blobUrl);
+    }
+    const params = new URLSearchParams({
+      report: 'true',
+      app_version: APP_VERSION,
+      platform: navigator.userAgent.includes('Win') ? 'Windows' : navigator.userAgent.includes('Mac') ? 'macOS' : 'Linux',
+    });
+    window.open(`https://openconstructionerp.com/contact.html?${params}`, '_blank');
+  };
+
+  const handleDownloadLog = () => {
+    setOpen(false);
+    const blob = exportErrorReport();
+    const blobUrl = URL.createObjectURL(blob);
+    const dl = document.createElement('a');
+    dl.href = blobUrl;
+    dl.download = `openconstructionerp-log-${new Date().toISOString().slice(0, 10)}.json`;
+    dl.click();
+    URL.revokeObjectURL(blobUrl);
+    addToast({
+      type: 'success',
+      title: t('app.bug_log_downloaded', { defaultValue: 'Log downloaded' }),
+      message: t('app.bug_log_downloaded_desc', { defaultValue: 'Attach this JSON to your report.' }),
+    });
+  };
+
+  type Channel = {
+    icon: typeof Github;
+    iconColor: string;
+    title: string;
+    desc: string;
+    onClick: () => void;
+  };
+
+  const channels: Channel[] = [
+    {
+      icon: Github,
+      iconColor: 'text-content-primary',
+      title: t('bug.channel_github', { defaultValue: 'Open a GitHub issue' }),
+      desc: t('bug.channel_github_desc', { defaultValue: 'Pre-filled with the last error and environment. Public.' }),
+      onClick: handleGithub,
+    },
+    {
+      icon: Mail,
+      iconColor: 'text-blue-500',
+      title: t('bug.channel_email', { defaultValue: 'Email the team' }),
+      desc: t('bug.channel_email_desc', { defaultValue: 'Opens your mail client with the report attached.' }),
+      onClick: handleEmail,
+    },
+    {
+      icon: MessageSquarePlus,
+      iconColor: 'text-emerald-500',
+      title: t('bug.channel_form', { defaultValue: 'Web feedback form' }),
+      desc: t('bug.channel_form_desc', { defaultValue: 'Richer fields and screenshots on openconstructionerp.com.' }),
+      onClick: handleFeedbackForm,
+    },
+    {
+      icon: Upload,
+      iconColor: 'text-violet-500',
+      title: t('bug.channel_download', { defaultValue: 'Download log only' }),
+      desc: t('bug.channel_download_desc', { defaultValue: 'Save the JSON to share manually with support.' }),
+      onClick: handleDownloadLog,
+    },
+  ];
+
+  return (
+    <div className="relative hidden sm:block" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={clsx(
+          'relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors',
+          'text-content-tertiary hover:bg-surface-secondary hover:text-content-secondary',
+          open && 'bg-surface-secondary text-content-secondary',
+        )}
+        title={t('bug.menu_title', { defaultValue: 'Report a bug or send feedback' })}
+        aria-label={t('bug.menu_title', { defaultValue: 'Report a bug or send feedback' })}
+      >
+        <Bug size={16} strokeWidth={1.75} />
+        {errorCount > 0 && (
+          <span
+            className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-red-500 ring-2 ring-surface-primary"
+            aria-label={t('bug.errors_captured', {
+              defaultValue: '{{count}} errors captured this session',
+              count: errorCount,
+            })}
+          />
+        )}
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-full mt-1.5 w-80 rounded-xl border border-border-light bg-surface-elevated shadow-lg animate-scale-in py-2 z-40"
+        >
+          <div className="px-3 pb-2 border-b border-border-light">
+            <div className="flex items-center gap-2">
+              <Bug size={14} className="text-content-tertiary" />
+              <span className="text-sm font-semibold text-content-primary">
+                {t('bug.menu_heading', { defaultValue: 'Report a bug' })}
+              </span>
+              {errorCount > 0 && (
+                <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 text-2xs font-semibold text-red-500">
+                  <span className="h-1 w-1 rounded-full bg-red-500" />
+                  {t('bug.errors_chip', {
+                    defaultValue: '{{count}} captured',
+                    count: errorCount,
+                  })}
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-2xs text-content-tertiary leading-snug">
+              {t('bug.menu_subheading', {
+                defaultValue: 'Pick where to send it — every channel includes the same diagnostic payload.',
+              })}
+            </p>
+          </div>
+
+          <div className="py-1">
+            {channels.map((ch, idx) => {
+              const Icon = ch.icon;
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  role="menuitem"
+                  onClick={ch.onClick}
+                  className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-surface-secondary transition-colors"
+                >
+                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-surface-secondary">
+                    <Icon size={14} className={ch.iconColor} />
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-[13px] font-medium text-content-primary">
+                      {ch.title}
+                    </span>
+                    <span className="block text-2xs text-content-tertiary leading-snug mt-0.5">
+                      {ch.desc}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

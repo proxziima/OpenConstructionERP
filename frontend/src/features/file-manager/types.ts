@@ -1,0 +1,151 @@
+/** Wire types for the file manager (Issue #109).
+ *
+ * These mirror the Pydantic schemas in
+ * backend/app/modules/projects/file_manager_schemas.py — keep them in
+ * sync when the backend changes a field.
+ */
+
+export type FileKind =
+  | 'document'
+  | 'photo'
+  | 'sheet'
+  | 'bim_model'
+  | 'dwg_drawing'
+  | 'takeoff'
+  | 'report'
+  | 'markup';
+
+export type StorageBackend = 'local' | 's3';
+
+export type BundleScope = 'metadata_only' | 'documents' | 'bim' | 'dwg' | 'full';
+
+export type ImportMode = 'new_project' | 'merge_into_existing' | 'replace_existing';
+
+export interface FileRow {
+  id: string;
+  kind: FileKind;
+  name: string;
+  project_id: string;
+  size_bytes: number;
+  mime_type: string | null;
+  extension: string | null;
+  modified_at: string | null;
+  physical_path: string;
+  relative_path: string;
+  storage_backend: StorageBackend;
+  download_url: string | null;
+  preview_url: string | null;
+  thumbnail_url: string | null;
+  discipline: string | null;
+  category: string | null;
+  extra: Record<string, unknown>;
+}
+
+export interface FileTreeNode {
+  id: string;
+  label: string;
+  kind: 'category' | 'type' | 'folder' | 'trash';
+  file_count: number;
+  total_bytes: number;
+  physical_path: string | null;
+  storage_backend: StorageBackend;
+  children: FileTreeNode[];
+}
+
+export interface StorageLocations {
+  project_id: string;
+  project_name: string;
+  storage_uses_default: boolean;
+  storage_path_override: string | null;
+  storage_backend: StorageBackend;
+  db_path: string | null;
+  uploads_root: string | null;
+  photos_root: string | null;
+  sheets_root: string | null;
+  bim_root: string | null;
+  dwg_root: string | null;
+  extras: Record<string, string>;
+  notes: string[];
+}
+
+export interface FileListResponse {
+  project_id: string;
+  items: FileRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ExportOptions {
+  scope: BundleScope;
+  include_documents?: boolean;
+  include_photos?: boolean;
+  include_sheets?: boolean;
+  include_bim_models?: boolean;
+  include_bim_elements?: boolean;
+  include_bim_geometry?: boolean;
+  include_dwg_drawings?: boolean;
+  include_takeoff?: boolean;
+  include_reports?: boolean;
+}
+
+export interface ExportPreview {
+  scope: BundleScope;
+  table_counts: Record<string, number>;
+  attachment_count: number;
+  estimated_size_bytes: number;
+  bundle_format: string;
+  bundle_format_version: string;
+}
+
+export interface BundleManifest {
+  app: string;
+  format: string;
+  format_version: string;
+  compat_min_app_version: string;
+  exported_at: string;
+  exported_by_email: string | null;
+  project_id: string;
+  project_name: string;
+  project_currency: string | null;
+  scope: BundleScope;
+  tables: string[];
+  record_counts: Record<string, number>;
+  attachment_count: number;
+  attachment_total_bytes: number;
+  engine_name: string;
+  engine_version: string;
+}
+
+export interface ImportPreview {
+  manifest: BundleManifest;
+  bundle_size_bytes: number;
+  has_attachments: boolean;
+  warnings: string[];
+}
+
+export interface ImportResult {
+  project_id: string;
+  mode: ImportMode;
+  imported_counts: Record<string, number>;
+  skipped_counts: Record<string, number>;
+  attachment_count: number;
+  warnings: string[];
+}
+
+export interface EmailLinkResponse {
+  url: string;
+  expires_at: string;
+  file_id: string;
+  file_name: string;
+  size_bytes: number;
+}
+
+export interface FileFilters {
+  category?: FileKind;
+  extension?: string;
+  q?: string;
+  sort?: 'modified' | 'name' | 'size' | 'kind';
+  limit?: number;
+  offset?: number;
+}

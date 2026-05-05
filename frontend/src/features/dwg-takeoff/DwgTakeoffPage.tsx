@@ -20,7 +20,7 @@ import {
 } from './lib/measurement';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import clsx from 'clsx';
 import {
@@ -493,6 +493,7 @@ export function DwgTakeoffPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
+  const navigate = useNavigate();
   const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
   const setActiveProject = useProjectContextStore((s) => s.setActiveProject);
 
@@ -503,12 +504,13 @@ export function DwgTakeoffPage() {
   // reload — reported as "при перезагрузке потеряются все документы".
   // The drawings themselves are always persisted server-side; only the
   // client-side project context was lost.
-  const { data: projects = [] } = useQuery({
+  const { data: projects = [], isLoading: projectsLoading } = useQuery({
     queryKey: ['projects'],
     queryFn: projectsApi.list,
     staleTime: 5 * 60_000,
   });
   const projectId = activeProjectId || projects[0]?.id || '';
+  const noProjects = !projectsLoading && projects.length === 0;
 
   // Persist the fallback choice so subsequent reloads and sibling
   // modules (BIM, BOQ, CDE) see the same active project instead of each
@@ -3610,6 +3612,69 @@ export function DwgTakeoffPage() {
               </div>
             )}
 
+            {/* Project picker — fixes issue #110.
+                On a fresh install with zero projects, the modal previously
+                gated the submit button on a hidden `projectId` prerequisite
+                with no UI surface, so the user saw a permanently disabled
+                "Upload & Process" button and no explanation.
+
+                When projects exist, this dropdown lets the user pick which
+                one this drawing belongs to (defaults to the active or first
+                project). When `projects.length === 0`, we render an explicit
+                empty-state CTA that takes the user to /projects/new instead
+                of leaving them stuck. */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-content-secondary">
+                {t('dwg_takeoff.project_label', { defaultValue: 'Project' })}
+              </label>
+              {noProjects ? (
+                <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-[12px] text-amber-700 dark:text-amber-300">
+                  <Info size={14} className="shrink-0 mt-0.5" />
+                  <div className="flex-1 space-y-1.5">
+                    <p className="font-semibold">
+                      {t('dwg_takeoff.no_project_title', { defaultValue: 'Create a project first' })}
+                    </p>
+                    <p className="leading-relaxed text-amber-700/85 dark:text-amber-200/85">
+                      {t('dwg_takeoff.no_project_body', {
+                        defaultValue:
+                          'Drawings have to live inside a project. Create one and you can come back to upload your DWG.',
+                      })}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        closeUploadModal();
+                        navigate('/projects/new');
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/90 hover:bg-amber-600 text-white px-2.5 py-1 text-[11px] font-semibold transition-colors"
+                    >
+                      <Plus size={12} />
+                      {t('dwg_takeoff.create_project_cta', { defaultValue: 'Create project' })}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <select
+                  value={projectId}
+                  onChange={(e) => {
+                    const picked = projects.find((p) => p.id === e.target.value);
+                    if (picked) setActiveProject(picked.id, picked.name);
+                  }}
+                  disabled={projectsLoading || projects.length === 0}
+                  className="w-full rounded-xl border border-border-light bg-surface-secondary px-3.5 py-2.5 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue transition-all disabled:opacity-60"
+                >
+                  {projectsLoading && (
+                    <option value="">{t('common.loading', { defaultValue: 'Loading…' })}</option>
+                  )}
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
             {/* Drawing name */}
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-content-secondary">
@@ -3644,35 +3709,60 @@ export function DwgTakeoffPage() {
 
             {/* Upload button — routes through the global DWG upload store so
                 the job survives navigation and progress is shown in the
-                corner dock. */}
-            <button
-              data-testid="dwg-upload-submit"
-              disabled={!uploadFile || !projectId}
-              onClick={() => {
-                if (!uploadFile || !projectId) return;
-                useDwgUploadStore.getState().startUpload({
-                  file: uploadFile,
-                  projectId,
-                  modelName: uploadName || uploadFile.name,
-                  discipline: uploadDiscipline,
-                });
-                addToast({
-                  type: 'info',
-                  title: t('dwg_takeoff.upload_started', {
-                    defaultValue: 'Upload started',
-                  }),
-                  message: t('dwg_takeoff.upload_started_hint', {
-                    defaultValue:
-                      'Progress continues in the dock — you can navigate away.',
-                  }),
-                });
-                closeUploadModal();
-              }}
-              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold transition-all disabled:opacity-50 bg-oe-blue text-white hover:bg-oe-blue-dark active:scale-[0.98] shadow-md hover:shadow-lg"
-            >
-              <Upload size={16} />
-              {t('dwg_takeoff.upload_and_process', 'Upload & Process')}
-            </button>
+                corner dock.
+
+                The disabled gate has three independent prerequisites
+                (file, project, project list loaded). We surface the
+                blocker explicitly so the user can act on it instead of
+                staring at a perma-disabled button (issue #110). */}
+            {(() => {
+              const blocker = !uploadFile
+                ? t('dwg_takeoff.blocker_file', { defaultValue: 'Choose a .dwg or .dxf file to enable upload.' })
+                : noProjects
+                  ? t('dwg_takeoff.blocker_no_project', { defaultValue: 'Create a project before uploading drawings.' })
+                  : !projectId
+                    ? t('dwg_takeoff.blocker_pick_project', { defaultValue: 'Pick a project from the list above.' })
+                    : '';
+              const isDisabled = !uploadFile || !projectId || projectsLoading;
+              return (
+                <div className="space-y-1.5">
+                  <button
+                    data-testid="dwg-upload-submit"
+                    disabled={isDisabled}
+                    title={blocker || undefined}
+                    onClick={() => {
+                      if (!uploadFile || !projectId) return;
+                      useDwgUploadStore.getState().startUpload({
+                        file: uploadFile,
+                        projectId,
+                        modelName: uploadName || uploadFile.name,
+                        discipline: uploadDiscipline,
+                      });
+                      addToast({
+                        type: 'info',
+                        title: t('dwg_takeoff.upload_started', {
+                          defaultValue: 'Upload started',
+                        }),
+                        message: t('dwg_takeoff.upload_started_hint', {
+                          defaultValue:
+                            'Progress continues in the dock — you can navigate away.',
+                        }),
+                      });
+                      closeUploadModal();
+                    }}
+                    className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-oe-blue text-white hover:bg-oe-blue-dark active:scale-[0.98] shadow-md hover:shadow-lg"
+                  >
+                    <Upload size={16} />
+                    {t('dwg_takeoff.upload_and_process', 'Upload & Process')}
+                  </button>
+                  {blocker && (
+                    <p className="text-[11px] text-content-tertiary text-center">
+                      {blocker}
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}

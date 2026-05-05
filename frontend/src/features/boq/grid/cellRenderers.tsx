@@ -132,6 +132,14 @@ export interface SectionGroupContext {
   locale?: string;
   fmt: Intl.NumberFormat;
   t: (key: string, opts?: Record<string, string | number>) => string;
+  /**
+   * ── Issue #88 — display-currency override.
+   * Mirrors `BOQColumnContext.displayCurrency`. When set, the section's
+   * subtotal banner divides by `rate` and prints in `code` so the
+   * full-width section header stays in lock-step with the rest of the
+   * BOQ (per-position totals, footer rows, grand total). View-only.
+   */
+  displayCurrency?: { code: string; rate: number } | null;
 }
 
 export function SectionFullWidthRenderer(params: ICellRendererParams) {
@@ -145,9 +153,16 @@ export function SectionFullWidthRenderer(params: ICellRendererParams) {
   const subtotal: number = data._subtotal ?? data.total ?? 0;
   const description: string = data.description ?? '';
 
+  // Issue #88 — when a non-base display currency is active, divide the
+  // subtotal by the rate before formatting and print in the active code.
+  // The base value stored in `_subtotal` is unchanged; this is a pure
+  // view conversion. Mirrors `totalFormatter` in columnDefs.ts.
+  const dc = ctx.displayCurrency;
+  const displayedSubtotal = dc && dc.rate > 0 ? subtotal / dc.rate : subtotal;
+  const displayCode = dc && dc.rate > 0 ? dc.code : (ctx.currencyCode ?? 'EUR');
   const formattedSubtotal = ctx.fmt
-    ? fmtWithCurrency(subtotal, ctx.locale ?? 'de-DE', ctx.currencyCode ?? 'EUR')
-    : `${subtotal.toFixed(2)}`;
+    ? fmtWithCurrency(displayedSubtotal, ctx.locale ?? 'de-DE', displayCode)
+    : `${displayedSubtotal.toFixed(2)}`;
 
   const t = ctx.t ?? ((key: string, opts?: Record<string, string | number>) =>
     (opts?.defaultValue as string) ?? key);
@@ -4079,11 +4094,20 @@ export function ResourceFullWidthRenderer(params: ICellRendererParams) {
           {ctx.t('boq.add_from_catalog_short', { defaultValue: 'From Catalog' })}
         </button>
         <div className="flex-1" />
-        {typeof data._positionResourceTotal === 'number' && data._positionResourceTotal > 0 && (
-          <span className="text-[10px] font-medium text-content-tertiary tabular-nums pr-5">
-            {ctx.t('boq.resources_total', { defaultValue: 'Resources total' })}: {fmtWithCurrency(data._positionResourceTotal as number, ctx.locale ?? 'de-DE', ctx.currencyCode ?? 'EUR')}
-          </span>
-        )}
+        {typeof data._positionResourceTotal === 'number' && data._positionResourceTotal > 0 && (() => {
+          // Issue #88 — keep this footer in lock-step with the rest of the
+          // BOQ when display currency is active. The base value is stored in
+          // `_positionResourceTotal`; only the rendering changes.
+          const baseValue = data._positionResourceTotal as number;
+          const dc = ctx.displayCurrency;
+          const shown = dc && dc.rate > 0 ? baseValue / dc.rate : baseValue;
+          const code = dc && dc.rate > 0 ? dc.code : (ctx.currencyCode ?? 'EUR');
+          return (
+            <span className="text-[10px] font-medium text-content-tertiary tabular-nums pr-5">
+              {ctx.t('boq.resources_total', { defaultValue: 'Resources total' })}: {fmtWithCurrency(shown, ctx.locale ?? 'de-DE', code)}
+            </span>
+          );
+        })()}
       </div>
     );
   }

@@ -6,6 +6,8 @@ import {
   ShieldCheck, Zap, Brain,
   FileSpreadsheet, CalendarClock, TrendingUp, Boxes, Database,
   BarChart3, Upload, FileCheck,
+  Box, Ruler, Layers,
+  PenTool, FolderOpen, ClipboardList,
 } from 'lucide-react';
 import { Button, Input, Logo, LogoWithText, CountryFlag } from '@/shared/ui';
 import { useAuthStore } from '@/stores/useAuthStore';
@@ -174,8 +176,85 @@ export function LoginPage() {
   ]; */
 
   return (
-    <div className="relative flex h-screen bg-surface-secondary overflow-hidden">
+    <div className="relative grid h-screen grid-cols-1 lg:grid-cols-2 bg-surface-secondary overflow-hidden">
       <AuthBackground />
+
+      {/* Local style block — premium glass variant + drifting orb keyframes
+          scoped to the login page. Pattern mirrors LoginPageNext.tsx. */}
+      <style>{`
+        .login-glass-pro {
+          background:
+            linear-gradient(135deg, rgba(255,255,255,0.78) 0%, rgba(255,255,255,0.62) 100%);
+          backdrop-filter: blur(28px) saturate(180%);
+          -webkit-backdrop-filter: blur(28px) saturate(180%);
+          border: 1px solid rgba(255, 255, 255, 0.85);
+          box-shadow:
+            0 36px 80px -28px rgba(14, 165, 233, 0.30),
+            0 14px 36px -12px rgba(15, 23, 42, 0.12),
+            0 2px 6px -1px rgba(15, 23, 42, 0.06),
+            inset 0 1px 0 rgba(255, 255, 255, 0.95),
+            inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+        }
+        .dark .login-glass-pro {
+          background:
+            linear-gradient(135deg, rgba(22, 26, 36, 0.78) 0%, rgba(15, 17, 23, 0.66) 100%);
+          border-color: rgba(255, 255, 255, 0.08);
+          box-shadow:
+            0 30px 80px -24px rgba(14, 165, 233, 0.35),
+            0 12px 40px -12px rgba(0, 0, 0, 0.55),
+            0 2px 6px -2px rgba(0, 0, 0, 0.4),
+            inset 0 1px 0 rgba(255, 255, 255, 0.12),
+            inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+        }
+        .login-glass-pro::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: inherit;
+          pointer-events: none;
+          background:
+            radial-gradient(120% 80% at 0% 0%, rgba(14, 165, 233, 0.05), transparent 65%);
+          mix-blend-mode: soft-light;
+        }
+        .dark .login-glass-pro::after {
+          background:
+            radial-gradient(120% 80% at 0% 0%, rgba(14, 165, 233, 0.18), transparent 60%),
+            radial-gradient(120% 80% at 100% 100%, rgba(139, 92, 246, 0.16), transparent 60%);
+          mix-blend-mode: screen;
+        }
+        @keyframes login-orb-drift-a {
+          0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+          50%      { transform: translate3d(30px, -22px, 0) scale(1.08); }
+        }
+        @keyframes login-orb-drift-b {
+          0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+          50%      { transform: translate3d(-26px, 28px, 0) scale(0.94); }
+        }
+        @keyframes login-orb-drift-c {
+          0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+          50%      { transform: translate3d(20px, 32px, 0) scale(1.05); }
+        }
+        .login-orb-a { animation: login-orb-drift-a 12s ease-in-out infinite; }
+        .login-orb-b { animation: login-orb-drift-b 14s ease-in-out infinite; }
+        .login-orb-c { animation: login-orb-drift-c 10s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) {
+          .login-orb-a, .login-orb-b, .login-orb-c { animation: none; }
+        }
+      `}</style>
+
+      {/* ── Ambient mesh blobs (LEFT half only) ─────────────────────────
+          Restrained palette — single faint sky blob behind the marketing
+          column so the headline / stats sit on a near-white field.
+          Dark mode keeps the original richer blob set for depth. */}
+      <div className="absolute inset-y-0 left-0 right-1/2 z-0 pointer-events-none overflow-hidden hidden lg:block">
+        <div className="absolute top-[-12%] left-[-6%] w-[520px] h-[520px] rounded-full bg-sky-300/10 dark:bg-oe-blue/35 blur-[120px] animate-blob-slow-1 mix-blend-screen" />
+        <div className="absolute bottom-[-18%] right-[2%] w-[400px] h-[400px] rounded-full bg-cyan-200/8 dark:bg-violet-500/35 blur-[110px] animate-blob-slow-4 mix-blend-screen hidden dark:block" />
+      </div>
+
+      {/* Mobile-only ambient blobs (single column layout) */}
+      <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden lg:hidden">
+        <div className="absolute top-[-12%] left-[-6%] w-[520px] h-[520px] rounded-full bg-sky-300/12 dark:bg-oe-blue/35 blur-[110px] animate-blob-slow-1 mix-blend-screen" />
+      </div>
 
       {/* Language — top right */}
       <div className="absolute top-3 right-3 z-30" ref={langRef}>
@@ -207,10 +286,43 @@ export function LoginPage() {
         )}
       </div>
 
-      {/* ── Left: benefits (desktop) ── */}
-      <div className="hidden lg:flex lg:w-[500px] xl:w-[540px] shrink-0 relative z-10 flex-col justify-center pl-14 xl:pl-20 pr-12 xl:pr-16 py-6">
-        {/* Semi-transparent backdrop so text doesn't merge with bg table */}
-        <div className="absolute inset-0 bg-gradient-to-r from-white/70 via-white/50 to-transparent dark:from-[#0f1117]/70 dark:via-[#0f1117]/50 dark:to-transparent rounded-r-3xl" />
+      {/* ── Right column on lg+: marketing & benefits.
+          Order swap (lg:order-2) puts the form on the left so it's the
+          first thing the eye lands on — primary action priority. */}
+      <div className="hidden lg:flex relative z-10 lg:order-2 flex-col justify-center pl-14 xl:pl-20 pr-12 xl:pr-16 py-6 overflow-hidden">
+        {/* Marketing column showcase — color lives here. Sky/cyan mesh +
+            slow-drifting orbs + faint noise grain. The form column on the
+            left stays a clean white field; this column carries the visual
+            weight. */}
+        <div className="absolute inset-0 pointer-events-none -z-10" aria-hidden>
+          <div
+            className="absolute inset-0"
+            style={{
+              background:
+                'radial-gradient(ellipse 90% 70% at 70% 25%, rgba(14,165,233,0.16), transparent 65%),' +
+                'radial-gradient(ellipse 80% 60% at 25% 85%, rgba(56,189,248,0.12), transparent 65%),' +
+                'radial-gradient(ellipse 60% 50% at 90% 75%, rgba(125,211,252,0.10), transparent 65%)',
+            }}
+          />
+          <div
+            className="absolute inset-0 hidden dark:block"
+            style={{
+              background:
+                'radial-gradient(ellipse 80% 60% at 70% 20%, rgba(14,165,233,0.22), transparent 60%),' +
+                'radial-gradient(ellipse 70% 60% at 30% 90%, rgba(139,92,246,0.18), transparent 60%)',
+            }}
+          />
+          <div className="absolute top-[8%] right-[8%] w-[420px] h-[420px] rounded-full bg-sky-300/45 dark:bg-sky-500/35 blur-[100px] login-orb-a" />
+          <div className="absolute bottom-[6%] left-[10%] w-[360px] h-[360px] rounded-full bg-cyan-200/40 dark:bg-violet-500/30 blur-[100px] login-orb-b" />
+          <div className="absolute top-[42%] right-[34%] w-[280px] h-[280px] rounded-full bg-white/55 dark:bg-white/0 blur-[80px] login-orb-c" />
+          <div
+            className="absolute inset-0 opacity-[0.04] dark:opacity-[0.07] mix-blend-overlay"
+            style={{
+              backgroundImage:
+                "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.5 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>\")",
+            }}
+          />
+        </div>
 
         {/* Eyebrow pill */}
         <div className="mb-5 animate-stagger-in" style={{ animationDelay: '0ms' }}>
@@ -226,12 +338,17 @@ export function LoginPage() {
         {/* Marketing headline — kept as h2 because the form panel below has the
             authoritative h1 (visually hidden, always present in DOM). */}
         <h2 className="text-[32px] xl:text-[36px] font-semibold text-content-primary leading-[1.08] tracking-[-0.025em] animate-stagger-in" style={{ animationDelay: '60ms' }}>
-          The <span className="bg-gradient-to-r from-oe-blue to-violet-500 bg-clip-text text-transparent">#1</span> open&#8209;source construction&nbsp;ERP
+          {t('login.hero_h_a', { defaultValue: 'The' })}{' '}
+          <span className="bg-gradient-to-r from-oe-blue to-sky-500 bg-clip-text text-transparent">#1</span>{' '}
+          {t('login.hero_h_b', { defaultValue: 'open-source workspace for' })}{' '}
+          <span className="bg-gradient-to-r from-oe-blue to-sky-500 bg-clip-text text-transparent">
+            {t('login.hero_h_c', { defaultValue: 'construction project management' })}
+          </span>
         </h2>
 
         {/* Subhead */}
-        <p className="mt-5 text-[17px] text-content-secondary/70 leading-[1.65] tracking-[-0.008em] max-w-[400px] animate-stagger-in" style={{ animationDelay: '120ms' }}>
-          {t('login.hero_desc', 'Professional BOQ, 4D scheduling, 5D cost model, and tendering — all in one platform.')}
+        <p className="mt-5 text-[17px] text-content-secondary/70 leading-[1.65] tracking-[-0.008em] max-w-[420px] animate-stagger-in" style={{ animationDelay: '120ms' }}>
+          {t('login.hero_desc', { defaultValue: 'Plan, estimate, schedule, tender — every step of a project on one professional platform.' })}
         </p>
 
         {/* Stats row */}
@@ -251,31 +368,114 @@ export function LoginPage() {
         {/* Divider */}
         <div className="mt-5 mb-4 h-px bg-gradient-to-r from-content-primary/[0.06] via-content-primary/[0.1] to-transparent animate-stagger-in" style={{ animationDelay: '220ms' }} />
 
-        {/* Value props */}
-        <div className="space-y-5 animate-stagger-in" style={{ animationDelay: '260ms' }}>
-          {[
-            { icon: ShieldCheck, title: t('login.feat_local_title', { defaultValue: 'Your data, your machine‌⁠‍' }), desc: t('login.feat_local', { defaultValue: 'Nothing leaves your computer. Full ownership, zero cloud dependency.‌⁠‍' }) },
-            { icon: Brain, title: t('login.feat_ai_title', { defaultValue: 'AI-assisted, human-confirmed' }), desc: t('login.feat_ai', { defaultValue: 'Smart suggestions with confidence scores. You always have the final say.' }) },
-          ].map((feat, i) => (
-            <div key={i} className="flex gap-3.5">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-content-primary/[0.04] dark:bg-white/[0.06]">
-                <feat.icon size={16} className="text-content-primary/60" strokeWidth={1.6} />
+        {/* Module honeycomb — proper pointy-top hex grid where every cell
+            shares an edge with its neighbours. Layout is intentionally
+            wider on the top/bottom rows (6 cells) than on the middle
+            row (5 cells) so it reads as a real, naturally-extending
+            honeycomb. Every cell is a real module — no decorative
+            placeholders. Math:
+              hex width   = 88px (left vertex to right vertex)
+              hex height  = 100px (top vertex to bottom vertex)
+              row stride  = 75px (3/4 of height — pointy-top step)
+              column step = 88px (one hex width on the same row)
+              alternating rows are offset by 44px (half a hex) — that's
+              what makes the slanted edges meet exactly. */}
+        <div className="relative mt-1 mx-auto h-[280px] w-[560px] max-w-full overflow-hidden animate-stagger-in" style={{ animationDelay: '260ms' }}>
+          {([
+            // Top row (y = -75) — 6 cells, offset by 44.
+            { x: -220, y: -75, icon: ShieldCheck,     label: t('login.mod.local',     { defaultValue: 'Local' }) },
+            { x: -132, y: -75, icon: Brain,           label: t('login.mod.ai',       { defaultValue: 'AI' }) },
+            { x:  -44, y: -75, icon: Ruler,           label: t('login.mod.takeoff',  { defaultValue: 'Takeoff' }) },
+            { x:   44, y: -75, icon: PenTool,         label: t('login.mod.cad',      { defaultValue: 'CAD' }) },
+            { x:  132, y: -75, icon: Box,             label: t('login.mod.bim',      { defaultValue: 'BIM' }) },
+            { x:  220, y: -75, icon: TrendingUp,      label: t('login.mod.cost5d',   { defaultValue: '5D' }) },
+            // Mid row (y = 0) — 5 cells aligned on the same axis.
+            { x: -176, y:  0,  icon: Database,        label: t('login.mod.costs',    { defaultValue: 'Costs' }) },
+            { x:  -88, y:  0,  icon: FileSpreadsheet, label: t('login.mod.boq',      { defaultValue: 'BOQ' }) },
+            { x:    0, y:  0,  icon: Layers,          label: t('login.mod.core',     { defaultValue: 'Workspace' }), accent: true },
+            { x:   88, y:  0,  icon: CalendarClock,   label: t('login.mod.schedule', { defaultValue: 'Schedule' }) },
+            { x:  176, y:  0,  icon: BarChart3,       label: t('login.mod.tender',   { defaultValue: 'Tendering' }) },
+            // Bottom row (y = 75) — 6 cells, offset by 44.
+            { x: -220, y:  75, icon: Zap,             label: t('login.mod.realtime', { defaultValue: 'Realtime' }) },
+            { x: -132, y:  75, icon: Boxes,           label: t('login.mod.resources',{ defaultValue: 'Resources' }) },
+            { x:  -44, y:  75, icon: ClipboardList,   label: t('login.mod.tasks',    { defaultValue: 'Tasks' }) },
+            { x:   44, y:  75, icon: FileCheck,       label: t('login.mod.validate', { defaultValue: 'Validate' }) },
+            { x:  132, y:  75, icon: FolderOpen,      label: t('login.mod.files',    { defaultValue: 'Files' }) },
+            { x:  220, y:  75, icon: Upload,          label: t('login.mod.exports',  { defaultValue: 'Exports' }) },
+          ] as const).map((cell, idx) => {
+            const isAccent = 'accent' in cell && cell.accent === true;
+            const Icon = cell.icon;
+            return (
+              // Outer wrapper handles ABSOLUTE POSITIONING only — its
+              // transform is the hex-grid offset and must never be
+              // overridden by an animation. Animations live on the inner
+              // cell so they don't fight with our positioning maths.
+              <div
+                key={idx}
+                className="absolute top-1/2 left-1/2"
+                style={{
+                  transform: `translate(calc(-50% + ${cell.x}px), calc(-50% + ${cell.y}px))`,
+                }}
+              >
+                <div
+                  className={`relative flex flex-col items-center justify-center w-[88px] h-[100px] animate-fade-in transition-transform duration-300 hover:scale-[1.05] ${
+                    isAccent ? 'text-white' : 'text-content-primary'
+                  }`}
+                  style={{
+                    animationDelay: `${280 + idx * 35}ms`,
+                    animationFillMode: 'both',
+                    clipPath: 'polygon(50% 2%, 100% 26%, 100% 74%, 50% 98%, 0% 74%, 0% 26%)',
+                    background: isAccent
+                      ? 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 65%, #0369a1 100%)'
+                      : 'linear-gradient(180deg, rgba(255,255,255,0.97), rgba(244,250,255,0.82))',
+                    boxShadow: isAccent
+                      ? '0 18px 32px -12px rgba(14,165,233,0.55), inset 0 1px 0 rgba(255,255,255,0.35)'
+                      : '0 8px 18px -8px rgba(15,23,42,0.10), inset 0 1px 0 rgba(255,255,255,0.9), inset 0 0 0 1px rgba(14,165,233,0.06)',
+                  }}
+                >
+                  <Icon
+                    size={isAccent ? 22 : 18}
+                    strokeWidth={isAccent ? 2 : 1.65}
+                    className={isAccent ? '' : 'text-oe-blue/90'}
+                  />
+                  <span
+                    className={`mt-[5px] text-[10px] font-semibold tracking-[-0.01em] ${
+                      isAccent ? 'text-white/95' : 'text-content-primary/85'
+                    }`}
+                  >
+                    {cell.label}
+                  </span>
+                </div>
               </div>
-              <div>
-                <div className="text-[13px] font-semibold text-content-primary leading-tight tracking-[-0.01em]">{feat.title}</div>
-                <div className="text-[12px] text-content-tertiary leading-[1.55] mt-0.5">{feat.desc}</div>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
-        {/* Tags */}
-        <div className="mt-5 flex flex-wrap gap-[5px] animate-stagger-in" style={{ animationDelay: '320ms' }}>
-          {['Bill of Quantities', '4D Scheduling', '5D Cost Model', 'AI Estimation', 'Tendering', 'CAD/BIM', 'PDF Takeoff', 'Multi-Standard', 'Import/Export', '20 Languages'].map((tag) => (
-            <span key={tag} className="rounded-full bg-content-primary/[0.04] dark:bg-white/[0.06] px-2.5 py-[3px] text-[10px] font-medium text-content-tertiary/80 tracking-[0.01em]">
-              {tag}
-            </span>
-          ))}
+        {/* Value props — restored as a clean two-up grid with refined
+            typography (no boxed icon backgrounds, accent rule above each
+            title) so the marketing column lands on something concrete
+            after the honeycomb. */}
+        <div className="mt-2 grid grid-cols-2 gap-x-7 gap-y-1 animate-stagger-in" style={{ animationDelay: '320ms' }}>
+          {[
+            { icon: ShieldCheck, title: t('login.feat_local_title', { defaultValue: 'Your data, your machine' }), desc: t('login.feat_local', { defaultValue: 'Nothing leaves your computer. Full ownership, zero cloud dependency.' }) },
+            { icon: Brain,       title: t('login.feat_ai_title',    { defaultValue: 'AI-assisted, human-confirmed' }), desc: t('login.feat_ai',    { defaultValue: 'Smart suggestions with confidence scores. You always have the final say.' }) },
+          ].map((feat) => {
+            const Icon = feat.icon;
+            return (
+              <div key={feat.title} className="relative pl-4">
+                <span aria-hidden className="absolute left-0 top-1 h-[14px] w-[2px] rounded-full bg-gradient-to-b from-oe-blue to-sky-500/60" />
+                <div className="flex items-center gap-1.5">
+                  <Icon size={13} strokeWidth={1.8} className="text-oe-blue/85" />
+                  <span className="text-[12.5px] font-semibold tracking-[-0.01em] text-content-primary leading-tight">
+                    {feat.title}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11.5px] leading-[1.55] text-content-tertiary tracking-[-0.005em]">
+                  {feat.desc}
+                </p>
+              </div>
+            );
+          })}
         </div>
 
         {/* Footer */}
@@ -287,7 +487,7 @@ export function LoginPage() {
             <a href="https://OpenConstructionERP.com" target="_blank" rel="noopener noreferrer" className="hover:text-content-tertiary transition-colors">OpenConstructionERP.com</a>
           </div>
           <p className="text-[10px] text-content-quaternary/40">
-            Created by Artem Boiko &middot; 2026 &middot; OpenConstructionERP
+            Created by Artem Boiko
             &middot; <a href="mailto:info@datadrivenconstruction.io" className="hover:text-content-tertiary">info@datadrivenconstruction.io</a>
           </p>
         </div>
@@ -295,9 +495,19 @@ export function LoginPage() {
 
       {/* Center column removed — tags moved to left panel footer */}
 
-      {/* ── Right: logo + form ── */}
-      <div className="flex flex-1 items-center justify-center p-4 sm:p-6 relative z-10">
-        <div className="w-full max-w-[380px]">
+      {/* ── Left column on lg+: logo + form (primary action). ── */}
+      <div className="relative flex items-center justify-center p-4 sm:p-6 z-10 lg:order-1 overflow-hidden">
+        {/* Form column backdrop — clean near-white field on lg+ so the
+            glass card reads against a calm canvas. The decorative show
+            (orbs / mesh) lives on the marketing column on the right. */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden hidden lg:block" aria-hidden>
+          <div className="absolute inset-0 bg-white dark:bg-[#0b0d12]" />
+          <div className="absolute inset-0 bg-gradient-to-l from-white/0 via-white/60 to-white dark:from-[#0b0d12]/0 dark:via-[#0b0d12]/60 dark:to-[#0b0d12]" />
+          {/* Tiny far-corner sky tint just to soften the edge — the glass
+              still has something to lift off, but the field reads white. */}
+          <div className="absolute -top-24 -left-24 w-[420px] h-[420px] rounded-full bg-sky-100/55 dark:bg-sky-500/12 blur-[110px]" />
+        </div>
+        <div className="w-full max-w-[380px] relative z-10">
           {/* Logo */}
           <div className="mb-5 flex flex-col items-center animate-stagger-in" style={{ animationDelay: '0ms' }}>
             <div className="flex items-center gap-2.5">
@@ -309,7 +519,9 @@ export function LoginPage() {
                 Open<span className="text-oe-blue">Construction</span><span className="text-content-quaternary font-semibold">ERP</span>
               </span>
             </div>
-            <p className="mt-2 text-sm text-content-tertiary">{t('app.tagline')}</p>
+            <p className="mt-2 text-sm text-content-tertiary">
+              {t('login.workspace_tagline', { defaultValue: 'Professional construction project workspace' })}
+            </p>
           </div>
 
           {/* Open-source banner (mobile) */}
@@ -328,8 +540,32 @@ export function LoginPage() {
             </div>
           </div>
 
-          {/* Form */}
-          <div className="glass-strong rounded-2xl px-6 py-5 shadow-lg animate-form-scale-in" style={{ animationDelay: '150ms' }}>
+          {/* Form — premium multi-layer glass.
+              login-glass-pro adds layered borders, a coloured ambient drop
+              shadow, an inset highlight, and a soft-light overlay tint via
+              ::after. The DOM-level top sheen below adds the rim-light line. */}
+          <div
+            className="login-glass-pro relative rounded-2xl px-6 py-5 animate-form-scale-in"
+            style={{ animationDelay: '150ms' }}
+          >
+            {/* Top-edge sheen — bright highlight along the rim */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-x-6 top-0 h-px rounded-t-2xl"
+              style={{
+                background:
+                  'linear-gradient(90deg, transparent, rgba(255,255,255,0.95), transparent)',
+              }}
+            />
+            {/* Inner soft glow gradient on the top-left corner */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute top-0 left-0 w-32 h-32 rounded-tl-2xl opacity-60"
+              style={{
+                background:
+                  'radial-gradient(circle at 0% 0%, rgba(255,255,255,0.5), transparent 70%)',
+              }}
+            />
             {/* Visually hidden h1 for screen readers + a11y tools — visible text uses h2 below */}
             <h1 className="sr-only">{t('auth.login', 'Sign in')}</h1>
             <div className="animate-stagger-in" style={{ animationDelay: '200ms' }}>
@@ -384,7 +620,15 @@ export function LoginPage() {
 
           {/* Demo Access */}
           <div className="mt-3 animate-stagger-in" style={{ animationDelay: '500ms' }}>
-            <div className="glass-strong rounded-2xl shadow-lg overflow-hidden">
+            <div className="login-glass-pro relative rounded-2xl overflow-hidden">
+              <div
+                aria-hidden
+                className="pointer-events-none absolute inset-x-6 top-0 h-px"
+                style={{
+                  background:
+                    'linear-gradient(90deg, transparent, rgba(255,255,255,0.95), transparent)',
+                }}
+              />
               <button
                 type="button"
                 onClick={() => setDemoOpen(!demoOpen)}

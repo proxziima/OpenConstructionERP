@@ -606,15 +606,19 @@ async def _seed_demo_account() -> None:
             ).scalar() or 0
 
             if count == 0:
-                from app.core.demo_projects import install_demo_project
+                # Fresh-install seed: cap strictly at 5 (DEFAULT_DEMO_IDS).
+                # Drift-prevention: if the constant ever exceeds five, we abort
+                # so a future PR can't silently re-introduce demo bloat.
+                from app.core.demo_projects import DEFAULT_DEMO_IDS, install_demo_project
 
-                for demo_id in [
-                    "residential-berlin",
-                    "office-london",
-                    "medical-us",
-                    "school-paris",
-                    "warehouse-dubai",
-                ]:
+                if len(DEFAULT_DEMO_IDS) > 5:
+                    logger.error(
+                        "DEFAULT_DEMO_IDS has %d entries — fresh-install seed is capped at 5. Aborting auto-seed.",
+                        len(DEFAULT_DEMO_IDS),
+                    )
+                    return
+
+                for demo_id in DEFAULT_DEMO_IDS:
                     try:
                         result = await install_demo_project(session, demo_id)
                         logger.info(

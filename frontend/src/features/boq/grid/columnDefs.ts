@@ -16,6 +16,23 @@ export interface BOQColumnContext {
   locale: string;
   fmt: Intl.NumberFormat;
   t: (key: string, opts?: Record<string, string>) => string;
+  /**
+   * ── Display-currency override (Issue #88).
+   * When set, every monetary cell rendered through `totalFormatter` is
+   * shown converted into this currency. The conversion is view-only —
+   * the database keeps base-currency values unchanged. `unit_rate` is
+   * deliberately NOT re-formatted here because each position can have
+   * its own source currency (v2.6.1) and rewriting it would break that
+   * model. Only aggregated totals and subtotals fold through the rate.
+   *
+   * Shape:
+   * - `code` — currency code shown after the value, e.g. "USD"
+   * - `rate` — units of `code` per one base unit. To convert from base
+   *   to display we DIVIDE by `rate` (FX rates store rate-to-base).
+   *
+   * `null` / undefined ⇒ stick with the project base currency.
+   */
+  displayCurrency?: { code: string; rate: number } | null;
 }
 
 // Note: `currencyFormatter` was previously applied to the unit_rate column
@@ -28,6 +45,14 @@ function totalFormatter(params: ValueFormatterParams): string {
   const ctx = params.context as BOQColumnContext | undefined;
   if (params.value == null) return '';
   const locale = ctx?.locale ?? 'de-DE';
+  // Apply display-currency conversion when set. Footer rows, section
+  // subtotals and per-position totals all flow through this single
+  // formatter, so flipping the display currency reformats the entire
+  // BOQ in one place — no per-cell branching needed downstream.
+  const dc = ctx?.displayCurrency;
+  if (dc && dc.rate > 0) {
+    return fmtWithCurrency(params.value / dc.rate, locale, dc.code);
+  }
   const currencyCode = ctx?.currencyCode ?? 'EUR';
   return fmtWithCurrency(params.value, locale, currencyCode);
 }
@@ -299,7 +324,12 @@ export function getColumnDefs(context: BOQColumnContext): ColDef[] {
       },
     },
     {
-      headerName: t('boq.total', { defaultValue: 'Total' }),
+      // Header reflects the active display currency so users glancing
+      // at the column never wonder which currency they're reading. When
+      // displayCurrency is unset we keep the plain "Total" label.
+      headerName: context.displayCurrency
+        ? `${t('boq.total', { defaultValue: 'Total' })} (${context.displayCurrency.code})`
+        : t('boq.total', { defaultValue: 'Total' }),
       field: 'total',
       width: 130,
       editable: false,

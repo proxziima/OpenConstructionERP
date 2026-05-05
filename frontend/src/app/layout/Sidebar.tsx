@@ -49,6 +49,7 @@ import {
   Search,
   Pin,
   PinOff,
+  Github,
   type LucideIcon,
 } from 'lucide-react';
 import { useModuleStore } from '@/stores/useModuleStore';
@@ -179,7 +180,9 @@ const navGroups: NavGroup[] = [
     defaultOpen: false,
     hideInSimple: true,
     items: [
-      { labelKey: 'nav.documents', to: '/documents', icon: FolderOpen },
+      // /documents merged into /files — the file manager is now the
+      // unified entry point for project documents, photos, BIM, DWG…
+      { labelKey: 'nav.project_files', to: '/files', icon: FolderOpen },
       { labelKey: 'nav.assets', to: '/assets', icon: Package, badge: 'NEW' },
       { labelKey: 'cde.title', to: '/cde', icon: Database },
       { labelKey: 'nav.photos', to: '/photos', icon: Camera },
@@ -701,11 +704,31 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
             commands when the user clicks it. */}
         <UpdateNotification />
 
-        {/* Version + AGPL notice */}
-        <div className="px-3 pb-2 text-center">
+        {/* Version + AGPL + GitHub link
+            Layout: GitHub icon (left) · version · AGPL link.
+            The GitHub link uses Lucide's Github mark — keeps the row aligned
+            with the rest of the sidebar's lucide icons and gives a clear
+            visual entry point to the source repo. */}
+        <div className="px-3 pb-2 flex items-center justify-center gap-1.5">
+          <a
+            href="https://github.com/datadrivenconstruction/OpenConstructionERP"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="GitHub repository"
+            aria-label="GitHub repository"
+            className="text-content-quaternary/50 hover:text-content-secondary transition-colors"
+          >
+            <Github size={12} strokeWidth={1.75} />
+          </a>
+          <span className="text-2xs text-content-quaternary/30">·</span>
           <span className="text-2xs text-content-quaternary/50">v{APP_VERSION}</span>
-          <span className="text-2xs text-content-quaternary/30 mx-1">·</span>
-          <a href="/api/source" target="_blank" rel="noopener noreferrer" className="text-2xs text-content-quaternary/40 hover:text-content-quaternary transition-colors">
+          <span className="text-2xs text-content-quaternary/30">·</span>
+          <a
+            href="/api/source"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-2xs text-content-quaternary/40 hover:text-content-quaternary transition-colors"
+          >
             AGPL-3.0
           </a>
         </div>

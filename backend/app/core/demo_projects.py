@@ -1911,6 +1911,19 @@ _PARIS = DemoTemplate(
 
 DEMO_TEMPLATES: dict[str, DemoTemplate] = {t.demo_id: t for t in [_BERLIN, _LONDON, _US_MEDICAL, _DUBAI, _PARIS]}
 
+# Fresh-install seed: four demo projects covering the broadest spread of
+# archetypes (residential, industrial, healthcare/intl, education/fit-out)
+# without leaning on a single very large UK example. The London/One Canary
+# Square template stays available in DEMO_TEMPLATES for ad-hoc install via
+# POST /api/demo/install/office-london, but it isn't auto-seeded because
+# operators consistently asked us to drop it from the default workspace.
+DEFAULT_DEMO_IDS: tuple[str, ...] = (
+    "residential-berlin",  # residential — DACH DIN 276, EUR
+    "warehouse-dubai",     # industrial / infrastructure — AED
+    "school-paris",        # small renovation / education fit-out — FR EUR
+    "medical-us",          # international healthcare — US MasterFormat, USD
+)
+
 # Catalog info for the marketplace / frontend
 DEMO_CATALOG: list[dict] = [
     {

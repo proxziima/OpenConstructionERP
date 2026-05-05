@@ -5,6 +5,25 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.1] — 2026-05-05
+
+### Added
+- BOQ display-currency selector — view-only conversion of all monetary aggregates (position totals, section subtotals, footer rows, Grand Total) via project FX rates. `Total` column header gains the chosen currency code. (#88)
+- BOQ toolbar merged to a single row — mini-summary, currency selector, and Grand Total moved into the existing sticky toolbar.
+- Display-currency choice persists per-BOQ in localStorage; auto-cleared if the rate is later removed.
+- File Manager — per-project file workspace with bundle export/import, storage location override, and a tree+grid browser. (#109)
+- `v294_project_storage_override` migration adds the per-project storage override column.
+- Project Intelligence module promoted to `core` (always-on per `feedback_pi_always_on`).
+
+### Fixed
+- BOQ display currency was wiped on every reload because the sanity-check effect ran before the project query finished loading.
+- DWG Takeoff upload form — the upload button no longer no-ops; corrected event wiring and progress state. (#110)
+- Login page polish — cleaner layout, demo banner copy, accessibility tweaks.
+- Issue #53 (BIM viewer geometry) — re-confirmed as fallback-by-design at v2.9.1; closing with DDC IFC Converter install instructions.
+
+### Changed
+- Header / Sidebar / Update checker iteration — small UX polish around the layout shell.
+
 ## [2.9.0] — 2026-05-05
 
 ### Performance

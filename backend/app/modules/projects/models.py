@@ -123,6 +123,20 @@ class Project(Base):
         server_default="{}",
     )
 
+    # ── v2.9.4 — Per-project storage override (Issue #109) ──────────────
+    # When ``storage_uses_default`` is True (the default), all attachments
+    # for this project land under the system-wide data dir resolved by the
+    # documents / photos / sheets / BIM / DWG services. When False and
+    # ``storage_path_override`` is non-empty, services route writes for
+    # this project under ``{override}/{project_id}/<kind>/...`` instead.
+    # Reads always check both paths so legacy rows keep working.
+    storage_path_override: Mapped[str | None] = mapped_column(
+        String(500), nullable=True, default=None,
+    )
+    storage_uses_default: Mapped[bool] = mapped_column(
+        nullable=False, default=True, server_default="1",
+    )
+
     # ── Relationships ────────────────────────────────────────────────────
     children: Mapped[list["Project"]] = relationship(
         back_populates="parent_project",

@@ -12,11 +12,12 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useAuthStore } from '@/stores/useAuthStore';
 import { apiGet, apiPost } from '@/shared/lib/api';
-import { isModuleLoaded } from '@/shared/lib/moduleProbe';
+import { isModuleLoaded, _resetModuleProbeCache } from '@/shared/lib/moduleProbe';
 import { ScoreRing } from './ScoreRing';
 import { GapCard } from './GapCard';
 import { AIAdvisorPanel } from './AIAdvisorPanel';
@@ -29,6 +30,9 @@ import {
   ChevronDown,
   AlertTriangle,
   CheckCircle2,
+  PowerOff,
+  Power,
+  Settings2,
 } from 'lucide-react';
 
 /** Dynamic state object from backend — each domain key (boq, validation, etc.)
@@ -108,6 +112,8 @@ export function ProjectIntelligencePage() {
   const { t } = useTranslation();
   const [searchParams] = useSearchParams();
   const projectId = useProjectContextStore((s) => s.activeProjectId);
+  const userRole = useAuthStore((s) => s.userRole);
+  const isAdmin = userRole === 'admin';
   const paramProjectId = searchParams.get('project_id');
   const activeProjectId = paramProjectId || projectId;
 
@@ -115,6 +121,9 @@ export function ProjectIntelligencePage() {
   const [actions, setActions] = useState<ActionDef[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
+  const [enabling, setEnabling] = useState(false);
+  const [enableError, setEnableError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [role, setRole] = useState<string>('estimator');
@@ -135,13 +144,10 @@ export function ProjectIntelligencePage() {
       // load.
       if (!(await isModuleLoaded('oe_project_intelligence'))) {
         setLoading(false);
-        setError(
-          t('project_intelligence.module_disabled', {
-            defaultValue: 'Project Intelligence module is disabled. Enable it from the Modules page to use this dashboard.‌⁠‍',
-          }),
-        );
+        setModuleDisabled(true);
         return;
       }
+      setModuleDisabled(false);
       try {
         if (refresh) setRefreshing(true);
         else setLoading(true);
@@ -191,6 +197,30 @@ export function ProjectIntelligencePage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Enable the disabled module via the existing /v1/modules/{name}/enable
+  // endpoint, then refresh the probe cache and re-fetch the dashboard.
+  // Admin-only — non-admins see a Modules-page link instead.
+  const handleEnableModule = useCallback(async () => {
+    setEnableError(null);
+    setEnabling(true);
+    try {
+      await apiPost('/v1/modules/oe_project_intelligence/enable');
+      _resetModuleProbeCache();
+      setModuleDisabled(false);
+      await fetchData();
+    } catch (err: unknown) {
+      setEnableError(
+        err instanceof Error
+          ? err.message
+          : t('project_intelligence.enable_failed', {
+              defaultValue: 'Could not enable the module',
+            }),
+      );
+    } finally {
+      setEnabling(false);
+    }
+  }, [fetchData, t]);
 
   // Execute action
   const handleAction = useCallback(
@@ -245,6 +275,76 @@ export function ProjectIntelligencePage() {
           <p className="text-sm text-content-secondary">
             {t('project_intelligence.analyzing', {
               defaultValue: 'Analyzing project...‌⁠‍',
+            })}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (moduleDisabled) {
+    return (
+      <div className="w-full py-12 px-6">
+        <div className="max-w-xl mx-auto rounded-2xl border border-border-light bg-surface-elevated shadow-sm p-8 text-center space-y-5">
+          <div className="w-14 h-14 rounded-2xl bg-amber-50 dark:bg-amber-950/30 flex items-center justify-center mx-auto">
+            <PowerOff size={26} className="text-amber-500" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-lg font-semibold text-content-primary">
+              {t('project_intelligence.module_disabled_title', {
+                defaultValue: 'Project Intelligence is turned off',
+              })}
+            </h2>
+            <p className="text-sm text-content-secondary leading-relaxed">
+              {t('project_intelligence.module_disabled_body', {
+                defaultValue:
+                  'This dashboard runs against the optional Project Intelligence module. It is currently disabled on this server, so the AI advisor, gap detector and analytics grid have nothing to query.',
+              })}
+            </p>
+          </div>
+
+          {enableError && (
+            <div className="rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/20 px-3 py-2 text-xs text-red-700 dark:text-red-300 text-left">
+              {enableError}
+            </div>
+          )}
+
+          <div className="flex items-center justify-center gap-2 pt-1">
+            {isAdmin ? (
+              <button
+                onClick={handleEnableModule}
+                disabled={enabling}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-oe-blue text-white rounded-lg shadow-sm hover:bg-oe-blue-dark transition-colors disabled:opacity-50"
+              >
+                <Power size={14} className={enabling ? 'animate-pulse' : ''} />
+                {enabling
+                  ? t('project_intelligence.enabling', { defaultValue: 'Enabling…' })
+                  : t('project_intelligence.enable_module', {
+                      defaultValue: 'Enable module',
+                    })}
+              </button>
+            ) : (
+              <p className="text-xs text-content-tertiary">
+                {t('project_intelligence.module_disabled_ask_admin', {
+                  defaultValue: 'Ask an admin to enable this module to continue.',
+                })}
+              </p>
+            )}
+            <Link
+              to="/modules"
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-border-light rounded-lg hover:bg-surface-secondary transition-colors text-content-secondary"
+            >
+              <Settings2 size={14} />
+              {t('project_intelligence.open_modules_page', {
+                defaultValue: 'Open Modules page',
+              })}
+            </Link>
+          </div>
+
+          <p className="text-2xs text-content-quaternary pt-1">
+            {t('project_intelligence.module_disabled_footnote', {
+              defaultValue:
+                'No data is collected while the module is off. Enabling is reversible from the Modules page.',
             })}
           </p>
         </div>

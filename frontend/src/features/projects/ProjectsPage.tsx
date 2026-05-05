@@ -5,7 +5,9 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import {
   FolderPlus, FolderOpen, ArrowRight, MoreHorizontal, Copy, Trash2, Archive, ExternalLink,
   Search, ChevronDown, ArrowUpDown, Star, Map as MapIcon, CloudSun,
+  Building2, DollarSign, Euro, PoundSterling, Globe2, MapPin, Layers, AlertTriangle,
 } from 'lucide-react';
+import { formatDistanceToNowStrict, isValid as isValidDate, parseISO } from 'date-fns';
 import { Button, Card, Badge, EmptyState, SkeletonGrid, Breadcrumb, ProjectMap, ProjectWeather, FileTypeChips, type LatLng } from '@/shared/ui';
 import { useWidgetSettingsStore } from '@/stores/useWidgetSettingsStore';
 import { getIntlLocale } from '@/shared/lib/formatters';
@@ -680,6 +682,39 @@ function ProjectCard({
     masterformat: 'MasterFormat',
   };
 
+  // Currency symbol icon — falls back to neutral DollarSign for unknown codes
+  // so we never render an empty chip. Tabular currency labels still appear
+  // alongside the icon for unambiguous reading.
+  const CurrencyIcon =
+    project.currency === 'EUR'
+      ? Euro
+      : project.currency === 'GBP'
+        ? PoundSterling
+        : DollarSign;
+
+  // Last-modified relative time. We prefer updated_at when present so the
+  // freshness signal reflects actual edits rather than only project age.
+  // date-fns gracefully degrades for invalid input — guard so a malformed
+  // timestamp can't crash the card render.
+  const modifiedSource = project.updated_at || project.created_at;
+  const modifiedDate = modifiedSource ? parseISO(modifiedSource) : null;
+  const relativeModified =
+    modifiedDate && isValidDate(modifiedDate)
+      ? formatDistanceToNowStrict(modifiedDate, { addSuffix: true })
+      : null;
+  const absoluteModified = modifiedDate && isValidDate(modifiedDate)
+    ? modifiedDate.toLocaleDateString(getIntlLocale())
+    : '';
+
+  // Variations marker — rendered only when project metadata exposes a
+  // non-zero count. Acts as a passive warning chip; clicking the card
+  // still opens the project (variations module owns the resolution UI).
+  const openVariations = (() => {
+    const meta = project.metadata as Record<string, unknown> | undefined;
+    const v = meta?.open_variations;
+    return typeof v === 'number' && v > 0 ? v : 0;
+  })();
+
   const mapEnabled = useWidgetSettingsStore((s) => s.projectMapEnabled);
   const weatherEnabled = useWidgetSettingsStore((s) => s.projectWeatherEnabled);
   const [cardCoords, setCardCoords] = useState<LatLng | null>(
@@ -692,7 +727,7 @@ function ProjectCard({
     <Card
       hoverable
       padding="none"
-      className="cursor-pointer relative animate-card-in overflow-hidden"
+      className="group cursor-pointer relative animate-card-in overflow-hidden rounded-2xl bg-gradient-to-b from-surface-elevated to-surface-primary hover:shadow-xl hover:border-oe-blue/40 focus-within:ring-2 focus-within:ring-oe-blue/30 motion-safe:transition-all"
       style={style}
       onClick={() => navigate(`/projects/${project.id}`)}
     >
@@ -714,8 +749,8 @@ function ProjectCard({
         </div>
       )}
       <div className="p-5">
-        <div className="flex items-start justify-between">
-          <div className={`flex h-10 w-10 items-center justify-center rounded-xl font-bold ${getRegionAvatarClass(project.region)}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-base font-bold ring-1 ring-inset ring-white/40 dark:ring-white/5 shadow-sm transition-transform duration-normal ease-oe group-hover:scale-105 ${getRegionAvatarClass(project.region)}`}>
             {project.name.charAt(0).toUpperCase()}
           </div>
           <div className="flex items-center gap-1.5">
@@ -817,24 +852,33 @@ function ProjectCard({
           </div>
         )}
 
-        <h3 className="mt-3 text-sm font-semibold text-content-primary truncate">
+        <h3 className="mt-4 text-base font-semibold tracking-tight text-content-primary truncate">
           {project.name}
         </h3>
         {project.description && (
-          <p className="mt-1 text-xs text-content-secondary line-clamp-2">
+          <p className="mt-1 text-xs leading-relaxed text-content-secondary line-clamp-2 transition-colors group-hover:text-content-primary/80">
             {project.description}
           </p>
         )}
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          <Badge variant="blue" size="sm">
+        <div className="mt-3.5 flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex items-center gap-1 rounded-full border border-oe-blue/20 bg-oe-blue-subtle px-2 py-0.5 text-2xs font-medium text-oe-blue">
+            <Building2 size={11} strokeWidth={2.25} />
             {standardLabels[project.classification_standard] ?? project.classification_standard}
-          </Badge>
-          <Badge variant="neutral" size="sm">
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full border border-border-light bg-surface-secondary px-2 py-0.5 text-2xs font-medium text-content-secondary">
+            <CurrencyIcon size={11} strokeWidth={2.25} />
             {project.currency}
-          </Badge>
-          <Badge variant="neutral" size="sm">
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full border border-border-light bg-surface-secondary px-2 py-0.5 text-2xs font-medium text-content-secondary">
+            <Globe2 size={11} strokeWidth={2.25} />
             {project.region}
-          </Badge>
+          </span>
+          {project.address?.city && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-border-light bg-surface-secondary px-2 py-0.5 text-2xs font-medium text-content-secondary">
+              <MapPin size={11} strokeWidth={2.25} />
+              {project.address.city}
+            </span>
+          )}
           {fileTypes && fileTypes.length > 0 && (
             <div className="ml-auto">
               <FileTypeChips fileTypes={fileTypes} size="md" />
@@ -842,16 +886,28 @@ function ProjectCard({
           )}
         </div>
       </div>
-      <div className="border-t border-border-light px-5 py-2.5">
-        {boqStats && boqStats.boqCount > 0 && boqStats.totalValue > 0 && (
-          <div className="mb-1">
-            <span className="text-base font-bold text-content-primary tabular-nums">
-              {project.currency} {currencyFmt.format(boqStats.totalValue)}
-            </span>
+      {/* Feature row: total cost as the visual anchor — gradient underline,
+       *  large tabular numerals, currency code aligned for legibility. */}
+      {boqStats && boqStats.boqCount > 0 && boqStats.totalValue > 0 && (
+        <div className="relative px-5 pb-3">
+          <div className="rounded-xl border border-border-light bg-gradient-to-br from-oe-blue-subtle/60 via-surface-elevated to-surface-elevated px-4 py-3">
+            <div className="text-[10px] font-medium uppercase tracking-wider text-content-tertiary">
+              {t('projects.card_total_value', { defaultValue: 'Total value' })}
+            </div>
+            <div className="mt-0.5 flex items-baseline gap-1.5">
+              <span className="text-xl font-bold tabular-nums text-content-primary">
+                {currencyFmt.format(boqStats.totalValue)}
+              </span>
+              <span className="text-2xs font-semibold uppercase tracking-wider text-content-tertiary">
+                {project.currency}
+              </span>
+            </div>
           </div>
-        )}
+        </div>
+      )}
+      <div className="border-t border-border-light px-5 py-3">
         {weatherEnabled && cardCoords && (
-          <div className="mb-1.5" onClick={(e) => e.stopPropagation()}>
+          <div className="mb-2" onClick={(e) => e.stopPropagation()}>
             <ProjectWeather
               variant="summary"
               lat={cardCoords.lat}
@@ -859,19 +915,41 @@ function ProjectCard({
             />
           </div>
         )}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3 text-2xs text-content-tertiary">
-            <span>{new Date(project.created_at).toLocaleDateString(getIntlLocale())}</span>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {relativeModified && (
+              <span
+                className="text-2xs text-content-tertiary"
+                title={absoluteModified}
+              >
+                {relativeModified}
+              </span>
+            )}
             {boqStats && boqStats.boqCount > 0 && (
-              <span>
-                {t('projects.boq_count', {
-                  defaultValue: '{{count}} BOQs',
-                  count: boqStats.boqCount,
+              <span className="inline-flex items-center gap-1 rounded-md bg-surface-secondary px-1.5 py-0.5 text-2xs font-medium text-content-secondary">
+                <Layers size={10} strokeWidth={2.25} />
+                <span className="tabular-nums">{boqStats.boqCount}</span>
+                <span>
+                  {t('projects.boq_short', { defaultValue: 'BOQs' })}
+                </span>
+              </span>
+            )}
+            {openVariations > 0 && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-2xs font-semibold text-amber-700 ring-1 ring-amber-200/60 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20"
+                title={t('projects.card_open_variations', {
+                  defaultValue: 'Open variations',
                 })}
+              >
+                <AlertTriangle size={10} strokeWidth={2.25} />
+                <span className="tabular-nums">{openVariations}</span>
               </span>
             )}
           </div>
-          <ArrowRight size={12} className="text-content-tertiary" />
+          <ArrowRight
+            size={14}
+            className="shrink-0 text-content-tertiary transition-transform duration-normal ease-oe group-hover:translate-x-0.5 group-hover:text-oe-blue"
+          />
         </div>
       </div>
     </Card>

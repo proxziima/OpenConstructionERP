@@ -739,9 +739,9 @@
     }
     .tier-grid {
       display: grid;
-      grid-template-columns: 1.4fr repeat(4, 1fr);
+      grid-template-columns: 1.4fr 1fr 1fr;
       gap: 0;
-      min-width: 720px;
+      min-width: 560px;
       background: var(--bg-1);
       border: 1px solid var(--line-1);
       border-radius: 16px;
@@ -754,8 +754,8 @@
       border-bottom: 1px solid var(--line-0);
       border-right: 1px solid var(--line-0);
     }
-    .tier-grid > div:nth-child(5n) { border-right: 0; }
-    .tier-grid > div:nth-last-child(-n+5) { border-bottom: 0; }
+    .tier-grid > div:nth-child(3n) { border-right: 0; }
+    .tier-grid > div:nth-last-child(-n+3) { border-bottom: 0; }
     .tier-grid .row-label {
       color: var(--ink-2);
       background: color-mix(in oklab, var(--bg-2) 60%, transparent);
@@ -771,16 +771,10 @@
       padding: 18px 14px;
       background: color-mix(in oklab, var(--bg-2) 40%, transparent);
     }
-    .tier-grid .col-head[data-tier="r"] {
-      box-shadow: inset 0 -3px 0 #cbd5e1;
-    }
-    .tier-grid .col-head[data-tier="s"] {
-      box-shadow: inset 0 -3px 0 #94a3b8;
-    }
-    .tier-grid .col-head[data-tier="g"] {
+    .tier-grid .col-head[data-tier="a"] {
       box-shadow: inset 0 -3px 0 var(--accent-2);
     }
-    .tier-grid .col-head[data-tier="p"] {
+    .tier-grid .col-head[data-tier="f"] {
       box-shadow: inset 0 -3px 0 #f59e0b;
       background: linear-gradient(180deg,
         color-mix(in oklab, #fbbf24 12%, var(--bg-2)) 0%,
@@ -794,31 +788,19 @@
       vertical-align: middle;
       box-shadow: 0 0 0 2px color-mix(in oklab, var(--bg-1) 80%, transparent);
     }
-    .tier-grid .col-head[data-tier="r"] .badge { background: #cbd5e1; }
-    .tier-grid .col-head[data-tier="s"] .badge { background: #94a3b8; }
-    .tier-grid .col-head[data-tier="g"] .badge { background: var(--accent-2); }
-    .tier-grid .col-head[data-tier="p"] .badge { background: linear-gradient(135deg, #fbbf24, #f59e0b); }
+    .tier-grid .col-head[data-tier="a"] .badge { background: var(--accent-2); }
+    .tier-grid .col-head[data-tier="f"] .badge { background: linear-gradient(135deg, #fbbf24, #f59e0b); }
 
-    /* Column-wise tier tinting — Registered / Silver / Gold / Platinum */
-    .tier-grid > div:nth-child(5n+2):not(.col-head):not(.row-label) {
+    /* Column tinting — Active / Founding */
+    .tier-grid > div:nth-child(3n+2):not(.col-head):not(.row-label) {
       background: linear-gradient(90deg,
-        color-mix(in oklab, #cbd5e1 12%, transparent) 0%,
-        color-mix(in oklab, #cbd5e1 4%, transparent) 100%);
+        color-mix(in oklab, var(--accent-2) 18%, transparent) 0%,
+        color-mix(in oklab, var(--accent-2) 6%, transparent) 100%);
     }
-    .tier-grid > div:nth-child(5n+3):not(.col-head):not(.row-label) {
+    .tier-grid > div:nth-child(3n+3):not(.col-head):not(.row-label) {
       background: linear-gradient(90deg,
-        color-mix(in oklab, #94a3b8 16%, transparent) 0%,
-        color-mix(in oklab, #94a3b8 6%, transparent) 100%);
-    }
-    .tier-grid > div:nth-child(5n+4):not(.col-head):not(.row-label) {
-      background: linear-gradient(90deg,
-        color-mix(in oklab, var(--accent-2) 22%, transparent) 0%,
-        color-mix(in oklab, var(--accent-2) 8%, transparent) 100%);
-    }
-    .tier-grid > div:nth-child(5n+5):not(.col-head):not(.row-label) {
-      background: linear-gradient(90deg,
-        color-mix(in oklab, #fbbf24 24%, transparent) 0%,
-        color-mix(in oklab, #f59e0b 10%, transparent) 100%);
+        color-mix(in oklab, #fbbf24 22%, transparent) 0%,
+        color-mix(in oklab, #f59e0b 9%, transparent) 100%);
     }
     .tier-grid .num {
       text-align: center;
@@ -836,7 +818,7 @@
       color: var(--accent);
       text-shadow: 0 0 18px color-mix(in oklab, var(--accent) 40%, transparent);
     }
-    .tier-grid > div:nth-child(5n+5).num.lg {
+    .tier-grid > div:nth-child(3n+3).num.lg {
       color: #b45309;
       text-shadow: 0 0 18px color-mix(in oklab, #f59e0b 50%, transparent);
     }
@@ -2025,6 +2007,144 @@
     }
     .arche-tldr b { color: var(--ink-0); }
 
+    /* ─── TOOLKIT (what-we-ship + leads + anti-promises) ──────────── */
+    .toolkit-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+      max-width: 1180px;
+      margin: 0 auto 36px;
+    }
+    @media (max-width: 980px) { .toolkit-grid { grid-template-columns: 1fr; } }
+    .toolkit-card {
+      padding: 26px 26px 22px;
+      border-radius: 18px;
+      background: var(--bg-1);
+      border: 1px solid var(--line-1);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .toolkit-eyebrow {
+      align-self: flex-start;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: color-mix(in oklab, var(--accent) 12%, transparent);
+      color: var(--accent);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .toolkit-name {
+      font-family: 'Fraunces', serif;
+      font-weight: 400;
+      font-size: 22px;
+      line-height: 1.25;
+      color: var(--ink-0);
+      margin: 0;
+    }
+    .toolkit-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .toolkit-list li {
+      font-size: 13.5px;
+      line-height: 1.5;
+      color: var(--ink-1);
+      padding-left: 18px;
+      position: relative;
+    }
+    .toolkit-list li::before {
+      content: '→';
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: var(--accent);
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .toolkit-list li b { color: var(--ink-0); }
+    .toolkit-list li code {
+      font-size: 12px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: color-mix(in oklab, var(--ink-3) 10%, transparent);
+      color: var(--ink-1);
+    }
+    .toolkit-tldr {
+      font-size: 13px;
+      color: var(--ink-2);
+      line-height: 1.55;
+      font-style: italic;
+      margin: 0;
+      padding-top: 12px;
+      border-top: 1px dashed var(--line-2);
+    }
+
+    /* Anti-promises */
+    .toolkit-wont {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px;
+      border-radius: 20px;
+      background: var(--bg-1);
+      border: 1px solid var(--line-1);
+    }
+    .toolkit-wont-head {
+      text-align: center;
+      max-width: 720px;
+      margin: 0 auto 22px;
+    }
+    .toolkit-wont-head h3 {
+      font-family: 'Fraunces', serif;
+      font-weight: 400;
+      font-size: 26px;
+      color: var(--ink-0);
+      margin: 0 0 6px;
+    }
+    .toolkit-wont-head em { font-style: italic; color: var(--accent); }
+    .toolkit-wont-head p {
+      font-size: 14px;
+      color: var(--ink-2);
+      margin: 0;
+    }
+    .toolkit-wont-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px 22px;
+    }
+    @media (max-width: 720px) { .toolkit-wont-grid { grid-template-columns: 1fr; } }
+    .toolkit-wont-item {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 12px 0;
+      border-top: 1px dashed var(--line-2);
+      font-size: 13.5px;
+      line-height: 1.55;
+      color: var(--ink-1);
+    }
+    .toolkit-wont-item b { color: var(--ink-0); }
+    .toolkit-wont-x {
+      width: 26px; height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: color-mix(in oklab, #ef4444 15%, transparent);
+      color: #b91c1c;
+      font-weight: 700;
+      font-size: 16px;
+      line-height: 1;
+    }
+
     /* ─── APPLICATION FLOW ────────────────────────────────────────── */
     .apply-flow {
       display: grid;
@@ -2482,10 +2602,10 @@
           },
           {
             "@type": "Question",
-            "name": "What's the difference between a Founding Partner and a Platinum Partner?",
+            "name": "What's the difference between a Founding Partner and an Active Partner?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Founding Partners are the first 10 signatories. They get Platinum economics from day 0 (no ladder climb), 12-month soft geographic exclusivity, and a permanent badge. Platinum is the standard top tier reached by performance. Founding cohort closes when 10 partners sign or on 31 December 2026, whichever comes first."
+              "text": "Founding Partners are the first 3 signatories. They get the Founding rate card from day 0 — no ladder climb, no fees, direct line to the core team. Active is the standard partnership for everyone else. Founding cohort closes when 3 partners sign or on 31 December 2026, whichever comes first."
             }
           },
           {
@@ -2522,10 +2642,10 @@
           },
           {
             "@type": "Question",
-            "name": "What happens if I do not hit Gold or Platinum requirements?",
+            "name": "What if I never close a deal — do I lose my partnership?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Nothing punitive. Tiers are reviewed annually. Partners retain their tier for 12 months from signing regardless of activity. If activity slows, we work on lead-share or co-sell rather than demote."
+              "text": "Nothing punitive. Partners stay on the Active rate card indefinitely — no demotion, no fee clawback, no expiry. If activity slows, we work on lead-share or co-sell. Founding partners keep Founding rates as long as they have at least one live client."
             }
           }
         ]
@@ -2592,7 +2712,6 @@
     <a href="#founding">Founding</a>
     <a href="#toolkit">Toolkit</a>
     <a href="#archetypes">Archetypes</a>
-    <a href="#calculator">Calculator</a>
     <a href="#risk">Risk</a>
     <a href="#faq">FAQ</a>
     <a href="#apply">Apply →</a>
@@ -2611,14 +2730,15 @@
           <span>Partner Program · Founding cohort</span>
         </span>
         <h1 class="h1">
-          Free foundation. <em>Paid floors.</em><br>
-          Real construction software, built like a building.
+          Open core. <em>Real margins.</em><br>
+          Construction ERP partner program, built for SMB.
         </h1>
         <p class="lede">
-          OpenConstructionERP is <strong>AGPL-3.0 and free forever</strong>. Implementation,
-          localisation, training and converters are commercial — and partners keep
-          <strong>up to 100%</strong> of services revenue. The lumber is free at the yard.
-          <em>The contractor is what builds the house.</em>
+          OpenConstructionERP is <strong>AGPL-3.0 and free forever</strong>.
+          Implementation, localisation, training and converters are commercial —
+          and partners keep <strong>up to 100%</strong> of services revenue.
+          Built for partners working with small and mid-sized construction
+          firms. <em>No annual fees. No quotas.</em>
         </p>
         <div class="cta-row">
           <a class="btn btn-primary" href="#apply">
@@ -2630,11 +2750,11 @@
           </a>
         </div>
         <div class="trust-strip">
-          <span>15,000+ GitHub clones</span>
+          <span>AGPL-3.0 on GitHub</span>
           <span class="sep">·</span>
-          <span>AGPL-3.0 + commercial dual-licence</span>
+          <span>Dual-licence (AGPL + commercial)</span>
           <span class="sep">·</span>
-          <span>CWICR cost database in 11 countries</span>
+          <span>CWICR cost database, 11 countries</span>
         </div>
       </div>
       <div>
@@ -2668,7 +2788,7 @@
               <div class="floor-num">Floor 1</div>
               <div class="floor-body">
                 <div class="floor-title">Localisation</div>
-                <div class="floor-sub">30 languages · DACH · UK · US · regional packs</div>
+                <div class="floor-sub">20 languages · DACH · UK · US · regional packs</div>
               </div>
               <div class="floor-margin">55–65%</div>
             </div>
@@ -2723,7 +2843,7 @@
       </svg>
       <div class="ribbon-num">65<sup>%</sup></div>
       <div class="ribbon-label">Top localisation margin</div>
-      <div class="ribbon-sub">Regional packs · cad2data · Platinum</div>
+      <div class="ribbon-sub">Regional packs · cad2data · Founding</div>
     </div>
 
     <div class="ribbon-card">
@@ -2781,7 +2901,7 @@
           <div class="floor-num">Floor 1</div>
           <div class="floor-body">
             <div class="floor-title">Localisation packs — own your country</div>
-            <div class="floor-sub">Tax codes · cost classifications · regulator output · language pack — 30 languages live, regional rollouts ongoing</div>
+            <div class="floor-sub">Tax codes · cost classifications · regulator output · language pack — 20 languages live, regional rollouts ongoing</div>
           </div>
           <div class="floor-margin">55–65%</div>
         </div>
@@ -2809,8 +2929,8 @@
     <div class="section-head">
       <h2 class="h2">Where the margin <em>comes from.</em></h2>
       <p class="section-lede">
-        One mid-market deal, broken down line by line. The open core stays free.
-        Partners earn on the commercial layers and on services.
+        One typical small/mid deal, broken down line by line. The open core
+        stays free. Partners earn on the commercial layers and on services.
       </p>
     </div>
 
@@ -2819,10 +2939,10 @@
       <div class="earns-deal">
         <div class="earns-deal-head">
           <div>
-            <div class="earns-deal-title">Year-1 deal — regional GC, ~120 seats</div>
-            <div style="font-size: 12.5px; color: var(--ink-3); margin-top: 4px;">Mid-market, single country, 1 production go-live</div>
+            <div class="earns-deal-title">Year-1 deal — small/mid construction firm, ~15 seats</div>
+            <div style="font-size: 12.5px; color: var(--ink-3); margin-top: 4px;">Small GC, specialist sub or QS studio · 3–5 estimators · 2–3 PMs · owner read-only</div>
           </div>
-          <div class="earns-deal-total">€120,000<span style="font-size:12px;color:var(--ink-3);font-weight:400;display:block;text-align:right;">total deal value</span></div>
+          <div class="earns-deal-total">€22,000<span style="font-size:12px;color:var(--ink-3);font-weight:400;display:block;text-align:right;">total deal value</span></div>
         </div>
 
         <div class="earns-row">
@@ -2834,35 +2954,35 @@
 
         <div class="earns-row">
           <div class="earns-label">Localisation pack<small>Tax · cost classes · regulator output</small></div>
-          <div class="earns-rate">€18k × 55%</div>
+          <div class="earns-rate">€3.5k × 55%</div>
           <div class="earns-bar-cell"><div class="earns-bar" style="width: 55%;"></div></div>
-          <div class="earns-amount">€9,900</div>
+          <div class="earns-amount">€1,925</div>
         </div>
 
         <div class="earns-row">
-          <div class="earns-label">Commercial SKUs<small>Enterprise licence · CWICR DB · connectors</small></div>
-          <div class="earns-rate">€42k × 45%</div>
+          <div class="earns-label">Commercial SKUs<small>Commercial licence · CWICR DB · connectors</small></div>
+          <div class="earns-rate">€5.5k × 45%</div>
           <div class="earns-bar-cell"><div class="earns-bar" style="width: 45%;"></div></div>
-          <div class="earns-amount">€18,900</div>
+          <div class="earns-amount">€2,475</div>
         </div>
 
         <div class="earns-row">
-          <div class="earns-label">Implementation<small>Discovery · config · data migration · training</small></div>
-          <div class="earns-rate">€55k × 100%</div>
+          <div class="earns-label">Implementation<small>Template onboarding · data migration · training</small></div>
+          <div class="earns-rate">€10k × 100%</div>
           <div class="earns-bar-cell"><div class="earns-bar" style="width: 100%; background: linear-gradient(90deg, var(--accent-3), var(--accent));"></div></div>
-          <div class="earns-amount">€55,000</div>
+          <div class="earns-amount">€10,000</div>
         </div>
 
         <div class="earns-row">
           <div class="earns-label">Year-2 SLA + optimisation<small>Recurring, starts month 13</small></div>
-          <div class="earns-rate">€15k × 25%</div>
+          <div class="earns-rate">€3k × 25%</div>
           <div class="earns-bar-cell"><div class="earns-bar" style="width: 25%;"></div></div>
-          <div class="earns-amount">€3,750</div>
+          <div class="earns-amount">€750</div>
         </div>
 
         <div class="earns-deal-foot">
           <span>Partner take · Year-1 + first recurring slice</span>
-          <strong>€87,550</strong>
+          <strong>€15,150</strong>
         </div>
       </div>
 
@@ -2889,8 +3009,9 @@
 
         <div class="earns-recurring">
           <b>Year-2 onwards:</b> the same client pays an SLA / optimisation retainer.
-          A Platinum partner keeps <b>30%</b> of that for as long as the client stays
-          live. Three live clients ≈ €11k/year before any new work.
+          A Founding partner keeps <b>30%</b> of that for as long as the client
+          stays live (Active partners keep 25%). SMB volume compounds — ten live
+          clients ≈ €9k/year before any new work.
         </div>
       </div>
     </div>
@@ -2977,8 +3098,8 @@
         <tbody>
           <tr>
             <td>Annual partnership fee<small>at top tier</small></td>
-            <td>~€18,000+</td>
-            <td>~$3,000–25,000</td>
+            <td>certification + minimums</td>
+            <td>certification + minimums</td>
             <td>$0 / revenue share</td>
             <td class="us-cell"><b style="color:var(--accent);">€0</b><small style="color:var(--ink-3);font-weight:400;">all tiers, forever</small></td>
           </tr>
@@ -3018,13 +3139,6 @@
             <td class="us-cell"><span style="color:#16a34a;font-weight:700;">0</span></td>
           </tr>
           <tr>
-            <td>Geographic exclusivity<small>per top-tier partner</small></td>
-            <td><span class="cmp-no">No</span></td>
-            <td><span class="cmp-no">No</span></td>
-            <td><span class="cmp-no">No</span></td>
-            <td class="us-cell"><span class="cmp-yes">12 months soft</span></td>
-          </tr>
-          <tr>
             <td>Open-source product<small>partner can fork &amp; extend</small></td>
             <td>Community Edition only</td>
             <td><span class="cmp-no">No</span></td>
@@ -3061,53 +3175,39 @@
 <section class="section" id="tiers">
   <div class="wrap">
     <div class="section-head">
-      <h2 class="h2">Tiers and margins.</h2>
+      <h2 class="h2">Two tiers. That's it.</h2>
       <p class="section-lede">
-        Move up by closing deals. Margins go up with each tier. Reviewed annually,
-        no demotion in the first year.
+        No 4-step ladder, no certification gates. Either you're Active
+        (everyone, from day one) or you're Founding (first 3 partners).
       </p>
     </div>
     <div class="tiers">
-      <div class="tier-grid" role="table" aria-label="Partner tier ladder">
+      <div class="tier-grid" role="table" aria-label="Partner tier card">
         <div class="row-label">Margin band</div>
-        <div class="col-head" data-tier="r"><span class="badge"></span>Registered</div>
-        <div class="col-head" data-tier="s"><span class="badge"></span>Silver</div>
-        <div class="col-head" data-tier="g"><span class="badge"></span>Gold</div>
-        <div class="col-head" data-tier="p"><span class="badge"></span>Platinum</div>
+        <div class="col-head" data-tier="a"><span class="badge"></span>Active</div>
+        <div class="col-head" data-tier="f"><span class="badge"></span>Founding</div>
 
-        <div class="row-label">Commercial licences · Enterprise · CWICR · connectors</div>
-        <div class="num">25%</div>
-        <div class="num">35%</div>
+        <div class="row-label">Commercial licences · CWICR · connectors</div>
         <div class="num lg">45%</div>
         <div class="num lg">55%</div>
 
         <div class="row-label">Localisation packs · cad2data converters</div>
-        <div class="num">35%</div>
-        <div class="num">45%</div>
         <div class="num lg">55%</div>
         <div class="num lg">65%</div>
 
         <div class="row-label">Recurring on renewals</div>
-        <div class="num">15%</div>
-        <div class="num">20%</div>
         <div class="num">25%</div>
         <div class="num lg">30%</div>
 
         <div class="row-label">Implementation services</div>
         <div class="num">100%</div>
         <div class="num">100%</div>
-        <div class="num">100%</div>
-        <div class="num">100%</div>
 
-        <div class="row-label">Tier criteria (rolling 12 mo)</div>
+        <div class="row-label">How you qualify</div>
         <div class="num">Apply</div>
-        <div class="num">1 deal</div>
-        <div class="num">3 deals</div>
-        <div class="num">8 deals</div>
+        <div class="num">First 3 to sign</div>
 
         <div class="row-label" style="font-weight: 700; color: var(--ink-0);">Annual fee</div>
-        <div class="num lg">€0</div>
-        <div class="num lg">€0</div>
         <div class="num lg">€0</div>
         <div class="num lg">€0</div>
       </div>
@@ -3127,24 +3227,21 @@
     <div class="founding">
       <div class="founding-grid">
         <div>
-          <h3>Founding Partner — <em>10 spots,</em> no fee, top-tier economics from day one.</h3>
+          <h3>Founding Partner — <em>3 spots,</em> no fee, enhanced rates from day one.</h3>
           <p>
-            <strong>Skip Registered and Silver.</strong> Founding Partners are placed on
-            Gold/Platinum economics from signing, retain that status for 36 months,
-            and co-shape the roadmap.
-          </p>
-          <p>
-            <strong>Why founding?</strong> The next 90 days decide which integrators own
-            the geographies that matter — Romania, DACH, France, Spain. Once a Platinum
-            partner is established in a territory, no second Platinum will be appointed
-            in the same country for 12 months.
+            Founding Partners get the Founding-tier rate card from signing,
+            keep that rate for 12 months, and co-shape the roadmap. After
+            month 12, you stay on Founding rates as long as you have at least
+            one live client.
           </p>
           <p>
             <strong>What you get:</strong> <strong>65% margin on localisation packs and cad2data converters</strong>,
             <strong>55% on OpenConstructionERP commercial licences and CWICR</strong>, 30% recurring on
-            renewals, 100% on services, <strong>€0 fees ever</strong>, direct Telegram with Artem
-            and the core team, your logo on the homepage, co-authored case study after
-            first go-live.
+            renewals, 100% on services, <strong>€0 fees ever</strong>, direct Telegram
+            with the core team, your logo on the homepage, co-authored case study
+            after first go-live — distributed through DDC's social channels
+            (tens of thousands of AEC professionals across LinkedIn, X and
+            YouTube).
           </p>
           <p>
             <strong>What we ask:</strong> one pilot deal in 90 days and a public commitment
@@ -3156,24 +3253,17 @@
           <div class="founding-counter-card">
             <div class="founding-counter-head">
               <div class="founding-counter-eyebrow">Founding cohort</div>
-              <div class="founding-counter-big"><b>10</b> / 10</div>
+              <div class="founding-counter-big"><b>3</b> / 3</div>
             </div>
             <p class="founding-counter-sub">
-              Ten Founding Partner spots open. Each slot below is one country-leading
-              integrator who joins on Gold/Platinum economics from day one — no fees,
-              36-month status lock, direct line to the core team. <b>0 claimed so far.</b>
+              Three Founding Partner spots open. Each slot is one regional
+              integrator who joins on the Founding rate card from day one —
+              no fees, direct line to the core team. <b>0 claimed so far.</b>
             </p>
-            <div class="founding-counter" aria-label="Founding Partner spots — 0 of 10 claimed">
+            <div class="founding-counter" aria-label="Founding Partner spots — 0 of 3 claimed">
               <div class="slot" title="Spot 1 — open">1</div>
               <div class="slot" title="Spot 2 — open">2</div>
               <div class="slot" title="Spot 3 — open">3</div>
-              <div class="slot" title="Spot 4 — open">4</div>
-              <div class="slot" title="Spot 5 — open">5</div>
-              <div class="slot" title="Spot 6 — open">6</div>
-              <div class="slot" title="Spot 7 — open">7</div>
-              <div class="slot" title="Spot 8 — open">8</div>
-              <div class="slot" title="Spot 9 — open">9</div>
-              <div class="slot" title="Spot 10 — open">10</div>
             </div>
           </div>
           <a class="btn btn-primary" href="#apply" style="margin-top: 6px;">
@@ -3181,8 +3271,8 @@
             <svg class="arr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
           </a>
           <p class="micro">
-            Average response time: 48 hours. Onboarding completed in 14 days.
-            Founding cohort closes at 10 partners or 31 December 2026 — whichever comes first.
+            Onboarding takes 1–2 weeks. Founding cohort closes once 3 partners
+            sign or on 31 December 2026 — whichever comes first.
           </p>
         </div>
       </div>
@@ -3191,61 +3281,106 @@
 </section>
 
 <!-- ============================================================ -->
-<!-- 8.5 TERRITORY MAP — REMOVED                                   -->
+<!-- 8.6 PARTNER TOOLKIT — what we ship + how leads flow + anti-promises -->
 <!-- ============================================================ -->
-<section class="section" id="territories" style="background: var(--bg-2); display:none;">
+<section class="section" id="toolkit" style="background: var(--bg-2);">
   <div class="wrap">
     <div class="section-head">
-      <h2 class="h2">Open territories.</h2>
+      <h2 class="h2">What you actually get on day one.</h2>
       <p class="section-lede">
-        One Platinum partner per country, 12-month soft exclusivity from
-        signing. The list below is the priority cohort — every other
-        country is open at the same terms.
+        Three concrete things: a 30-day timeline, a ready-made toolkit, and
+        an honest map of where leads come from. No big promises, just the
+        kit and the wiring.
       </p>
     </div>
 
-    <div class="terr-wrap">
-      <div class="terr-legend">
-        <span><span class="swatch" style="background:#16a34a"></span> Open — apply now</span>
-        <span><span class="swatch" style="background:#94a3b8"></span> Reserved — Platinum signed</span>
-      </div>
+    <div class="toolkit-grid">
 
-      <div class="terr-grid">
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇩🇪</span><div><div class="terr-name">Germany</div><div class="terr-meta">DACH · DIN 276 · GAEB</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇦🇹</span><div><div class="terr-name">Austria</div><div class="terr-meta">DACH · ÖNORM · GAEB</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇨🇭</span><div><div class="terr-name">Switzerland</div><div class="terr-meta">DACH · BKP · CRB</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇬🇧</span><div><div class="terr-name">United Kingdom</div><div class="terr-meta">NRM 1/2 · BCIS</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇫🇷</span><div><div class="terr-name">France</div><div class="terr-meta">DPGF · CCTP</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇪🇸</span><div><div class="terr-name">Spain</div><div class="terr-meta">BC3 · FIEBDC-3</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇮🇹</span><div><div class="terr-name">Italy</div><div class="terr-meta">DEI · Computo Metrico</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇵🇱</span><div><div class="terr-name">Poland</div><div class="terr-meta">KNR · BIMestiMate</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇷🇴</span><div><div class="terr-name">Romania</div><div class="terr-meta">SR EN</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇳🇱</span><div><div class="terr-name">Netherlands</div><div class="terr-meta">STABU · NL-SfB</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇧🇪</span><div><div class="terr-name">Belgium</div><div class="terr-meta">VMSW · CCTB</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇵🇹</span><div><div class="terr-name">Portugal</div><div class="terr-meta">CCP · ProNIC</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇸🇪</span><div><div class="terr-name">Sweden</div><div class="terr-meta">BSAB · CoClass</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇳🇴</span><div><div class="terr-name">Norway</div><div class="terr-meta">NS 3450 · TFM</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇩🇰</span><div><div class="terr-name">Denmark</div><div class="terr-meta">CCS · molio</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇫🇮</span><div><div class="terr-name">Finland</div><div class="terr-meta">Talo 2000 · YM</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇨🇿</span><div><div class="terr-name">Czechia</div><div class="terr-meta">RTS · ÚRS</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇮🇪</span><div><div class="terr-name">Ireland</div><div class="terr-meta">ARM 4 · SCSI</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇺🇸</span><div><div class="terr-name">USA — East</div><div class="terr-meta">MasterFormat · UniFormat</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇺🇸</span><div><div class="terr-name">USA — West</div><div class="terr-meta">MasterFormat · UniFormat</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇨🇦</span><div><div class="terr-name">Canada</div><div class="terr-meta">UniFormat · NMS</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇲🇽</span><div><div class="terr-name">Mexico</div><div class="terr-meta">CMIC · BIMx</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇧🇷</span><div><div class="terr-name">Brazil</div><div class="terr-meta">SINAPI · NBR</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇦🇪</span><div><div class="terr-name">UAE</div><div class="terr-meta">CESMM · NRM-aligned</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇸🇦</span><div><div class="terr-name">Saudi Arabia</div><div class="terr-meta">SBC · NEOM-grade</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇦🇺</span><div><div class="terr-name">Australia</div><div class="terr-meta">NATSPEC · Rawlinsons</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇮🇳</span><div><div class="terr-name">India</div><div class="terr-meta">CPWD · DSR · IS</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇸🇬</span><div><div class="terr-name">Singapore</div><div class="terr-meta">SS CP · BCA</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇯🇵</span><div><div class="terr-name">Japan</div><div class="terr-meta">Sekisan · JCS</div></div><span class="terr-status">open</span></div>
-        <div class="terr-card" data-status="open"><span class="terr-flag">🇰🇷</span><div><div class="terr-name">South Korea</div><div class="terr-meta">KCS · SeoulHousing</div></div><span class="terr-status">open</span></div>
-      </div>
+      <!-- Column 1: First 30 days -->
+      <article class="toolkit-card">
+        <div class="toolkit-eyebrow">First 30 days</div>
+        <h3 class="toolkit-name">Mostly async, light on calls.</h3>
+        <ul class="toolkit-list">
+          <li><b>Day 1–3</b> · Sign agreement (PDF, ~6 pages), Telegram invite, demo tenant credentials</li>
+          <li><b>Day 4–7</b> · Marketing kit handover (Loom walk-through, ~20 min, watch when it suits you)</li>
+          <li><b>Day 8–14</b> · Pick your first SMB target, async Q&amp;A in Telegram, pricing review</li>
+          <li><b>Day 15–30</b> · Pilot proposal sent, listed in partner directory, eligible for inbound lead share</li>
+        </ul>
+        <p class="toolkit-tldr">
+          One 30-min call max in the first month — everything else is Loom,
+          shared docs and Telegram. Built so a busy SMB consultant can onboard
+          in evenings.
+        </p>
+      </article>
 
-      <p class="terr-foot">
-        Country not listed? Apply anyway — same economics as the priority cohort.
-      </p>
+      <!-- Column 2: Marketing kit -->
+      <article class="toolkit-card">
+        <div class="toolkit-eyebrow">Marketing kit</div>
+        <h3 class="toolkit-name">Concrete assets, not vague support.</h3>
+        <ul class="toolkit-list">
+          <li>Branded demo tenant on <code>demo.openconstructionerp.com/{your-name}</code></li>
+          <li>White-label sales deck (PDF + Keynote source) — your logo, your colours</li>
+          <li>Pricing one-pager per region (DACH, UK, US, FR, ES, IT, NL, RO, PL)</li>
+          <li>3 ready-made BOQ templates per region (residential, small commercial, fit-out)</li>
+          <li>Email sequences for cold + warm outreach (3 variants, plain text)</li>
+          <li>LinkedIn &amp; X co-marketing post templates with our hashtag set</li>
+        </ul>
+        <p class="toolkit-tldr">
+          Updated quarterly. Partners get a private GitHub release feed —
+          new templates, decks and pricing land there as soon as they ship.
+        </p>
+      </article>
+
+      <!-- Column 3: Where leads come from -->
+      <article class="toolkit-card">
+        <div class="toolkit-eyebrow">Where leads come from</div>
+        <h3 class="toolkit-name">Honest map of the funnel.</h3>
+        <ul class="toolkit-list">
+          <li><b>~60–70%</b> · Your existing client base — partners who already serve SMB GCs / subs / QS practices have the warmest path</li>
+          <li><b>~15–25%</b> · DDC inbound — directory listing routes enquiries to the closest partner</li>
+          <li><b>~10–15%</b> · Social co-promotion — DDC amplifies your case studies, posts and webinars across LinkedIn, X and YouTube (tens of thousands of AEC followers)</li>
+          <li><b>Bonus</b> · Joint webinars and conference co-hosting once you have one live client</li>
+        </ul>
+        <p class="toolkit-tldr">
+          We can't replace your sales motion in Year 1 — but we can amplify it.
+          Most first deals come from the partner's own network; DDC compounds
+          from there.
+        </p>
+      </article>
+    </div>
+
+    <!-- What we won't do -->
+    <div class="toolkit-wont">
+      <div class="toolkit-wont-head">
+        <h3>What we <em>won't</em> do.</h3>
+        <p>Anti-promises are honest promises. Here's what stays off the table:</p>
+      </div>
+      <div class="toolkit-wont-grid">
+        <div class="toolkit-wont-item">
+          <span class="toolkit-wont-x">×</span>
+          <div><b>We won't run your sales for you.</b> Year-1 leads come mostly from your own network. We help, but we don't replace.</div>
+        </div>
+        <div class="toolkit-wont-item">
+          <span class="toolkit-wont-x">×</span>
+          <div><b>We won't gate the marketplace.</b> No certification fees, no listing fees, no pay-to-play tiers. List as soon as you sign.</div>
+        </div>
+        <div class="toolkit-wont-item">
+          <span class="toolkit-wont-x">×</span>
+          <div><b>We won't invoice your clients without your sign-off.</b> Resold or referred — you decide per deal, not us.</div>
+        </div>
+        <div class="toolkit-wont-item">
+          <span class="toolkit-wont-x">×</span>
+          <div><b>We won't change rate cards mid-deal.</b> New rates only apply 90 days after notice, and never to deals already in flight.</div>
+        </div>
+        <div class="toolkit-wont-item">
+          <span class="toolkit-wont-x">×</span>
+          <div><b>We won't quote services against you.</b> DDC has a written commitment to never compete on implementation, training or custom modules.</div>
+        </div>
+        <div class="toolkit-wont-item">
+          <span class="toolkit-wont-x">×</span>
+          <div><b>We won't hide the pipeline.</b> If we route an inbound lead to another partner in your region, you'll see it in the partner Telegram — no surprises.</div>
+        </div>
+      </div>
     </div>
   </div>
 </section>
@@ -3268,21 +3403,21 @@
       <article class="arche-card">
         <span class="arche-tag">Solo specialist</span>
         <h3 class="arche-name">Independent expert.</h3>
-        <div class="arche-who">Senior BIM consultant · 1 person · DACH or UK</div>
+        <div class="arche-who">Senior BIM consultant or QS · 1 person · works with small GCs and subs</div>
 
         <div class="arche-stats">
-          <div><div class="arche-stat-num">2–3</div><div class="arche-stat-label">deals / year</div></div>
-          <div><div class="arche-stat-num">€60–110k</div><div class="arche-stat-label">Year-1 take</div></div>
-          <div><div class="arche-stat-num">Silver</div><div class="arche-stat-label">target tier</div></div>
+          <div><div class="arche-stat-num">3–5</div><div class="arche-stat-label">deals / year</div></div>
+          <div><div class="arche-stat-num">€35–60k</div><div class="arche-stat-label">Year-1 take</div></div>
+          <div><div class="arche-stat-num">Active</div><div class="arche-stat-label">target tier</div></div>
           <div><div class="arche-stat-num">€0</div><div class="arche-stat-label">fees, ever</div></div>
         </div>
 
         <div class="arche-mix">
-          <div class="arche-mix-row"><span>Implementation services (100%)</span><span class="arche-mix-amt">€55k</span></div>
+          <div class="arche-mix-row"><span>Implementation services (100%)</span><span class="arche-mix-amt">€40k</span></div>
           <div class="arche-mix-bar"><span style="width:80%"></span></div>
-          <div class="arche-mix-row"><span>Localisation packs (45%)</span><span class="arche-mix-amt">€7k</span></div>
+          <div class="arche-mix-row"><span>Localisation packs (45%)</span><span class="arche-mix-amt">€5k</span></div>
           <div class="arche-mix-bar"><span style="width:18%"></span></div>
-          <div class="arche-mix-row"><span>Commercial / CWICR (35%)</span><span class="arche-mix-amt">€4k</span></div>
+          <div class="arche-mix-row"><span>Commercial / CWICR (35%)</span><span class="arche-mix-amt">€3k</span></div>
           <div class="arche-mix-bar"><span style="width:9%"></span></div>
         </div>
 
@@ -3296,27 +3431,27 @@
       <article class="arche-card featured">
         <span class="arche-tag" style="background: color-mix(in oklab, var(--accent) 18%, transparent);">Most common</span>
         <h3 class="arche-name">BIM consultancy.</h3>
-        <div class="arche-who">5–25 staff · half BIM, half dev · regional reach</div>
+        <div class="arche-who">5–15 staff · half BIM, half dev · works with SMB clients regionally</div>
 
         <div class="arche-stats">
-          <div><div class="arche-stat-num">6–10</div><div class="arche-stat-label">deals / year</div></div>
-          <div><div class="arche-stat-num">€420–680k</div><div class="arche-stat-label">Year-1 take</div></div>
-          <div><div class="arche-stat-num">Gold→Platinum</div><div class="arche-stat-label">target tier</div></div>
+          <div><div class="arche-stat-num">8–12</div><div class="arche-stat-label">deals / year</div></div>
+          <div><div class="arche-stat-num">€130–200k</div><div class="arche-stat-label">Year-1 take</div></div>
+          <div><div class="arche-stat-num">Active / Founding</div><div class="arche-stat-label">target tier</div></div>
           <div><div class="arche-stat-num">+30%</div><div class="arche-stat-label">recurring Year-2</div></div>
         </div>
 
         <div class="arche-mix">
-          <div class="arche-mix-row"><span>Implementation services (100%)</span><span class="arche-mix-amt">€330k</span></div>
+          <div class="arche-mix-row"><span>Implementation services (100%)</span><span class="arche-mix-amt">€110k</span></div>
           <div class="arche-mix-bar"><span style="width:78%"></span></div>
-          <div class="arche-mix-row"><span>Localisation + cad2data (55–65%)</span><span class="arche-mix-amt">€95k</span></div>
+          <div class="arche-mix-row"><span>Localisation + cad2data (55–65%)</span><span class="arche-mix-amt">€26k</span></div>
           <div class="arche-mix-bar"><span style="width:23%"></span></div>
-          <div class="arche-mix-row"><span>OCERP commercial + CWICR (45–55%)</span><span class="arche-mix-amt">€70k</span></div>
+          <div class="arche-mix-row"><span>OCERP commercial + CWICR (45–55%)</span><span class="arche-mix-amt">€18k</span></div>
           <div class="arche-mix-bar"><span style="width:17%"></span></div>
         </div>
 
         <p class="arche-tldr">
           You own a country, run discovery and go-live, ship one localisation
-          pack, keep 3+ clients on SLA. Recurring margin starts month 13.
+          pack, keep 5+ SMB clients on SLA. Recurring margin starts month 13.
         </p>
       </article>
 
@@ -3324,21 +3459,21 @@
       <article class="arche-card">
         <span class="arche-tag">ERP integrator</span>
         <h3 class="arche-name">Multi-product SI.</h3>
-        <div class="arche-who">25+ staff · enterprise accounts · adds OCERP to existing portfolio</div>
+        <div class="arche-who">15–30 staff · serves SMB at volume · adds OCERP to existing portfolio</div>
 
         <div class="arche-stats">
-          <div><div class="arche-stat-num">12–20</div><div class="arche-stat-label">deals / year</div></div>
-          <div><div class="arche-stat-num">€1.1–1.8M</div><div class="arche-stat-label">Year-1 take</div></div>
-          <div><div class="arche-stat-num">Platinum</div><div class="arche-stat-label">target tier</div></div>
-          <div><div class="arche-stat-num">5+</div><div class="arche-stat-label">countries served</div></div>
+          <div><div class="arche-stat-num">18–28</div><div class="arche-stat-label">deals / year</div></div>
+          <div><div class="arche-stat-num">€320–520k</div><div class="arche-stat-label">Year-1 take</div></div>
+          <div><div class="arche-stat-num">Founding</div><div class="arche-stat-label">target tier</div></div>
+          <div><div class="arche-stat-num">2–4</div><div class="arche-stat-label">countries served</div></div>
         </div>
 
         <div class="arche-mix">
-          <div class="arche-mix-row"><span>Implementation services (100%)</span><span class="arche-mix-amt">€820k</span></div>
+          <div class="arche-mix-row"><span>Implementation services (100%)</span><span class="arche-mix-amt">€260k</span></div>
           <div class="arche-mix-bar"><span style="width:75%"></span></div>
-          <div class="arche-mix-row"><span>Multi-country localisation (65%)</span><span class="arche-mix-amt">€180k</span></div>
+          <div class="arche-mix-row"><span>Multi-country localisation (65%)</span><span class="arche-mix-amt">€60k</span></div>
           <div class="arche-mix-bar"><span style="width:22%"></span></div>
-          <div class="arche-mix-row"><span>Commercial + cad2data resale (55%)</span><span class="arche-mix-amt">€140k</span></div>
+          <div class="arche-mix-row"><span>Commercial + cad2data resale (55%)</span><span class="arche-mix-amt">€40k</span></div>
           <div class="arche-mix-bar"><span style="width:17%"></span></div>
         </div>
 
@@ -3353,111 +3488,6 @@
 </section>
 
 <!-- ============================================================ -->
-<!-- 8.8 INTERACTIVE REVENUE CALCULATOR                            -->
-<!-- ============================================================ -->
-<section class="section" id="calculator" style="background: var(--bg-2);">
-  <div class="wrap">
-    <div class="section-head">
-      <h2 class="h2">Try the numbers.</h2>
-      <p class="section-lede">
-        Set deal size, deal count and your tier. The estimate updates live.
-      </p>
-    </div>
-
-    <div class="calc-wrap" id="calc-root">
-      <div class="calc-inputs">
-        <div class="calc-input-row">
-          <div class="calc-input-label">
-            <span>Average deal size</span>
-            <span><span class="calc-input-value" id="calc-deal-val">€120k</span></span>
-          </div>
-          <input type="range" class="calc-slider" id="calc-deal" min="40" max="500" step="10" value="120" aria-label="Average deal size in thousands of euros">
-          <div class="calc-input-label" style="margin-top: 4px;">
-            <small>€40k</small>
-            <small>€500k</small>
-          </div>
-        </div>
-
-        <div class="calc-input-row">
-          <div class="calc-input-label">
-            <span>Deals per year</span>
-            <span><span class="calc-input-value" id="calc-deals-val">5</span></span>
-          </div>
-          <input type="range" class="calc-slider" id="calc-deals" min="1" max="25" step="1" value="5" aria-label="Number of deals per year">
-          <div class="calc-input-label" style="margin-top: 4px;">
-            <small>1 deal</small>
-            <small>25 deals</small>
-          </div>
-        </div>
-
-        <div class="calc-input-row">
-          <div class="calc-input-label">
-            <span>Your tier</span>
-            <span><small>Move up by closing deals</small></span>
-          </div>
-          <div class="calc-tier-row" role="radiogroup" aria-label="Partner tier">
-            <button type="button" class="calc-tier-btn" data-tier="r" data-com="0.25" data-loc="0.35" data-rec="0.15">Registered</button>
-            <button type="button" class="calc-tier-btn" data-tier="s" data-com="0.35" data-loc="0.45" data-rec="0.20">Silver</button>
-            <button type="button" class="calc-tier-btn active" data-tier="g" data-com="0.45" data-loc="0.55" data-rec="0.25">Gold</button>
-            <button type="button" class="calc-tier-btn" data-tier="p" data-com="0.55" data-loc="0.65" data-rec="0.30">Platinum</button>
-          </div>
-        </div>
-
-        <div style="font-size:12px;color:var(--ink-3);font-style:italic;line-height:1.5;padding-top:8px;border-top:1px dashed var(--line-2);">
-          Default deal mix: 45% implementation services (you keep 100%), 15%
-          localisation packs, 35% commercial OCERP/CWICR, 5% cad2data converters.
-          Edit assumptions in the deal preview by closing more deals.
-        </div>
-      </div>
-
-      <div class="calc-output">
-        <div class="calc-output-headline">
-          <div class="calc-output-headline-label">Year-1 partner take · estimate</div>
-          <div class="calc-output-headline-num"><em id="calc-headline">€328,500</em></div>
-          <div class="calc-output-headline-sub" id="calc-headline-sub">5 deals × €120k average · Gold tier</div>
-        </div>
-
-        <div class="calc-output-rows" id="calc-rows">
-          <div class="calc-output-row">
-            <span>Implementation services<br><small style="color:var(--ink-3);font-size:11.5px;">45% of deal · 100% partner</small></span>
-            <b id="calc-impl">€270,000</b>
-          </div>
-          <div class="calc-output-row">
-            <span>Localisation packs<br><small style="color:var(--ink-3);font-size:11.5px;">15% of deal · tier rate</small></span>
-            <b id="calc-loc">€49,500</b>
-          </div>
-          <div class="calc-output-row">
-            <span>OpenConstructionERP commercial + CWICR<br><small style="color:var(--ink-3);font-size:11.5px;">35% of deal · tier rate</small></span>
-            <b id="calc-com">€94,500</b>
-          </div>
-          <div class="calc-output-row">
-            <span>cad2data converters<br><small style="color:var(--ink-3);font-size:11.5px;">5% of deal · tier rate</small></span>
-            <b id="calc-cad">€16,500</b>
-          </div>
-          <div class="calc-output-row total">
-            <span>Year-1 partner take</span>
-            <b id="calc-total">€430,500</b>
-          </div>
-        </div>
-
-        <div class="calc-output-recurring">
-          <b>Plus recurring (Year 2+):</b> at your tier, every retained client
-          adds <b id="calc-rec">~€3,750</b> per deal per year in passive SLA + optimisation
-          margin — for as long as they stay live. <b id="calc-rec-total">€18,750/yr</b>
-          off your current pipeline.
-        </div>
-      </div>
-
-      <p class="calc-disclaimer">
-        Estimates based on the published rate card and a typical mid-market mix.
-        Real deals shift the mix toward implementation (good for you) or
-        commercial licences (still good for you, just at the lower margin).
-      </p>
-    </div>
-  </div>
-</section>
-
-<!-- ============================================================ -->
 <!-- 9. APPLICATION FLOW                                           -->
 <!-- ============================================================ -->
 <section class="section">
@@ -3465,7 +3495,7 @@
     <div class="section-head">
       <h2 class="h2">How to apply.</h2>
       <p class="section-lede">
-        Four steps, about two weeks for Founding Partners.
+        Four async steps, about two weeks end-to-end. Mostly your pace.
       </p>
     </div>
     <div class="apply-flow">
@@ -3474,20 +3504,20 @@
         <p>6-field form: name, company, country, website, current AEC clients, target tier.</p>
       </div>
       <div class="apply-step">
-        <h4>Discovery call</h4>
-        <p>30 minutes with Artem. We walk through your portfolio and target deals.</p>
+        <h4>Intro call</h4>
+        <p>30 minutes, async-friendly (we'll do video or just trade Looms). We walk through your portfolio and target deals.</p>
       </div>
       <div class="apply-step">
         <h4>Sign &amp; onboard</h4>
-        <p>Partnership agreement (PDF, ~6 pages), Telegram invite, sales deck, demo environment, first certification scheduled.</p>
+        <p>Partnership agreement (PDF, ~6 pages), Telegram invite, sales deck, demo environment, marketing kit handed over.</p>
       </div>
       <div class="apply-step">
         <h4>First deal</h4>
-        <p>Listed on partner directory, co-marketed by DDC, eligible for lead share.</p>
+        <p>Listed on partner directory, co-promoted on our social channels, eligible for lead share from inbound enquiries.</p>
       </div>
     </div>
     <div class="apply-meta">
-      14 days for Founding Partners · 30 days for standard applications.
+      Roughly 1–2 weeks end-to-end. Most steps are async — minimal calendar blocking on either side.
     </div>
   </div>
 </section>
@@ -3526,9 +3556,9 @@
         <h3 class="risk-q">"What if I don't close any deals in Year 1?"</h3>
         <p class="risk-a">
           You owe nothing. <b>€0 annual fee, no quotas, no minimums.</b>
-          You stay at Registered tier indefinitely. Deal volume only matters
-          for moving up tiers. Founding cohort is the only exception
-          (1 deal in 90 days) and it's optional.
+          You stay on the Active rate card indefinitely. Founding cohort
+          asks for one pilot in 90 days, but standard Active partnership
+          has no deal target.
         </p>
       </div>
 
@@ -3551,9 +3581,9 @@
         </span>
         <h3 class="risk-q">"What if you change the terms later?"</h3>
         <p class="risk-a">
-          Founding Partners keep signing-day economics for 36 months. Standard
-          partners get a 12-month rate guarantee on deals already in flight.
-          New rates only apply to deals booked after 90 days' notice.
+          Founding Partners keep signing-day rates for 12 months. All partners
+          get a rate guarantee on deals already in flight. New rates only
+          apply to deals booked after 90 days' notice.
         </p>
       </div>
 
@@ -3576,9 +3606,9 @@
         <h3 class="risk-q">"What if my first client hates the product?"</h3>
         <p class="risk-a">
           They run the AGPL build for free, so the downside is your hours
-          and their time — not a six-figure licence. If a Founding pilot
-          fails inside 90 days, we run a joint retrospective and help you
-          unwind it.
+          and their time — not a five-figure licence locked in upfront.
+          If a Founding pilot fails inside 90 days, we run a joint
+          retrospective and help you unwind it.
         </p>
       </div>
     </div>
@@ -3650,15 +3680,15 @@
       </details>
       <details class="faq-item">
         <summary class="faq-q">
-          <span>What's the difference between a Founding Partner and a Platinum Partner?</span>
+          <span>What's the difference between a Founding Partner and an Active Partner?</span>
           <span class="faq-chev"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
         </summary>
         <div class="faq-a">
-          Founding Partners are the first 10 signatories. They get Platinum economics
-          from day 0 (no ladder climb), 12-month soft geographic exclusivity, and a
-          permanent badge. Platinum is the standard top tier reached by performance.
-          <strong>Founding cohort closes</strong> when 10 partners sign or on
-          31 December 2026, whichever comes first.
+          Founding Partners are the first 3 signatories. They get the Founding
+          rate card from day 0 — no ladder climb, no fees, direct line to
+          the core team. Active is the standard partnership for everyone
+          else. <strong>Founding cohort closes</strong> when 3 partners sign
+          or on 31 December 2026, whichever comes first.
         </div>
       </details>
       <details class="faq-item">
@@ -3712,13 +3742,14 @@
       </details>
       <details class="faq-item">
         <summary class="faq-q">
-          <span>What happens if I don't hit Gold or Platinum requirements?</span>
+          <span>What if I never close a deal — do I lose my partnership?</span>
           <span class="faq-chev"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
         </summary>
         <div class="faq-a">
-          Nothing punitive. Tiers are reviewed annually. <strong>You retain your tier
-          for 12 months from signing</strong> regardless of activity. If activity slows,
-          we work with you on lead-share or co-sell rather than demote.
+          Nothing punitive. <strong>You stay on the Active rate card indefinitely</strong> —
+          there's no demotion, no fee clawback, no expiry. If activity slows,
+          we work with you on lead-share or co-sell. Founding partners keep
+          Founding rates as long as they have at least one live client.
         </div>
       </details>
     </div>
@@ -3734,11 +3765,10 @@
 
       <!-- LEFT RAIL: what happens next + trust -->
       <div class="apply-rail">
-        <div class="apply-rail-eyebrow">Founding cohort · 0 of 10 claimed</div>
+        <div class="apply-rail-eyebrow">Founding cohort · 0 of 3 claimed</div>
         <h2>Apply in <em>six fields.</em></h2>
         <p class="apply-rail-lede">
-          We read every application personally. Most replies go out within 48 hours.
-          No automated funnel, no sales rep — just a direct conversation.
+          We read every application personally.
         </p>
 
         <div class="apply-steps">
@@ -3752,25 +3782,16 @@
           <div class="apply-step-row">
             <div class="apply-step-num">2</div>
             <div>
-              <b>We reply within 48 hours</b>
-              <span>A short note from Artem with next steps and a link to a 30-min call.</span>
+              <b>We reply with next steps</b>
+              <span>A short note with a link to a 30-min intro call. Async by default — no calendar Tetris.</span>
             </div>
           </div>
           <div class="apply-step-row">
             <div class="apply-step-num">3</div>
             <div>
-              <b>Onboarding in 14 days</b>
-              <span>Partnership agreement, Telegram invite, demo environment, first deal review.</span>
+              <b>Onboarding in 1–2 weeks</b>
+              <span>Partnership agreement, Telegram invite, demo environment, marketing kit handover.</span>
             </div>
-          </div>
-        </div>
-
-        <div class="apply-note">
-          <div class="apply-note-avatar" aria-hidden="true">A</div>
-          <div class="apply-note-body">
-            "I read every Founding application myself. If your team has a clear first
-            client and a country we can localise, you'll hear from me within two days."
-            <b>— Artem, founder · DataDrivenConstruction</b>
           </div>
         </div>
 
@@ -3780,12 +3801,8 @@
             <span>Stored in <b>EU servers</b> · GDPR-compliant · never sold or shared</span>
           </div>
           <div class="apply-trust-row">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="10"/></svg>
-            <span>Average reply time: <b>~36 hours</b> · 100% within 5 business days</span>
-          </div>
-          <div class="apply-trust-row">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12V8a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a3 3 0 0 0 3 3h11a3 3 0 0 0 3-3v-1"/><path d="M16 12h4M18 10v4"/></svg>
-            <span><b>€0 partnership fees</b> at every tier · forever, written into the agreement</span>
+            <span><b>€0 partnership fees</b> · forever, written into the agreement</span>
           </div>
           <div class="apply-trust-row">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M20 8v6M23 11h-6"/></svg>
@@ -3828,16 +3845,13 @@
             <div class="apply-form-section-label">What you'd build</div>
             <label class="full">
               Current AEC clients &amp; what you'd implement first
-              <textarea name="brief" required placeholder="e.g. We are a Berlin-based BIM consultancy with 12 GC clients. First target: a €120k pilot for a residential developer in Q3 2026..."></textarea>
+              <textarea name="brief" required placeholder="e.g. We are a Berlin-based BIM consultancy with 12 SMB GC clients. First target: a €22k pilot for a small residential developer in Q3 2026..."></textarea>
             </label>
             <label>
               Target tier
               <select name="target_tier" required>
-                <option value="founding" selected>Founding Partner (top priority)</option>
-                <option value="platinum">Platinum</option>
-                <option value="gold">Gold</option>
-                <option value="silver">Silver</option>
-                <option value="registered">Registered</option>
+                <option value="founding" selected>Founding Partner (first 3, top rates)</option>
+                <option value="active">Active Partner (standard rates)</option>
                 <option value="not_sure">Not sure — let's discuss</option>
               </select>
             </label>
@@ -3856,7 +3870,7 @@
                 <svg class="arr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
               </button>
               <span class="micro">
-                Reply within <b>48 hours</b>. Used only to evaluate your application. Stored in EU. Never sold.
+                Used only to evaluate your application. Stored in EU. Never sold.
               </span>
             </div>
           </div>
@@ -3912,93 +3926,11 @@
   if (location.search.includes('submitted=1')) {
     const t = document.createElement('div');
     t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#0284c7,#2563eb);color:#fff;padding:14px 22px;border-radius:12px;font-weight:600;font-size:14px;box-shadow:0 18px 36px -12px rgba(2,90,160,0.6);z-index:9999';
-    t.textContent = '✓ Application received — we reply within 48 hours.';
+    t.textContent = '✓ Application received — we will be in touch shortly.';
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 6000);
   }
 
-  // Revenue calculator — sliders + tier buttons, live recompute.
-  (function () {
-    const root = document.getElementById('calc-root');
-    if (!root) return;
-    const dealEl = document.getElementById('calc-deal');
-    const dealsEl = document.getElementById('calc-deals');
-    const dealValEl = document.getElementById('calc-deal-val');
-    const dealsValEl = document.getElementById('calc-deals-val');
-    const tierBtns = root.querySelectorAll('.calc-tier-btn');
-    const headlineEl = document.getElementById('calc-headline');
-    const headlineSubEl = document.getElementById('calc-headline-sub');
-    const implEl = document.getElementById('calc-impl');
-    const locEl = document.getElementById('calc-loc');
-    const comEl = document.getElementById('calc-com');
-    const cadEl = document.getElementById('calc-cad');
-    const totalEl = document.getElementById('calc-total');
-    const recEl = document.getElementById('calc-rec');
-    const recTotalEl = document.getElementById('calc-rec-total');
-
-    // Default mix: services 45% / loc 15% / commercial 35% / cad2data 5%
-    const MIX = { services: 0.45, loc: 0.15, com: 0.35, cad: 0.05 };
-    let activeTier = root.querySelector('.calc-tier-btn.active');
-
-    const TIER_NAMES = { r: 'Registered', s: 'Silver', g: 'Gold', p: 'Platinum' };
-
-    function fmt(v) {
-      if (v >= 1_000_000) return '€' + (v / 1_000_000).toFixed(2).replace(/\.?0+$/, '') + 'M';
-      if (v >= 1000) return '€' + Math.round(v / 100) / 10 + 'k'.replace('.0k', 'k');
-      return '€' + Math.round(v).toLocaleString('en-US');
-    }
-    function fmtFull(v) {
-      return '€' + Math.round(v).toLocaleString('en-US');
-    }
-
-    function recompute() {
-      const dealK = parseInt(dealEl.value, 10);  // €k per deal
-      const deals = parseInt(dealsEl.value, 10);
-      const com = parseFloat(activeTier.dataset.com);
-      const loc = parseFloat(activeTier.dataset.loc);
-      const rec = parseFloat(activeTier.dataset.rec);
-
-      const totalDealValue = dealK * 1000 * deals;
-
-      const impl = totalDealValue * MIX.services * 1.0;        // 100% services
-      const locRev = totalDealValue * MIX.loc * loc;            // tier rate on localisation
-      const comRev = totalDealValue * MIX.com * com;            // tier rate on commercial
-      const cadRev = totalDealValue * MIX.cad * loc;            // cad2data uses loc rate (high)
-
-      const total = impl + locRev + comRev + cadRev;
-
-      // Recurring: per deal, ~12% of deal value at tier rec rate
-      const recPerDeal = dealK * 1000 * 0.12 * rec;
-      const recTotal = recPerDeal * deals;
-
-      dealValEl.textContent = '€' + dealK + 'k';
-      dealsValEl.textContent = deals;
-
-      headlineEl.textContent = fmtFull(total);
-      headlineSubEl.textContent = `${deals} deal${deals === 1 ? '' : 's'} × €${dealK}k average · ${TIER_NAMES[activeTier.dataset.tier]} tier`;
-
-      implEl.textContent = fmtFull(impl);
-      locEl.textContent = fmtFull(locRev);
-      comEl.textContent = fmtFull(comRev);
-      cadEl.textContent = fmtFull(cadRev);
-      totalEl.textContent = fmtFull(total);
-      recEl.textContent = '~' + fmtFull(recPerDeal);
-      recTotalEl.textContent = fmtFull(recTotal) + '/yr';
-    }
-
-    dealEl.addEventListener('input', recompute);
-    dealsEl.addEventListener('input', recompute);
-    tierBtns.forEach((btn) => {
-      btn.addEventListener('click', () => {
-        tierBtns.forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
-        activeTier = btn;
-        recompute();
-      });
-    });
-
-    recompute();
-  })();
 </script>
 
 </body>

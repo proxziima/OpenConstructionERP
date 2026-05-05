@@ -1343,3 +1343,37 @@ tbody tr:nth-child(20) { animation-delay: 570ms; }
 .ag-header-cell.ag-right-aligned-header .ag-header-cell-label {
   justify-content: flex-end !important;
 }
+
+/* ── Login glass-hero blob animations ─────────────────────────────────
+   Slow drifting radial blobs behind the glass card on /login.
+   Each runs 18-26s ease-in-out infinite for an ambient feel. */
+
+@keyframes blob-slow-1 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33%      { transform: translate3d(40px, -30px, 0) scale(1.08); }
+  66%      { transform: translate3d(-20px, 40px, 0) scale(0.95); }
+}
+@keyframes blob-slow-2 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33%      { transform: translate3d(-50px, 30px, 0) scale(0.92); }
+  66%      { transform: translate3d(30px, -40px, 0) scale(1.1); }
+}
+@keyframes blob-slow-3 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(-40px, -20px, 0) scale(1.12); }
+}
+@keyframes blob-slow-4 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(50px, 30px, 0) scale(0.9); }
+}
+.animate-blob-slow-1 { animation: blob-slow-1 22s ease-in-out infinite; }
+.animate-blob-slow-2 { animation: blob-slow-2 26s ease-in-out infinite; }
+.animate-blob-slow-3 { animation: blob-slow-3 18s ease-in-out infinite; }
+.animate-blob-slow-4 { animation: blob-slow-4 24s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-blob-slow-1,
+  .animate-blob-slow-2,
+  .animate-blob-slow-3,
+  .animate-blob-slow-4 { animation: none; }
+}

@@ -333,45 +333,52 @@ export function UpdateNotification({ forceShow = false, hideDismiss = false }: U
           })}
           className="w-full text-left"
         >
-          <div className="flex items-center gap-2 px-2.5 py-2">
-            <div className="relative shrink-0">
-              <span
-                className="absolute inset-0 rounded-md bg-sky-500/35 animate-ping"
-                aria-hidden="true"
-              />
-              <div className="relative flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-sm shadow-blue-500/30">
-                <Sparkles size={12} strokeWidth={2.5} />
+          {/* Stacked layout — three rows so nothing truncates inside a 210px
+              sidebar:
+                row 1  icon + version arrow + "available" pill
+                row 2  date · N changes
+                row 3  full-width Details chip
+              Each row owns its own width, so we never have to fight flex
+              competition between version text and right-side chip (the old
+              row-flex layout was clipping the version on narrow sidebars). */}
+          <div className="px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <div className="relative shrink-0">
+                <span
+                  className="absolute inset-0 rounded-md bg-sky-500/35 animate-ping"
+                  aria-hidden="true"
+                />
+                <div className="relative flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-sm shadow-blue-500/30">
+                  <Sparkles size={12} strokeWidth={2.5} />
+                </div>
               </div>
+              <span className="flex-1 text-[13px] font-bold text-blue-900 dark:text-sky-100 tabular-nums leading-tight break-words">
+                v{CURRENT_VERSION} → v{release.version}
+              </span>
+              <span className="shrink-0 inline-flex items-center rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                {t('update.new_available', { defaultValue: 'available‌⁠‍' })}
+              </span>
             </div>
-            <div className="flex-1 min-w-0 leading-tight">
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-xs font-bold text-blue-900 dark:text-sky-100 tabular-nums">
-                  v{CURRENT_VERSION} → v{release.version}
-                </span>
-                <span className="text-[9px] font-semibold uppercase tracking-wider text-blue-600 dark:text-sky-300">
-                  {t('update.new_available', { defaultValue: 'available‌⁠‍' })}
-                </span>
-              </div>
-              <div className="flex items-center gap-1 text-[9px] text-blue-700/70 dark:text-sky-300/60 tabular-nums">
+            {(relativeDate || (grouped && grouped.totalCount > 0)) && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-8 text-[11px] text-blue-700/75 dark:text-sky-300/65 tabular-nums">
                 {relativeDate && <span>{relativeDate}</span>}
                 {grouped && grouped.totalCount > 0 && (
                   <>
                     {relativeDate && <span aria-hidden="true">·</span>}
                     <span>
-                      {t('update.changes_count_in', {
-                        defaultValue: '{{count}} changes in v{{version}}‌⁠‍',
+                      {t('update.changes_count_short', {
+                        defaultValue: '{{count}} changes',
                         count: grouped.totalCount,
-                        version: release.version,
                       })}
                     </span>
                   </>
                 )}
               </div>
-            </div>
-            <span className="shrink-0 flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wider text-blue-600 dark:text-sky-300">
+            )}
+            <div className="mt-2 flex items-center justify-end gap-1 text-[11px] font-semibold text-blue-600 dark:text-sky-300">
               {t('update.details', { defaultValue: 'Details‌⁠‍' })}
-              <ExternalLink size={9} />
-            </span>
+              <ExternalLink size={11} />
+            </div>
           </div>
         </button>
         {!hideDismiss && (

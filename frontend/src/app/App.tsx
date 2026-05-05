@@ -71,9 +71,9 @@ const AnalyticsPage = lazy(() =>
 const RiskRegisterPage = lazy(() =>
   import('@/features/risk/RiskRegisterPage').then((m) => ({ default: m.RiskRegisterPage }))
 );
-const DocumentsPage = lazy(() =>
-  import('@/features/documents/DocumentsPage').then((m) => ({ default: m.DocumentsPage }))
-);
+// DocumentsPage merged into the unified File Manager — /documents now
+// redirects to /files. Keeping the source file on disk for cleanup in a
+// later release; nothing imports DocumentsPage today.
 const PhotoGalleryPage = lazy(() =>
   import('@/features/documents/PhotoGalleryPage').then((m) => ({ default: m.PhotoGalleryPage }))
 );
@@ -152,6 +152,9 @@ const ArchitectureMapPage = lazy(() =>
 );
 const ProjectIntelligencePage = lazy(() =>
   import('@/features/project-intelligence/ProjectIntelligencePage').then((m) => ({ default: m.ProjectIntelligencePage }))
+);
+const FileManagerPage = lazy(() =>
+  import('@/features/file-manager/FileManagerPage').then((m) => ({ default: m.FileManagerPage }))
 );
 const SnapshotsPage = lazy(() =>
   import('@/features/dashboards').then((m) => ({ default: m.SnapshotsPage }))
@@ -435,8 +438,10 @@ export default function App() {
         <Route path="/tendering" element={<P title="Tendering"><TenderingPage /></P>} />
 
         <Route path="/changeorders" element={<P title="Change Orders"><ChangeOrdersPage /></P>} />
-        <Route path="/documents" element={<P title="Documents"><DocumentsPage /></P>} />
+        <Route path="/documents" element={<Navigate to="/files" replace />} />
         <Route path="/photos" element={<P title="Project Photos"><PhotoGalleryPage /></P>} />
+        <Route path="/files" element={<P title="Project Files"><FileManagerPage /></P>} />
+        <Route path="/projects/:projectId/files" element={<P title="Project Files"><FileManagerPage /></P>} />
 
         <Route path="/risks" element={<P title="Risk Register"><RiskRegisterPage /></P>} />
 

@@ -9,9 +9,13 @@ Endpoints:
 """
 
 import logging
+import os
 import uuid
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import Response
+from sqlalchemy import select
 
 from app.dependencies import CurrentUserId, CurrentUserPayload, SessionDep, SettingsDep
 from app.modules.projects.schemas import (
@@ -26,6 +30,33 @@ from app.modules.projects.schemas import (
     WBSCreate,
     WBSResponse,
     WBSUpdate,
+)
+from app.modules.projects.file_manager_schemas import (
+    EmailLinkResponse,
+    ExportOptions,
+    ExportPreview,
+    FileKind,
+    FileListResponse,
+    FileTreeNode,
+    ImportMode,
+    ImportPreview,
+    ImportResult,
+    StorageLocations,
+)
+from app.modules.projects.file_manager_service import (
+    file_tree as fm_file_tree,
+    list_project_files as fm_list_files,
+    resolve_storage_locations as fm_resolve_locations,
+)
+from app.modules.projects.bundle_export import (
+    export_bundle as fm_export_bundle,
+    filename_for_bundle as fm_bundle_filename,
+    preview_bundle as fm_preview_bundle,
+)
+from app.modules.projects.bundle_import import (
+    BundleError,
+    import_bundle as fm_import_bundle,
+    validate_bundle as fm_validate_bundle,
 )
 from app.modules.projects.service import (
     ProjectService,
@@ -1709,3 +1740,466 @@ async def post_reset_match_settings(
     await _verify_project_owner(service, project_id, user_id, payload)
     row = await reset_match_settings(session, project_id, user_id=user_id)
     return MatchProjectSettingsRead.model_validate(row)
+
+
+# ── File manager (Issue #109) ─────────────────────────────────────────────
+
+
+@router.get(
+    "/{project_id}/files/tree/",
+    response_model=list[FileTreeNode],
+    summary="File-manager category tree",
+)
+async def file_manager_tree(
+    project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: ProjectService = Depends(_get_service),
+) -> list[FileTreeNode]:
+    """Return the left-pane category tree for the file manager."""
+    await _verify_project_owner(service, project_id, user_id, payload)
+    return await fm_file_tree(session, str(project_id))
+
+
+@router.get(
+    "/{project_id}/files/",
+    response_model=FileListResponse,
+    summary="File-manager flat listing",
+)
+async def file_manager_list(
+    project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: ProjectService = Depends(_get_service),
+    category: FileKind | None = Query(default=None),
+    extension: str | None = Query(default=None, max_length=10),
+    q: str | None = Query(default=None, max_length=200),
+    sort: str = Query(default="modified", pattern="^(modified|name|size|kind)$"),
+    limit: int = Query(default=200, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
+) -> FileListResponse:
+    """Flat listing of every file attached to ``project_id``.
+
+    Cross-module: documents, photos, sheets, BIM models, DWG drawings.
+    Each row carries the *real* on-disk path so the UI can ground users
+    on where their data actually lives.
+    """
+    await _verify_project_owner(service, project_id, user_id, payload)
+    return await fm_list_files(
+        session,
+        str(project_id),
+        category=category,
+        extension=extension,
+        query=q,
+        limit=limit,
+        offset=offset,
+        sort=sort,
+    )
+
+
+@router.get(
+    "/{project_id}/files/locations/",
+    response_model=StorageLocations,
+    summary="Resolved on-disk storage roots for the project",
+)
+async def file_manager_locations(
+    project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    settings: SettingsDep,
+    service: ProjectService = Depends(_get_service),
+) -> StorageLocations:
+    """Return the absolute filesystem paths used by the project.
+
+    Powers the path bar in the file manager so users can copy the path,
+    open the containing folder (Tauri-only), or just understand where
+    their attachments live.
+    """
+    project = await _verify_project_owner(service, project_id, user_id, payload)
+    return fm_resolve_locations(
+        str(project_id), getattr(project, "name", ""), settings=settings,
+    )
+
+
+# ── Bundle export / import (Issue #109) ───────────────────────────────────
+
+
+@router.post(
+    "/{project_id}/export/preview/",
+    response_model=ExportPreview,
+    summary="Preview a bundle export — sizes & counts only",
+)
+async def post_export_preview(
+    project_id: uuid.UUID,
+    options: ExportOptions,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: ProjectService = Depends(_get_service),
+) -> ExportPreview:
+    """Cheap dry-run: returns the table-row counts and an attachment-size
+    estimate for the chosen scope. Lets the wizard show "we'll pack 12 MB"
+    before the user clicks Download."""
+    await _verify_project_owner(service, project_id, user_id, payload)
+    return await fm_preview_bundle(session, str(project_id), options)
+
+
+@router.post(
+    "/{project_id}/export/",
+    summary="Pack the project into a .ocep bundle",
+    responses={200: {"content": {"application/zip": {}}}},
+)
+async def post_export_bundle(
+    project_id: uuid.UUID,
+    options: ExportOptions,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: ProjectService = Depends(_get_service),
+) -> Response:
+    """Stream the .ocep bundle as a Content-Disposition: attachment.
+
+    The wizard hits ``/export/preview/`` first to show sizes; this endpoint
+    does the real packing and may take several seconds for large BIM scopes.
+    """
+    project = await _verify_project_owner(service, project_id, user_id, payload)
+    user_email = (payload or {}).get("email") if payload else None
+    raw = await fm_export_bundle(
+        session,
+        str(project_id),
+        getattr(project, "name", "project"),
+        getattr(project, "currency", None),
+        user_email,
+        options,
+    )
+    fname = fm_bundle_filename(getattr(project, "name", "project"), options.scope)
+    return Response(
+        content=raw,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-Bundle-Format": "ocep",
+            "X-Bundle-Scope": options.scope,
+        },
+    )
+
+
+@router.post(
+    "/import/validate/",
+    response_model=ImportPreview,
+    summary="Inspect a .ocep bundle without committing",
+)
+async def post_import_validate(
+    user_id: CurrentUserId,
+    file: UploadFile = File(..., description=".ocep bundle to inspect"),
+) -> ImportPreview:
+    _ = user_id  # gate: any authenticated user can preview a bundle
+    """Read the manifest, sanity-check format/version compatibility, and
+    return what the bundle *would* import. The frontend uses this to drive
+    the import wizard's confirmation screen."""
+    raw = await file.read()
+    try:
+        return fm_validate_bundle(raw)
+    except BundleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/import/",
+    response_model=ImportResult,
+    summary="Import a .ocep bundle into a fresh or existing project",
+)
+async def post_import_bundle(
+    user_id: CurrentUserId,
+    session: SessionDep,
+    file: UploadFile = File(..., description=".ocep bundle"),
+    mode: ImportMode = Form(default="new_project"),
+    target_project_id: str | None = Form(default=None),
+    new_project_name: str | None = Form(default=None),
+) -> ImportResult:
+    """Unpack the bundle and write rows + attachments.
+
+    Three modes:
+
+    * ``new_project`` — fresh UUIDs, attachments land in the new project's
+      storage roots. The new project's owner is the importing user.
+    * ``merge_into_existing`` — keep source UUIDs, skip rows that already
+      exist (idempotent re-import). Requires ``target_project_id``.
+    * ``replace_existing`` — wipe ``target_project_id``'s rows for every
+      bundled table, then insert the bundle verbatim. Destructive — the
+      UI must confirm.
+    """
+    raw = await file.read()
+    try:
+        result = await fm_import_bundle(
+            session,
+            raw,
+            mode=mode,
+            target_project_id=target_project_id,
+            new_project_name=new_project_name,
+        )
+    except BundleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc),
+        ) from exc
+
+    # ``new_project`` mode created a project row; make the importing user
+    # its owner so it shows up in their dashboard.
+    if mode == "new_project":
+        try:
+            from app.modules.projects.models import Project
+
+            proj = (
+                await session.execute(
+                    select(Project).where(Project.id == result.project_id),
+                )
+            ).scalar_one_or_none()
+            if proj is not None and not getattr(proj, "owner_id", None):
+                proj.owner_id = user_id
+                await session.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Could not assign owner_id to imported project %s", result.project_id,
+            )
+
+    return result
+
+
+# ── Signed share URL (Issue #109) ─────────────────────────────────────────
+
+
+def _share_token_secret(settings) -> str:
+    secret = getattr(settings, "jwt_secret", None) or getattr(settings, "secret_key", "")
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server is missing a JWT secret; cannot mint share tokens.",
+        )
+    return str(secret)
+
+
+@router.post(
+    "/files/{file_id}/email-link/",
+    response_model=EmailLinkResponse,
+    summary="Mint a time-limited public download link for a project file",
+)
+async def post_email_link(
+    file_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    settings: SettingsDep,
+    ttl_hours: int = Query(default=72, ge=1, le=24 * 14),
+) -> EmailLinkResponse:
+    """Build an HMAC-signed download link the user can paste into an email.
+
+    The token is opaque to the client — server-side it carries only the
+    file id + expiry. The download endpoint (``GET /files/share/{token}``)
+    decodes it, verifies signature, and streams the file. No DB row is
+    written, so there's nothing to clean up after expiry.
+    """
+    import base64
+    import hashlib
+    import hmac
+    import time
+
+    from app.modules.projects.models import Project as ProjectModel
+
+    target_project_id: str | None = None
+    file_kinds: list[tuple[str, str, str]] = [
+        ("app.modules.documents.models", "Document", "document"),
+        ("app.modules.documents.models", "ProjectPhoto", "photo"),
+        ("app.modules.documents.models", "Sheet", "sheet"),
+        ("app.modules.bim_hub.models", "BIMModel", "bim_model"),
+        ("app.modules.dwg_takeoff.models", "DwgDrawing", "dwg_drawing"),
+    ]
+    found_kind: str | None = None
+    found_row = None
+    for mod, cls_name, kind in file_kinds:
+        try:
+            import importlib
+            cls = getattr(importlib.import_module(mod), cls_name, None)
+        except ImportError:
+            continue
+        if cls is None:
+            continue
+        row = (
+            await session.execute(select(cls).where(cls.id == file_id))
+        ).scalar_one_or_none()
+        if row is not None:
+            found_row = row
+            found_kind = kind
+            target_project_id = str(getattr(row, "project_id", "") or "")
+            break
+
+    if found_row is None or not target_project_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="File not found",
+        )
+
+    # Project ownership gate.
+    project = (
+        await session.execute(
+            select(ProjectModel).where(ProjectModel.id == target_project_id),
+        )
+    ).scalar_one_or_none()
+    if project is None or str(project.owner_id) != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not own the project this file belongs to",
+        )
+
+    # Build token: base64url(payload).hmac
+    expiry = int(time.time()) + ttl_hours * 3600
+    payload_obj = {
+        "fid": str(file_id),
+        "kind": found_kind,
+        "exp": expiry,
+        "uid": user_id,
+    }
+    import json as _json
+    payload_bytes = _json.dumps(payload_obj, separators=(",", ":")).encode("utf-8")
+    payload_b64 = base64.urlsafe_b64encode(payload_bytes).rstrip(b"=").decode("ascii")
+    sig = hmac.new(
+        _share_token_secret(settings).encode("utf-8"),
+        payload_b64.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    sig_b64 = base64.urlsafe_b64encode(sig).rstrip(b"=").decode("ascii")
+    token = f"{payload_b64}.{sig_b64}"
+
+    name = (
+        getattr(found_row, "name", None)
+        or getattr(found_row, "filename", None)
+        or str(file_id)
+    )
+    size_bytes = int(
+        getattr(found_row, "file_size", None)
+        or getattr(found_row, "size_bytes", None)
+        or 0,
+    )
+    if not size_bytes:
+        try:
+            size_bytes = os.path.getsize(
+                getattr(found_row, "file_path", None)
+                or getattr(found_row, "canonical_file_path", None)
+                or "",
+            )
+        except OSError:
+            size_bytes = 0
+
+    return EmailLinkResponse(
+        url=f"/api/v1/projects/files/share/{token}",
+        expires_at=datetime.fromtimestamp(expiry, tz=UTC),
+        file_id=str(file_id),
+        file_name=str(name),
+        size_bytes=size_bytes,
+    )
+
+
+@router.get(
+    "/files/share/{token}",
+    summary="Public file download via signed share token",
+    include_in_schema=True,
+)
+async def get_share_file(
+    token: str,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> Response:
+    """Public download endpoint — no auth, just HMAC verification.
+
+    Token format: ``base64url(payload).base64url(signature)``. Payload
+    encodes file id, kind, expiry, owner. We re-derive the signature from
+    the payload and the server secret, constant-time compare, then stream
+    the file straight from disk. No DB rows are written or updated.
+    """
+    import base64
+    import hashlib
+    import hmac
+    import time
+
+    if "." not in token:
+        raise HTTPException(status_code=400, detail="Malformed share token")
+    payload_b64, sig_b64 = token.split(".", 1)
+    expected = hmac.new(
+        _share_token_secret(settings).encode("utf-8"),
+        payload_b64.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    try:
+        provided = base64.urlsafe_b64decode(sig_b64 + "=" * (-len(sig_b64) % 4))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="Malformed share token") from exc
+    if not hmac.compare_digest(expected, provided):
+        raise HTTPException(status_code=401, detail="Invalid share token signature")
+
+    try:
+        payload_bytes = base64.urlsafe_b64decode(
+            payload_b64 + "=" * (-len(payload_b64) % 4),
+        )
+        import json as _json
+        payload_obj = _json.loads(payload_bytes)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="Malformed share token") from exc
+
+    if int(payload_obj.get("exp", 0)) < int(time.time()):
+        raise HTTPException(status_code=410, detail="Share link has expired")
+
+    fid = payload_obj.get("fid")
+    kind = payload_obj.get("kind")
+    if not fid or not kind:
+        raise HTTPException(status_code=400, detail="Token is missing fid/kind")
+
+    # Resolve the file again — we never trust the token to carry the path.
+    import importlib
+    kind_to_class = {
+        "document": ("app.modules.documents.models", "Document", "file_path", "name"),
+        "photo": ("app.modules.documents.models", "ProjectPhoto", "file_path", "filename"),
+        "sheet": ("app.modules.documents.models", "Sheet", "thumbnail_path", "sheet_title"),
+        "bim_model": ("app.modules.bim_hub.models", "BIMModel", "canonical_file_path", "name"),
+        "dwg_drawing": ("app.modules.dwg_takeoff.models", "DwgDrawing", "file_path", "filename"),
+    }
+    if kind not in kind_to_class:
+        raise HTTPException(status_code=400, detail=f"Unknown file kind '{kind}'")
+    mod, cls_name, path_attr, name_attr = kind_to_class[kind]
+    try:
+        cls = getattr(importlib.import_module(mod), cls_name, None)
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="File module not loaded") from exc
+    if cls is None:
+        raise HTTPException(status_code=503, detail="File class not loaded")
+
+    row = (
+        await session.execute(select(cls).where(cls.id == fid))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="File no longer exists")
+
+    path = getattr(row, path_attr, None)
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=410, detail="File is no longer on disk")
+
+    fname = getattr(row, name_attr, None) or os.path.basename(path)
+
+    def _iter_file(p: str):
+        with open(p, "rb") as fh:
+            while True:
+                chunk = fh.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+
+    from fastapi.responses import StreamingResponse
+
+    return StreamingResponse(
+        _iter_file(path),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-Bundle-Format": "share-link",
+        },
+    )
