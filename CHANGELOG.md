@@ -5,6 +5,24 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.17] — 2026-05-07
+
+### Added (Procurement → Finance commitment flow)
+
+- **`procurement.po.issued` now flips `ProjectBudget.committed`.** Previously the event was published but no subscriber existed — committed amounts stayed permanently 0 in the dashboard even when POs totalled millions. New finance subscriber in `backend/app/modules/finance/events.py:_on_po_issued` opens an isolated session, picks the budget row by `(project_id, wbs_id)` against the PO's first line item (falls back to the oldest budget by `created_at`), and increments `ProjectBudget.committed` by `amount_total`. Wrapped in try/except so a write failure can't propagate back to the publisher.
+- **`procurement.gr.confirmed` now flips committed → actual.** Same row-selection strategy: decrements `committed` (clamped at zero) and increments `actual` by the GR value. The GR publisher in `procurement/service.py` now actually computes the receipt amount as `Σ(quantity_received × matched po_item.unit_rate)` instead of emitting only the IDs.
+- **Event payload enrichments.** `procurement.po.issued` now carries `currency_code` (was missing — finance subscribers need it). `procurement.gr.confirmed` now carries `amount` and `currency_code`.
+
+### Added (Change Order → Budget delta line)
+
+- **Approved change orders now create or update a `ProjectBudget` row.** Previously the approved `cost_impact` was written to the single string field `project.budget_estimate` and never reached `ProjectBudget` — so EVM BAC didn't include approved COs. New helper `changeorders/service._write_budget_delta_row` keys off `metadata_->>'change_order_id' == co.id` (with `wbs_id=str(order_id)` and `category="Change Order {co.code}"` so the unique-on-(project, wbs, category) constraint isn't violated by regular budgets), `original_budget = 0`, `revised_budget = delta`, currency from `co.currency` → project default → `"EUR"`. Idempotent: re-approve updates the existing row instead of inserting a duplicate. Wrapped in try/except — a budget-write failure logs a warning but doesn't roll back the CO approval.
+- **`approve_order` event payload extended** with `budget_row_id` + `budget_row_action` (`"created" | "updated" | "skipped"`) so downstream auditing can confirm the writeback.
+
+### Fixed
+
+- **PO numbering race fixed with IntegrityError retry.** `procurement/service.py:create_po` previously picked `MAX(po_number) LIKE 'PO-%'` and inserted; concurrent creates collided with HTTP 500. Now mirrors the pattern from `changeorders/service.py:88-126`: 5 attempts, refetch MAX + retry on `IntegrityError`. Auto-generated numbers loop; explicitly user-supplied numbers bubble up as 409 instead of looping. Backed by a new `(project_id, po_number)` unique constraint (`uq_procurement_po_project_number`); migration `v2917_po_number_unique.py` is inspector-guarded and de-duplicates pre-existing collisions before applying.
+- **Tasks importer foreign-language column headers.** `tasks/router.py:_TASK_COLUMN_MAP` previously mapped only EN/DE headers, so an Excel import with Russian "Название", Spanish "Título", Japanese "タイトル" etc. silently dropped those columns. Added 81 entries across 9 locales (ru / fr / es / it / ja / zh / pt / nl / ko) for 8 target fields (title, description, status, priority, assigned_to, due_date, task_type, estimated_hours). Map grew 19 → 100. Lookup is case-insensitive; CJK headers match verbatim.
+
 ## [2.9.16] — 2026-05-06
 
 ### Fixed (Finance correctness)

@@ -15,6 +15,7 @@ import uuid
 from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import event_bus
@@ -110,31 +111,62 @@ class ProcurementService:
                 ),
             )
 
-        po_number = data.po_number
-        if not po_number:
-            po_number = await self.po_repo.next_po_number(data.project_id)
-
         # Server-side total computation
         computed_total = _compute_po_total(data.amount_subtotal, data.tax_amount)
 
-        po = PurchaseOrder(
-            project_id=data.project_id,
-            vendor_contact_id=data.vendor_contact_id,
-            po_number=po_number,
-            po_type=data.po_type,
-            issue_date=data.issue_date,
-            delivery_date=data.delivery_date,
-            currency_code=data.currency_code,
-            amount_subtotal=data.amount_subtotal,
-            tax_amount=data.tax_amount,
-            amount_total=computed_total,
-            status=data.status,
-            payment_terms=data.payment_terms,
-            notes=data.notes,
-            created_by=uuid.UUID(user_id) if user_id else None,
-            metadata_=data.metadata,
-        )
-        po = await self.po_repo.create(po)
+        explicit_po_number = data.po_number
+        # Mirrors changeorders BUG-354: MAX(po_number)+1 is not atomic, so two
+        # concurrent creates can compute the same suffix and one would 500 on the
+        # uq_procurement_po_project_number constraint. Retry by re-reading MAX.
+        _MAX_RETRIES = 5
+        last_exc: Exception | None = None
+        po: PurchaseOrder | None = None
+        for _attempt in range(_MAX_RETRIES):
+            po_number = explicit_po_number or await self.po_repo.next_po_number(
+                data.project_id,
+            )
+            po = PurchaseOrder(
+                project_id=data.project_id,
+                vendor_contact_id=data.vendor_contact_id,
+                po_number=po_number,
+                po_type=data.po_type,
+                issue_date=data.issue_date,
+                delivery_date=data.delivery_date,
+                currency_code=data.currency_code,
+                amount_subtotal=data.amount_subtotal,
+                tax_amount=data.tax_amount,
+                amount_total=computed_total,
+                status=data.status,
+                payment_terms=data.payment_terms,
+                notes=data.notes,
+                created_by=uuid.UUID(user_id) if user_id else None,
+                metadata_=data.metadata,
+            )
+            try:
+                po = await self.po_repo.create(po)
+                break
+            except IntegrityError as exc:
+                last_exc = exc
+                await self.session.rollback()
+                if explicit_po_number:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            f"Purchase order number '{explicit_po_number}' already "
+                            f"exists for this project."
+                        ),
+                    ) from exc
+                continue
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Could not generate a unique PO number after "
+                    f"{_MAX_RETRIES} attempts (concurrent contention). Please retry."
+                ),
+            ) from last_exc
+
+        assert po is not None  # loop guarantees assignment on the break path
 
         # Create line items
         for idx, item_data in enumerate(data.items):
@@ -306,6 +338,7 @@ class ProcurementService:
                 "project_id": str(updated.project_id),
                 "po_number": updated.po_number,
                 "amount_total": updated.amount_total,
+                "currency_code": updated.currency_code or "EUR",
             },
         )
 
@@ -458,12 +491,32 @@ class ProcurementService:
                 detail="Goods receipt not found",
             )
 
+        # Compute the value of this receipt as Σ(quantity_received × po_item.unit_rate).
+        # Finance subscribers need this to flip the matching slice of
+        # ProjectBudget.committed → actual on each GR.
+        po_items_by_id: dict[uuid.UUID, PurchaseOrderItem] = {it.id: it for it in po.items}
+        gr_amount = Decimal("0")
+        for gr_item in updated.items:
+            if gr_item.po_item_id is None:
+                continue
+            po_item = po_items_by_id.get(gr_item.po_item_id)
+            if po_item is None:
+                continue
+            try:
+                qty = Decimal(str(gr_item.quantity_received or "0"))
+                rate = Decimal(str(po_item.unit_rate or "0"))
+            except (InvalidOperation, ValueError, TypeError):
+                continue
+            gr_amount += qty * rate
+
         await _safe_publish(
             "procurement.gr.confirmed",
             {
                 "gr_id": str(gr_id),
                 "po_id": str(updated.po_id),
                 "project_id": str(po.project_id),
+                "amount": str(gr_amount),
+                "currency_code": po.currency_code or "EUR",
             },
         )
 

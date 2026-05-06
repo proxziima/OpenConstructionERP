@@ -9,7 +9,7 @@ Tables:
 
 import uuid
 
-from sqlalchemy import JSON, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import GUID, Base
@@ -19,6 +19,11 @@ class PurchaseOrder(Base):
     """‌⁠‍A purchase order linked to a project and vendor."""
 
     __tablename__ = "oe_procurement_po"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "po_number", name="uq_procurement_po_project_number",
+        ),
+    )
 
     project_id: Mapped[uuid.UUID] = mapped_column(
         GUID(),

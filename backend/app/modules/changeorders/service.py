@@ -296,6 +296,7 @@ class ChangeOrderService:
         project_id_s = str(project_id_uuid)
         code_s = order.code
         cost_impact_s = order.cost_impact or "0"
+        currency_s = order.currency
 
         now = datetime.now(UTC).isoformat()[:19]
         await self.repo.update_fields(
@@ -341,6 +342,17 @@ class ChangeOrderService:
         fresh_for_apply = await self.repo.get_by_id(order_id)
         boq_result = await self._apply_to_boq(fresh_for_apply or order, boq_id=boq_id)
 
+        # v2.9.17 Gap B: write a ProjectBudget delta row so EVM BAC reflects
+        # the post-CO scope. Wrapped in try/except — never roll back the
+        # approval if the budget write fails.
+        budget_writeback = await self._write_budget_delta_row(
+            order_id=order_id,
+            project_id_uuid=project_id_uuid,
+            code=code_s,
+            cost_impact=delta,
+            currency=currency_s,
+        )
+
         await _safe_publish(
             "changeorder.approved",
             {
@@ -353,6 +365,8 @@ class ChangeOrderService:
                 "boq_applied": boq_result.get("applied", False),
                 "boq_section_id": boq_result.get("section_id"),
                 "boq_positions_added": boq_result.get("positions_added", 0),
+                "budget_row_id": budget_writeback.get("budget_id"),
+                "budget_row_action": budget_writeback.get("action"),
             },
             source_module="oe_changeorders",
         )
@@ -363,6 +377,104 @@ class ChangeOrderService:
             code_s, user_id, delta, boq_result,
         )
         return fresh or order
+
+    async def _write_budget_delta_row(
+        self,
+        *,
+        order_id: uuid.UUID,
+        project_id_uuid: uuid.UUID,
+        code: str,
+        cost_impact: Decimal,
+        currency: str | None,
+    ) -> dict:
+        """Create or update a ProjectBudget delta row for an approved CO.
+
+        EVM BAC = SUM(revised_budget) across the project's budget rows, so
+        approved scope changes need their own row to surface in dashboards.
+        Keyed idempotently by ``metadata_->>'change_order_id' == order_id``
+        so re-approving (or a second pass on the same CO) updates the
+        existing row instead of inserting duplicates.
+
+        Returns ``{"action": "created"|"updated"|"skipped", "budget_id": str|None}``
+        — the ``action`` value flows into the ``changeorder.approved`` event
+        payload so subscribers can tell what happened. Never raises: a
+        budget-write failure must not roll back the approval.
+        """
+        from sqlalchemy import select
+
+        from app.modules.finance.models import ProjectBudget
+
+        try:
+            # Resolve currency: CO-level → project default → EUR fallback.
+            currency_code = currency
+            if not currency_code:
+                from app.modules.projects.models import Project
+
+                project = (
+                    await self.session.execute(
+                        select(Project).where(Project.id == project_id_uuid)
+                    )
+                ).scalar_one_or_none()
+                if project is not None:
+                    currency_code = project.currency
+            currency_code = currency_code or "EUR"
+
+            # Idempotent lookup keyed by metadata.change_order_id.
+            existing = (
+                await self.session.execute(
+                    select(ProjectBudget).where(
+                        ProjectBudget.project_id == project_id_uuid
+                    )
+                )
+            ).scalars().all()
+            match: ProjectBudget | None = None
+            for row in existing:
+                md = row.metadata_ if isinstance(row.metadata_, dict) else {}
+                if md.get("change_order_id") == str(order_id):
+                    match = row
+                    break
+
+            category = f"Change Order {code}"
+            if match is not None:
+                match.revised_budget = cost_impact
+                match.currency_code = currency_code
+                match.category = category
+                # Re-affirm the metadata key in case it was stripped manually.
+                md = dict(match.metadata_) if isinstance(match.metadata_, dict) else {}
+                md["change_order_id"] = str(order_id)
+                md["change_order_code"] = code
+                md["origin"] = "change_order"
+                match.metadata_ = md
+                await self.session.flush()
+                return {"action": "updated", "budget_id": str(match.id)}
+
+            budget = ProjectBudget(
+                project_id=project_id_uuid,
+                wbs_id=str(order_id),
+                category=category,
+                currency_code=currency_code,
+                original_budget=Decimal("0"),
+                revised_budget=cost_impact,
+                committed=Decimal("0"),
+                actual=Decimal("0"),
+                forecast_final=Decimal("0"),
+                metadata_={
+                    "change_order_id": str(order_id),
+                    "change_order_code": code,
+                    "origin": "change_order",
+                },
+            )
+            self.session.add(budget)
+            await self.session.flush()
+            return {"action": "created", "budget_id": str(budget.id)}
+        except Exception:
+            logger.warning(
+                "Budget delta-row write failed for change order %s — "
+                "approval still committed.",
+                code,
+                exc_info=True,
+            )
+            return {"action": "skipped", "budget_id": None}
 
     async def _apply_to_boq(
         self,
