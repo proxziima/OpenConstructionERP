@@ -5,6 +5,11 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.10] — 2026-05-06
+
+### Fixed
+- `/finance` printed nonsense totals like `850.000.320.000.018.000.000.000,00 €` for projects whose budget lines summed to ~8.25M. The reduces over `b.original_budget` / `b.actual` / `b.revised_budget` / `b.committed` / `b.forecast` / `b.variance` and `inv.amount` / `p.amount` were string-concatenating because the API serialised DECIMAL columns as strings ("850000.00"). Coerced every accumulator with `Number(x ?? 0)` so the dashboard chips, Budgets total row, Invoices totals, and Payments totals all aggregate numerically.
+
 ## [2.9.9] — 2026-05-06
 
 ### Fixed

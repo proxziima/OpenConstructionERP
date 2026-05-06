@@ -246,20 +246,24 @@ function FinanceSummaryCards({ projectId }: { projectId: string }) {
       normalizeListResponse<InvoiceWire>(d).map(normaliseInvoice),
   });
 
+  // ``Number(x ?? 0)`` defends against the API serialising amounts as
+  // strings (DECIMAL → JSON sometimes lands as "850000.00").  Without
+  // the coercion ``s + b.original_budget`` becomes string concatenation
+  // and the dashboard prints "850.000.320.000.018.000.000.000,00 €".
   const totalBudget = useMemo(
-    () => budgets?.reduce((s, b) => s + b.original_budget, 0) ?? 0,
+    () => budgets?.reduce((s, b) => s + Number(b.original_budget ?? 0), 0) ?? 0,
     [budgets],
   );
   const totalActual = useMemo(
-    () => budgets?.reduce((s, b) => s + b.actual, 0) ?? 0,
+    () => budgets?.reduce((s, b) => s + Number(b.actual ?? 0), 0) ?? 0,
     [budgets],
   );
   const totalInvoiced = useMemo(
-    () => (invoicesPayable ?? []).reduce((s, inv) => s + inv.amount, 0),
+    () => (invoicesPayable ?? []).reduce((s, inv) => s + Number(inv.amount ?? 0), 0),
     [invoicesPayable],
   );
   const totalReceivable = useMemo(
-    () => (invoicesReceivable ?? []).reduce((s, inv) => s + inv.amount, 0),
+    () => (invoicesReceivable ?? []).reduce((s, inv) => s + Number(inv.amount ?? 0), 0),
     [invoicesReceivable],
   );
   const remaining = totalBudget - totalActual;
@@ -834,13 +838,16 @@ function BudgetsTab({ projectId }: { projectId: string }) {
 
   const totals = useMemo(() => {
     if (!filtered.length) return null;
+    // Coerce to Number — DECIMAL columns can come back as strings from
+    // the API and "+" would concat instead of summing.  See the dashboard
+    // total above for the same defence.
     return {
-      original: filtered.reduce((s, b) => s + b.original_budget, 0),
-      revised: filtered.reduce((s, b) => s + b.revised_budget, 0),
-      committed: filtered.reduce((s, b) => s + b.committed, 0),
-      actual: filtered.reduce((s, b) => s + b.actual, 0),
-      forecast: filtered.reduce((s, b) => s + b.forecast, 0),
-      variance: filtered.reduce((s, b) => s + b.variance, 0),
+      original: filtered.reduce((s, b) => s + Number(b.original_budget ?? 0), 0),
+      revised: filtered.reduce((s, b) => s + Number(b.revised_budget ?? 0), 0),
+      committed: filtered.reduce((s, b) => s + Number(b.committed ?? 0), 0),
+      actual: filtered.reduce((s, b) => s + Number(b.actual ?? 0), 0),
+      forecast: filtered.reduce((s, b) => s + Number(b.forecast ?? 0), 0),
+      variance: filtered.reduce((s, b) => s + Number(b.variance ?? 0), 0),
       currency: filtered[0]?.currency ?? 'EUR',
     };
   }, [filtered]);
@@ -1338,8 +1345,8 @@ function InvoicesTab({ projectId }: { projectId: string }) {
 
   const invoiceTotals = useMemo(() => {
     if (!filtered.length) return null;
-    const totalAmount = filtered.reduce((s, inv) => s + inv.amount, 0);
-    const totalPaid = filtered.filter((inv) => inv.status === 'paid').reduce((s, inv) => s + inv.amount, 0);
+    const totalAmount = filtered.reduce((s, inv) => s + Number(inv.amount ?? 0), 0);
+    const totalPaid = filtered.filter((inv) => inv.status === 'paid').reduce((s, inv) => s + Number(inv.amount ?? 0), 0);
     const currency = filtered[0]?.currency ?? 'EUR';
     return { totalAmount, totalPaid, currency };
   }, [filtered]);
@@ -2001,7 +2008,7 @@ function PaymentsTab({ projectId }: { projectId: string }) {
 
   const paymentTotals = useMemo(() => {
     if (!payments || !payments.length) return null;
-    const total = payments.reduce((s, p) => s + p.amount, 0);
+    const total = payments.reduce((s, p) => s + Number(p.amount ?? 0), 0);
     const currency = payments[0]?.currency ?? 'EUR';
     return { total, currency };
   }, [payments]);
