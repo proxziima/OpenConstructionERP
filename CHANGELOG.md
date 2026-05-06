@@ -5,6 +5,12 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.8] — 2026-05-06
+
+### Fixed
+- Demo documents no longer 404 in PDF Takeoff. Seeded `Document` rows reference paths that don't exist on disk (we don't ship multi-MB PDFs in the wheel), so `/api/v1/documents/{id}/download/` returned 404 and the cross-module deeplink landed on "Failed to fetch PDF". The download endpoint now materializes a one-page placeholder PDF on first request when `metadata.is_demo == True`. Real uploads are unaffected.
+- Sidebar footer is now unified neutral gray with two equal-width pills. GitHub pill (icon + "GitHub" label) on the left, Community pill (Telegram glyph + label) on the right — neither dominates. Meta strip above shows `v{version} · AGPL-3.0` in matching tertiary gray.
+
 ## [2.9.7] — 2026-05-06
 
 ### Fixed

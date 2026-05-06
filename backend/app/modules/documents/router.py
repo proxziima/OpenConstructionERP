@@ -906,16 +906,58 @@ async def download_document(
         )
 
     if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found on disk",
-        )
+        # Demo seed records are inserted without a real file on disk because
+        # we don't ship multi-MB PDFs in the wheel.  When a user clicks
+        # "Open in Module" → /takeoff for a demo document, materialize a
+        # minimal placeholder PDF on first download so the cross-module
+        # deeplink lands on a real preview instead of a raw 404.
+        meta = getattr(doc, "metadata_", None) or {}
+        if meta.get("is_demo") and (doc.mime_type or "").lower() == "application/pdf":
+            try:
+                _materialize_demo_pdf_placeholder(file_path, doc.name, meta.get("demo_id"))
+            except Exception:  # pragma: no cover — degrade to 404 if reportlab missing
+                logger.warning("Failed to materialize demo placeholder for %s", doc.id, exc_info=True)
+        if not file_path.exists() or not file_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found on disk",
+            )
 
     return FileResponse(
         path=str(file_path),
         filename=doc.name,
         media_type=doc.mime_type or "application/octet-stream",
     )
+
+
+def _materialize_demo_pdf_placeholder(target: Path, name: str, demo_id: str | None) -> None:
+    """Write a minimal one-page PDF to ``target`` for demo seed documents.
+
+    Why: demo projects ship without bundled binaries, so seeded ``Document``
+    rows reference paths that don't exist on disk.  Generating a placeholder
+    on first download keeps ``/files`` deeplinks honest (PDF takeoff opens,
+    file manager preview works) without bloating the wheel.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    from reportlab.lib.pagesizes import A4  # type: ignore[import-untyped]
+    from reportlab.pdfgen import canvas as pdf_canvas  # type: ignore[import-untyped]
+
+    width, height = A4
+    c = pdf_canvas.Canvas(str(target), pagesize=A4)
+    c.setTitle(name)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, height - 90, name[:90])
+    c.setFont("Helvetica", 11)
+    c.drawString(72, height - 130, "Demo placeholder document")
+    if demo_id:
+        c.drawString(72, height - 150, f"Project: {demo_id}")
+    c.setFont("Helvetica", 10)
+    c.drawString(72, height - 200, "This file is auto-generated for the demo project.")
+    c.drawString(72, height - 215, "Upload your own document to replace it.")
+    c.setFont("Helvetica-Oblique", 9)
+    c.drawString(72, 60, "OpenConstructionERP — open-source construction cost platform")
+    c.showPage()
+    c.save()
 
 
 # ── Update ───────────────────────────────────────────────────────────────────
