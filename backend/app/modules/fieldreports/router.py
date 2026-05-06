@@ -454,12 +454,6 @@ async def import_field_reports_file(
             detail="Uploaded file is empty.",
         )
 
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File too large. Maximum size is 10 MB.",
-        )
-
     # Zip-bomb guard: reject .xlsx whose uncompressed sheets exceed 50 MB.
     reject_if_xlsx_bomb(content)
 
@@ -693,14 +687,20 @@ async def list_reports(
 # ── Get ──────────────────────────────────────────────────────────────────────
 
 
-@router.get("/reports/{report_id}", response_model=FieldReportResponse)
+@router.get(
+    "/reports/{report_id}",
+    response_model=FieldReportResponse,
+    dependencies=[Depends(RequirePermission("fieldreports.read"))],
+)
 async def get_report(
     report_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: FieldReportService = Depends(_get_service),
 ) -> FieldReportResponse:
     """Get a single field report."""
     report = await service.get_report(report_id)
+    await verify_project_access(report.project_id, user_id, session)
     return _report_to_response(report)
 
 
@@ -711,11 +711,14 @@ async def get_report(
 async def update_report(
     report_id: uuid.UUID,
     data: FieldReportUpdate,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     _perm: None = Depends(RequirePermission("fieldreports.update")),
     service: FieldReportService = Depends(_get_service),
 ) -> FieldReportResponse:
     """Update a field report."""
+    existing = await service.get_report(report_id)
+    await verify_project_access(existing.project_id, user_id, session)
     report = await service.update_report(report_id, data)
     return _report_to_response(report)
 
@@ -726,11 +729,14 @@ async def update_report(
 @router.delete("/reports/{report_id}", status_code=204)
 async def delete_report(
     report_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     _perm: None = Depends(RequirePermission("fieldreports.delete")),
     service: FieldReportService = Depends(_get_service),
 ) -> None:
     """Delete a field report."""
+    existing = await service.get_report(report_id)
+    await verify_project_access(existing.project_id, user_id, session)
     await service.delete_report(report_id)
 
 
@@ -740,11 +746,14 @@ async def delete_report(
 @router.post("/reports/{report_id}/submit/", response_model=FieldReportResponse)
 async def submit_report(
     report_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     _perm: None = Depends(RequirePermission("fieldreports.update")),
     service: FieldReportService = Depends(_get_service),
 ) -> FieldReportResponse:
     """Submit a draft report for approval."""
+    existing = await service.get_report(report_id)
+    await verify_project_access(existing.project_id, user_id, session)
     report = await service.submit_report(report_id)
     return _report_to_response(report)
 
@@ -771,7 +780,8 @@ async def approve_report(
 async def link_documents(
     report_id: uuid.UUID,
     data: LinkDocumentsRequest,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     _perm: None = Depends(RequirePermission("fieldreports.update")),
     service: FieldReportService = Depends(_get_service),
 ) -> FieldReportResponse:
@@ -780,15 +790,21 @@ async def link_documents(
     Merges the provided document_ids with any already linked, avoiding
     duplicates.
     """
+    existing = await service.get_report(report_id)
+    await verify_project_access(existing.project_id, user_id, session)
     report = await service.link_documents(report_id, data.document_ids)
     return _report_to_response(report)
 
 
-@router.get("/reports/{report_id}/documents/", response_model=list[LinkedDocumentResponse])
+@router.get(
+    "/reports/{report_id}/documents/",
+    response_model=list[LinkedDocumentResponse],
+    dependencies=[Depends(RequirePermission("fieldreports.read"))],
+)
 async def get_linked_documents(
     report_id: uuid.UUID,
     session: SessionDep,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
     service: FieldReportService = Depends(_get_service),
 ) -> list[LinkedDocumentResponse]:
     """Return the documents linked to a field report.
@@ -797,6 +813,7 @@ async def get_linked_documents(
     metadata for each.
     """
     report = await service.get_report(report_id)
+    await verify_project_access(report.project_id, user_id, session)
     doc_ids = report.document_ids or []
 
     if not doc_ids:
@@ -825,13 +842,19 @@ async def get_linked_documents(
 # ── PDF Export ───────────────────────────────────────────────────────────────
 
 
-@router.get("/reports/{report_id}/export/pdf/")
+@router.get(
+    "/reports/{report_id}/export/pdf/",
+    dependencies=[Depends(RequirePermission("fieldreports.read"))],
+)
 async def export_pdf(
     report_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: FieldReportService = Depends(_get_service),
 ) -> Response:
     """Export a field report as PDF."""
+    report = await service.get_report(report_id)
+    await verify_project_access(report.project_id, user_id, session)
     pdf_bytes = await service.generate_pdf(report_id)
     return Response(
         content=pdf_bytes,

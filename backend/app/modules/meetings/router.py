@@ -71,7 +71,11 @@ def _meeting_to_response(meeting: object) -> MeetingResponse:
 # ── List ──────────────────────────────────────────────────────────────────────
 
 
-@router.get("/", response_model=list[MeetingResponse])
+@router.get(
+    "/",
+    response_model=list[MeetingResponse],
+    dependencies=[Depends(RequirePermission("meetings.read"))],
+)
 async def list_meetings(
     session: SessionDep,
     project_id: uuid.UUID = Query(...),
@@ -111,7 +115,11 @@ async def list_meetings(
 # ── Stats ────────────────────────────────────────────────────────────────────
 
 
-@router.get("/stats/", response_model=MeetingStatsResponse)
+@router.get(
+    "/stats/",
+    response_model=MeetingStatsResponse,
+    dependencies=[Depends(RequirePermission("meetings.read"))],
+)
 async def meeting_stats(
     session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
@@ -130,7 +138,11 @@ async def meeting_stats(
 # ── Open Action Items ────────────────────────────────────────────────────────
 
 
-@router.get("/open-actions/", response_model=list[OpenActionItemResponse])
+@router.get(
+    "/open-actions/",
+    response_model=list[OpenActionItemResponse],
+    dependencies=[Depends(RequirePermission("meetings.read"))],
+)
 async def open_action_items(
     session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
@@ -851,10 +863,7 @@ async def import_meeting_summary(
             detail=f"Unsupported file format '.{ext}'. Accepted: {', '.join(sorted(allowed_extensions))}",
         )
 
-    # Read file content (limit to 10MB)
     content = await file.read()
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large. Maximum size is 10MB.")
 
     if not content:
         raise HTTPException(status_code=400, detail="File is empty")
@@ -1026,7 +1035,11 @@ async def import_meeting_summary(
 # ── Get ───────────────────────────────────────────────────────────────────────
 
 
-@router.get("/{meeting_id}", response_model=MeetingResponse)
+@router.get(
+    "/{meeting_id}",
+    response_model=MeetingResponse,
+    dependencies=[Depends(RequirePermission("meetings.read"))],
+)
 async def get_meeting(
     meeting_id: uuid.UUID,
     session: SessionDep,
@@ -1098,7 +1111,10 @@ async def complete_meeting(
 # ── PDF Export ───────────────────────────────────────────────────────────────
 
 
-@router.get("/{meeting_id}/export/pdf/")
+@router.get(
+    "/{meeting_id}/export/pdf/",
+    dependencies=[Depends(RequirePermission("meetings.read"))],
+)
 async def export_meeting_pdf(
     meeting_id: uuid.UUID,
     session: SessionDep = None,  # type: ignore[assignment]
@@ -1128,6 +1144,7 @@ async def export_meeting_pdf(
     meeting = result.scalar_one_or_none()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
+    await verify_project_access(meeting.project_id, str(_user), session)
 
     # Fetch project name
     proj_result = await session.execute(select(Project.name).where(Project.id == meeting.project_id))

@@ -145,11 +145,14 @@ async def delete_submittal(
 @router.post("/{submittal_id}/submit/", response_model=SubmittalResponse)
 async def submit_submittal(
     submittal_id: uuid.UUID,
+    session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("submittals.update")),
     service: SubmittalService = Depends(_get_service),
 ) -> SubmittalResponse:
     """‌⁠‍Move a submittal from draft to submitted."""
+    existing = await service.get_submittal(submittal_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     submittal = await service.submit_submittal(submittal_id)
     return _to_response(submittal)
 
@@ -159,10 +162,13 @@ async def review_submittal(
     submittal_id: uuid.UUID,
     body: SubmittalReviewRequest,
     user_id: CurrentUserId,
+    session: SessionDep,
     _perm: None = Depends(RequirePermission("submittals.update")),
     service: SubmittalService = Depends(_get_service),
 ) -> SubmittalResponse:
     """‌⁠‍Review a submittal (approve, reject, revise and resubmit, etc.)."""
+    existing = await service.get_submittal(submittal_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     submittal = await service.review_submittal(submittal_id, body.status, reviewer_id=user_id)
     return _to_response(submittal)
 
@@ -171,6 +177,7 @@ async def review_submittal(
 async def approve_submittal(
     submittal_id: uuid.UUID,
     user_id: CurrentUserId,
+    session: SessionDep,
     _perm: None = Depends(RequirePermission("submittals.update")),
     service: SubmittalService = Depends(_get_service),
 ) -> SubmittalResponse:
@@ -178,6 +185,8 @@ async def approve_submittal(
     allowed, _ = approval_limiter.is_allowed(str(user_id))
     if not allowed:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Rate limit exceeded. Try again later.")
+    existing = await service.get_submittal(submittal_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     submittal = await service.approve_submittal(submittal_id, approver_id=user_id)
     return _to_response(submittal)
 
@@ -217,10 +226,13 @@ class AttachmentResponse(BaseModel):
 )
 async def list_submittal_attachments(
     submittal_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
     service: SubmittalService = Depends(_get_service),
 ) -> list[AttachmentResponse]:
     """List attachments linked to a submittal."""
     submittal = await service.get_submittal(submittal_id)
+    await verify_project_access(submittal.project_id, str(user_id), session)
     meta = dict(getattr(submittal, "metadata_", {}) or {})
     attachments_raw = meta.get("attachments", [])
     if not isinstance(attachments_raw, list):
@@ -273,6 +285,7 @@ async def add_submittal_attachment(
         raise HTTPException(status_code=404, detail="Document not found")
 
     submittal = await service.get_submittal(submittal_id)
+    await verify_project_access(submittal.project_id, str(user_id), session)
     meta = dict(getattr(submittal, "metadata_", {}) or {})
     attachments: list[dict] = list(meta.get("attachments", []) or [])
 
@@ -308,6 +321,8 @@ async def add_submittal_attachment(
 async def remove_submittal_attachment(
     submittal_id: uuid.UUID,
     document_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
     service: SubmittalService = Depends(_get_service),
 ) -> None:
     """Remove a document attachment reference from a submittal.
@@ -316,6 +331,7 @@ async def remove_submittal_attachment(
     ``DELETE /api/documents/{id}`` for that.
     """
     submittal = await service.get_submittal(submittal_id)
+    await verify_project_access(submittal.project_id, str(user_id), session)
     meta = dict(getattr(submittal, "metadata_", {}) or {})
     attachments: list[dict] = list(meta.get("attachments", []) or [])
 

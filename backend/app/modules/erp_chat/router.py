@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
-from app.dependencies import CurrentUserId, SessionDep, check_ai_rate_limit
+from app.dependencies import CurrentUserId, SessionDep, check_ai_rate_limit, verify_project_access
 from app.modules.erp_chat.models import ChatMessage, ChatSession
 from app.modules.erp_chat.schemas import (
     ChatMessageResponse,
@@ -109,6 +109,8 @@ async def create_session(
     session: SessionDep,
 ) -> ChatSessionResponse:
     """Create a new chat session."""
+    if body.project_id is not None:
+        await verify_project_access(body.project_id, user_id, session)
     chat_session = ChatSession(
         user_id=uuid.UUID(user_id),
         project_id=body.project_id,

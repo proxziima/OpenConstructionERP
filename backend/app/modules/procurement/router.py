@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import CurrentUserId, RequirePermission, SessionDep
+from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
 from app.modules.contacts.models import Contact
 from app.modules.procurement.models import PurchaseOrder
 from app.modules.procurement.schemas import (
@@ -86,7 +86,8 @@ def _po_to_response(po: PurchaseOrder, vendor_names: dict[str, str]) -> PORespon
 )
 async def list_purchase_orders(
     user_id: CurrentUserId,
-    project_id: uuid.UUID | None = Query(default=None),
+    session: SessionDep,
+    project_id: uuid.UUID = Query(...),
     status: str | None = Query(default=None),
     vendor_contact_id: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
@@ -94,6 +95,7 @@ async def list_purchase_orders(
     service: ProcurementService = Depends(_get_service),
 ) -> POListResponse:
     """List purchase orders with optional filters."""
+    await verify_project_access(project_id, str(user_id), session)
     items, total = await service.list_pos(
         project_id=project_id,
         po_status=status,
@@ -139,6 +141,7 @@ async def create_purchase_order(
 )
 async def procurement_stats(
     user_id: CurrentUserId,
+    session: SessionDep,
     project_id: uuid.UUID = Query(...),
     service: ProcurementService = Depends(_get_service),
 ) -> ProcurementStatsResponse:
@@ -147,6 +150,7 @@ async def procurement_stats(
     Returns total POs, breakdown by status, total committed amount,
     confirmed goods receipt count, and count of POs pending delivery.
     """
+    await verify_project_access(project_id, str(user_id), session)
     return await service.get_stats(project_id)
 
 
@@ -160,13 +164,16 @@ async def procurement_stats(
 )
 async def list_goods_receipts(
     user_id: CurrentUserId,
-    po_id: uuid.UUID | None = Query(default=None),
+    session: SessionDep,
+    po_id: uuid.UUID = Query(...),
     status: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
     service: ProcurementService = Depends(_get_service),
 ) -> GRListResponse:
     """List goods receipts with optional filters."""
+    po = await service.get_po(po_id)
+    await verify_project_access(po.project_id, str(user_id), session)
     items, total = await service.list_goods_receipts(
         po_id=po_id, gr_status=status, limit=limit, offset=offset
     )
@@ -185,9 +192,12 @@ async def list_goods_receipts(
 async def create_goods_receipt(
     data: GRCreate,
     user_id: CurrentUserId,
+    session: SessionDep,
     service: ProcurementService = Depends(_get_service),
 ) -> GRResponse:
     """Create a goods receipt against a PO."""
+    po = await service.get_po(data.po_id)
+    await verify_project_access(po.project_id, str(user_id), session)
     gr = await service.create_goods_receipt(data, user_id=user_id)
     return GRResponse.model_validate(gr)
 
@@ -200,9 +210,13 @@ async def create_goods_receipt(
 async def confirm_goods_receipt(
     gr_id: uuid.UUID,
     user_id: CurrentUserId,
+    session: SessionDep,
     service: ProcurementService = Depends(_get_service),
 ) -> GRResponse:
     """Confirm a goods receipt."""
+    existing_gr = await service.get_goods_receipt(gr_id)
+    parent_po = await service.get_po(existing_gr.po_id)
+    await verify_project_access(parent_po.project_id, str(user_id), session)
     gr = await service.confirm_goods_receipt(gr_id)
     return GRResponse.model_validate(gr)
 
@@ -218,10 +232,12 @@ async def confirm_goods_receipt(
 async def get_purchase_order(
     po_id: uuid.UUID,
     user_id: CurrentUserId,
+    session: SessionDep,
     service: ProcurementService = Depends(_get_service),
 ) -> POResponse:
     """Get a single purchase order by ID."""
     po = await service.get_po(po_id)
+    await verify_project_access(po.project_id, str(user_id), session)
     vendor_names = await _fetch_vendor_names(service.session, [po.vendor_contact_id])
     return _po_to_response(po, vendor_names)
 
@@ -235,9 +251,12 @@ async def update_purchase_order(
     po_id: uuid.UUID,
     data: POUpdate,
     user_id: CurrentUserId,
+    session: SessionDep,
     service: ProcurementService = Depends(_get_service),
 ) -> POResponse:
     """Update a purchase order."""
+    existing = await service.get_po(po_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     po = await service.update_po(po_id, data)
     vendor_names = await _fetch_vendor_names(service.session, [po.vendor_contact_id])
     return _po_to_response(po, vendor_names)
@@ -264,6 +283,7 @@ async def create_invoice_from_po(
     _log = _logging.getLogger(__name__)
 
     po = await service.get_po(po_id)
+    await verify_project_access(po.project_id, str(user_id), session)
 
     # Lazy import finance module
     try:
@@ -351,9 +371,12 @@ async def create_invoice_from_po(
 async def issue_purchase_order(
     po_id: uuid.UUID,
     user_id: CurrentUserId,
+    session: SessionDep,
     service: ProcurementService = Depends(_get_service),
 ) -> POResponse:
     """Issue a purchase order."""
+    existing = await service.get_po(po_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     po = await service.issue_po(po_id)
     vendor_names = await _fetch_vendor_names(service.session, [po.vendor_contact_id])
     return _po_to_response(po, vendor_names)

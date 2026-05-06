@@ -14,7 +14,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Query
 
-from app.dependencies import CurrentUserId, SessionDep, verify_project_access
+from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
 from app.modules.transmittals.schemas import (
     AcknowledgeRequest,
     RecipientResponse,
@@ -36,7 +36,11 @@ def _get_service(session: SessionDep) -> TransmittalService:
 # ── List ────────────────────────────────────────────────────────────────────
 
 
-@router.get("/", response_model=TransmittalListResponse)
+@router.get(
+    "/",
+    response_model=TransmittalListResponse,
+    dependencies=[Depends(RequirePermission("transmittals.read"))],
+)
 async def list_transmittals(
     session: SessionDep,
     project_id: uuid.UUID = Query(...),
@@ -65,7 +69,12 @@ async def list_transmittals(
 # ── Create ──────────────────────────────────────────────────────────────────
 
 
-@router.post("/", response_model=TransmittalResponse, status_code=201)
+@router.post(
+    "/",
+    response_model=TransmittalResponse,
+    status_code=201,
+    dependencies=[Depends(RequirePermission("transmittals.create"))],
+)
 async def create_transmittal(
     data: TransmittalCreate,
     user_id: CurrentUserId,
@@ -81,7 +90,11 @@ async def create_transmittal(
 # ── Get ─────────────────────────────────────────────────────────────────────
 
 
-@router.get("/{transmittal_id}", response_model=TransmittalResponse)
+@router.get(
+    "/{transmittal_id}",
+    response_model=TransmittalResponse,
+    dependencies=[Depends(RequirePermission("transmittals.read"))],
+)
 async def get_transmittal(
     transmittal_id: uuid.UUID,
     session: SessionDep,
@@ -97,7 +110,11 @@ async def get_transmittal(
 # ── Update ──────────────────────────────────────────────────────────────────
 
 
-@router.patch("/{transmittal_id}", response_model=TransmittalResponse)
+@router.patch(
+    "/{transmittal_id}",
+    response_model=TransmittalResponse,
+    dependencies=[Depends(RequirePermission("transmittals.update"))],
+)
 async def update_transmittal(
     transmittal_id: uuid.UUID,
     data: TransmittalUpdate,
@@ -115,7 +132,11 @@ async def update_transmittal(
 # ── Delete ──────────────────────────────────────────────────────────────────
 
 
-@router.delete("/{transmittal_id}", status_code=204)
+@router.delete(
+    "/{transmittal_id}",
+    status_code=204,
+    dependencies=[Depends(RequirePermission("transmittals.delete"))],
+)
 async def delete_transmittal(
     transmittal_id: uuid.UUID,
     session: SessionDep,
@@ -131,13 +152,20 @@ async def delete_transmittal(
 # ── Issue ───────────────────────────────────────────────────────────────────
 
 
-@router.post("/{transmittal_id}/issue/", response_model=TransmittalResponse)
+@router.post(
+    "/{transmittal_id}/issue/",
+    response_model=TransmittalResponse,
+    dependencies=[Depends(RequirePermission("transmittals.update"))],
+)
 async def issue_transmittal(
     transmittal_id: uuid.UUID,
     user_id: CurrentUserId,
+    session: SessionDep,
     service: TransmittalService = Depends(_get_service),
 ) -> TransmittalResponse:
     """Lock the transmittal and set status to 'issued'."""
+    existing = await service.get_transmittal(transmittal_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     transmittal = await service.issue_transmittal(transmittal_id)
     return TransmittalResponse.model_validate(transmittal)
 
@@ -148,15 +176,19 @@ async def issue_transmittal(
 @router.post(
     "/{transmittal_id}/recipients/{recipient_id}/acknowledge/",
     response_model=RecipientResponse,
+    dependencies=[Depends(RequirePermission("transmittals.update"))],
 )
 async def acknowledge_receipt(
     transmittal_id: uuid.UUID,
     recipient_id: uuid.UUID,
     _body: AcknowledgeRequest,
+    session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     service: TransmittalService = Depends(_get_service),
 ) -> RecipientResponse:
     """Acknowledge receipt of a transmittal."""
+    existing = await service.get_transmittal(transmittal_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     recipient = await service.acknowledge_receipt(transmittal_id, recipient_id)
     return RecipientResponse.model_validate(recipient)
 
@@ -167,14 +199,18 @@ async def acknowledge_receipt(
 @router.post(
     "/{transmittal_id}/recipients/{recipient_id}/respond/",
     response_model=RecipientResponse,
+    dependencies=[Depends(RequirePermission("transmittals.update"))],
 )
 async def submit_response(
     transmittal_id: uuid.UUID,
     recipient_id: uuid.UUID,
     data: RespondRequest,
+    session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     service: TransmittalService = Depends(_get_service),
 ) -> RecipientResponse:
     """Submit a response to a transmittal."""
+    existing = await service.get_transmittal(transmittal_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     recipient = await service.submit_response(transmittal_id, recipient_id, data.response)
     return RecipientResponse.model_validate(recipient)

@@ -5,6 +5,71 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.15] — 2026-05-06
+
+### Security (cross-category IDOR sweep — ~73 endpoints)
+
+Five-category deep audit (Planning, Communication, Procurement, Finance, Documents) found cross-tenant data-leak holes in every category. This release closes them all in a single security-only batch. Every patched endpoint now requires the right `RequirePermission(...)` and calls `verify_project_access(project_id, user_id, session)` before reading or mutating.
+
+- **Documents — photo serve was completely public.** `GET /api/v1/documents/photos/{id}/file/` and `/thumb/` had zero authentication; anyone could `curl -O` photo bytes by guessing UUIDs. Construction-site photos contain incidents, defects, badges, and contracts pinned to walls — P0 privacy + GDPR hit. Now gated by `documents.read` + project ownership.
+- **Documents — sheets-by-id IDOR.** `GET /sheets/{id}` and `/sheets/{id}/versions/` skipped the ownership gate. Patched.
+- **Documents — `documents_similar` defaulted to `cross_project=True`.** Vector similarity could return hits from projects the caller didn't own. Default flipped to `False`; clients must opt-in explicitly with `?cross_project=true`.
+- **CDE module had zero project-access checks across all 11 endpoints** (containers / revisions / state transitions / history / transmittals). Any authenticated user could read or mutate any tenant's CDE state with a leaked UUID. Now fully gated.
+- **Field reports — 7 endpoints unscoped.** `get_report`, `update_report`, `delete_report`, `submit_report`, `link_documents`, `get_linked_documents`, `export/pdf` all skipped `verify_project_access`. Patched.
+- **Meetings — 5 read endpoints + the worst single hole.** `export_meeting_pdf` had **zero auth** (no permission, no project access). Plus `list_meetings`, `meeting_stats`, `open_action_items`, `get_meeting` were missing `RequirePermission("meetings.read")`. All 5 patched.
+- **Transmittals — entire module had no RBAC.** Eight endpoints (list / create / get / patch / delete / issue / acknowledge / respond) gained `RequirePermission` plus `verify_project_access` on the three lifecycle paths. Acknowledgement is contract-grade non-repudiation; this closes the integrity hole.
+- **Submittals — lifecycle and attachments unscoped.** `submit/review/approve` and the 3 attachment endpoints (list/add/delete) all gained `verify_project_access` via `service.get_submittal()`.
+- **RFI — `respond_to_rfi` and `create_variation_from_rfi` unscoped.** Both now load the RFI and verify project access.
+- **ERP chat session creation accepted arbitrary `project_id`.** A user could attach a chat session to any tenant's project; subsequent vector retrieval (`cross_project=True`) then leaked across tenants via embeddings. `create_session` now verifies the supplied project_id when present.
+- **Procurement was completely project-unscoped.** `list_purchase_orders` made `project_id` optional, so anyone with `procurement.read` could read every tenant's POs by omitting the filter. The parameter is now required, and 9 endpoints (list / stats / list-GR / create-GR / confirm-GR / get-PO / update-PO / create-invoice-from-PO / issue-PO) now load the resource and verify project ownership.
+- **Change-orders — sub-resources and lifecycle unscoped.** `add_item / update_item / delete_item / submit_order / approve_order / reject_order` all gained ownership verification. (Wave 5 in v2.9.14 only patched list/get/update/delete/summary.)
+- **Cost-model 5D dashboard had zero ownership checks.** All 14 endpoints (`dashboard / s-curve / cash-flow / budget / budget-lines / generate-budget / generate-cash-flow / what-if / monte-carlo / evm / snapshots`) were gated only by global `costmodel.read|write` — any user with the perm could target any project's BAC/EV/AC. Patched. UPDATE/DELETE on `budget-lines/{id}` and `snapshots/{id}` now load the row and verify project ownership.
+- **Schedule activity / baseline / progress-update endpoints unscoped.** 14 endpoints across `create/update/delete activity`, `link_boq_position`, `update_activity_progress`, `create/update_work_order`, `create_relationship`, `list_relationships`, baselines (CRUD), progress updates (CRUD), and `import_xer / import_msp_xml` now derive `project_id` from the parent schedule and gate via `_verify_schedule_owner` / `verify_project_access`.
+- **Tasks `{task_id}` IDOR.** `get_task / update_task / delete_task / complete_task / update_task_bim_links` did not call `verify_project_access`, so a leaked task UUID let cross-tenant access through. Each handler now loads via `service.get_task()` and verifies on `task.project_id`.
+- **EAC `_resolve_tenant_id` silently swallowed errors.** It caught every failure and fell back to `user.id`, effectively short-circuiting tenant scoping. The helper now raises HTTP 403 on any resolution failure. `create_rule / list_rules / create_ruleset / list_rulesets` now also `verify_project_access` when a `project_id` is supplied.
+
+### Fixed
+
+- **Change-order `_apply_to_boq` no longer picks an arbitrary BOQ.** `approve_order` now accepts an optional `boq_id` query param threaded through to `service.approve_order(..., boq_id=...)` → `_apply_to_boq(..., boq_id=...)`. With explicit `boq_id`, the function looks up that specific BOQ and refuses to write if not found, locked, or owned by a different project (returns `{"applied": False, "reason": "boq_not_found" | "boq_project_mismatch" | "boq_locked"}`). Without `boq_id`, the existing first-by-`created_at` fallback is preserved but logs a warning. Multi-BOQ projects (the common case) can now target the correct LV.
+
+## [2.9.14] — 2026-05-06
+
+### Security (P0 IDOR fixes — Wave 5 audit)
+
+- **Risk register cross-tenant leak.** `GET /api/v1/risk/`, `/risk/summary/`, `/risk/matrix/` accepted any `project_id` from any authenticated user without checking ownership. All three handlers now require `RequirePermission("risk.read")` and call `verify_project_access(project_id, user_id, session)` before reading.
+- **Change-order cross-tenant leak.** `GET /api/v1/changeorders/summary/` and `GET /api/v1/changeorders/?project_id=…` were missing the same ownership check. Both endpoints now require `RequirePermission("changeorders.read")` and verify project access; the project-less list path that scopes to the caller's owned projects is unchanged.
+- **Contacts export leaked every tenant's data.** `GET /api/v1/contacts/export/` ran a plain `select(Contact).where(is_active)` with no owner filter, so anyone with `contacts.read` could download the full database. Now mirrors the `tenant_id` / `created_by` scope used by `list_contacts` / `search_contacts` / `get_stats`; admins still see every row.
+
+### Changed
+
+- **Settings page redesigned.** Card-grid layout with sticky vertical sidebar nav on desktop (horizontal scrollable pill tabs on mobile), profile rendered as a wide hero card with a real label-above pattern, "Danger Zone" red-tinted card separates Sign Out + destructive actions from settings, change-password form has proper labels + inline mismatch error, BIM/CAD tab body filled with link-cards, URL-synced tab state via `?tab=…` for deep-linking. Every setting from the previous layout is preserved.
+
+## [2.9.13] — 2026-05-06
+
+### Added
+- DDC converter version surfaced on every converter-related page (`/bim` banner + `/quantities` cards): the actual installed git-blob SHA (first 7 chars) is shown in place of the static manifest version string. When the version-check endpoint reports the installed binary is older than upstream `cad2data-Revit-IFC-DWG-DGN/main`, the row swaps in a sky-blue "Update available" badge and a one-click **Update** button.
+- Per-row Update button on `/quantities` ConverterCard wired through to a force-reinstall path. Kept the existing Install / Uninstall affordances so the card now exposes Install for missing converters, Uninstall for healthy ones, and Update + Uninstall for outdated ones.
+- `installBIMConverter(id, {force: true})` API helper and a `?force=true` query param on `POST /v1/takeoff/converters/{id}/install/` so the "already installed → short-circuit" branch is bypassed when the client explicitly asks for a re-download.
+
+### Fixed
+- Clicking **Update** on an outdated converter previously hit the early-return ("already installed") path and did nothing visible. The handler now reinstalls under `force=true`, then clears `app.state._converter_version_cache` so the 6-h server cache reflects the new SHA immediately. Frontend invalidates `bim-converters`, `takeoff/converters`, and `bim-converters-version-check` query keys on success — the badge disappears as soon as the install completes instead of lingering for hours.
+
+### Changed
+- `openconstructionerp.com` hero "OCERP" mark restyled to match the rest of the site CTAs. The 3D-glass pill with breathing animation, gloss layers, click-burst rings, and `rotateX/rotateY` hover was replaced with a `.btn-primary`-shaped pill (rounded, accent background, simple lift) plus a trailing chevron so it reads as **OCERP →**. Click still navigates to `#install`.
+
+## [2.9.12] — 2026-05-06
+
+### Fixed
+- All upload size caps removed (boq/contacts/fieldreports/finance/costs/tasks/punchlist/meetings/takeoff/bim_hub) — uploads no longer rejected at 10/25/50/100/200 MB.
+- DDC logo on dashboard rendered correctly (.webp now in static-extension whitelist; was served as truncated text/html).
+- Validation engine no longer flags BOQ section headers as missing unit/quantity/unit_rate (16 false errors → 0 on demo BOQ).
+- BOQ editor 404s eliminated: `/v1/boq/boqs/{id}/activity/` and `/v1/costs/vector/status/` (trailing-slash mismatches).
+- Sidebar version line `v… · AGPL-3.0` moved below GitHub/Telegram pills (last row of menu).
+
+### Added
+- "Developed by" label above the DataDrivenConstruction logo on the dashboard hero (translated for en/de/fr/es/pt/ru/zh/ar/hi/ja).
+- File-manager UI translations for ar/fr/es/pt/zh/hi/ja (~55 keys each, no more English leakage on /files).
+
 ## [2.9.11] — 2026-05-06
 
 ### Fixed

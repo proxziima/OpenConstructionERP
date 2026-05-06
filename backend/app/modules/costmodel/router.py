@@ -122,9 +122,12 @@ def _cash_flow_to_response(entry: object) -> CashFlowResponse:
 )
 async def get_dashboard(
     project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> DashboardResponse:
     """Get aggregated 5D cost dashboard KPIs for a project."""
+    await verify_project_access(project_id, user_id, session)
     return await service.get_dashboard(project_id)
 
 
@@ -135,9 +138,12 @@ async def get_dashboard(
 )
 async def get_s_curve(
     project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> SCurveData:
     """Get S-curve time series data for chart visualisation."""
+    await verify_project_access(project_id, user_id, session)
     return await service.get_s_curve(project_id)
 
 
@@ -148,9 +154,12 @@ async def get_s_curve(
 )
 async def get_cash_flow(
     project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> CashFlowData:
     """Get monthly cash flow data for chart display."""
+    await verify_project_access(project_id, user_id, session)
     return await service.get_cash_flow(project_id)
 
 
@@ -164,9 +173,12 @@ async def get_cash_flow(
 )
 async def get_budget_summary(
     project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> BudgetSummary:
     """Get budget summary grouped by cost category."""
+    await verify_project_access(project_id, user_id, session)
     return await service.get_budget_summary(project_id)
 
 
@@ -177,12 +189,15 @@ async def get_budget_summary(
 )
 async def list_budget_lines(
     project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     category: str | None = Query(default=None, description="Filter by cost category"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
     service: CostModelService = Depends(_get_service),
 ) -> list[BudgetLineResponse]:
     """List detailed budget lines for a project."""
+    await verify_project_access(project_id, user_id, session)
     lines, _ = await service.list_budget_lines(project_id, category=category, offset=offset, limit=limit)
     return [_budget_line_to_response(line) for line in lines]
 
@@ -197,9 +212,11 @@ async def create_budget_line(
     project_id: uuid.UUID,
     data: BudgetLineCreate,
     _user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> BudgetLineResponse:
     """Create a new budget line for a project."""
+    await verify_project_access(project_id, _user_id, session)
     data.project_id = project_id
     line = await service.create_budget_line(data)
     return _budget_line_to_response(line)
@@ -213,9 +230,15 @@ async def create_budget_line(
 async def update_budget_line(
     line_id: uuid.UUID,
     data: BudgetLineUpdate,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> BudgetLineResponse:
     """Update a budget line (committed, actual, forecast amounts, etc.)."""
+    existing = await service.budget_repo.get_by_id(line_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Budget line not found")
+    await verify_project_access(existing.project_id, user_id, session)
     line = await service.update_budget_line(line_id, data)
     return _budget_line_to_response(line)
 
@@ -227,9 +250,15 @@ async def update_budget_line(
 )
 async def delete_budget_line(
     line_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> None:
     """Delete a budget line."""
+    existing = await service.budget_repo.get_by_id(line_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Budget line not found")
+    await verify_project_access(existing.project_id, user_id, session)
     await service.delete_budget_line(line_id)
 
 
@@ -245,6 +274,7 @@ async def delete_budget_line(
 async def generate_budget(
     project_id: uuid.UUID,
     _user_id: CurrentUserId,
+    session: SessionDep,
     body: dict,
     service: CostModelService = Depends(_get_service),
 ) -> list[BudgetLineResponse]:
@@ -253,6 +283,7 @@ async def generate_budget(
     The request body should look like ``{"boq_id": "<uuid>"}``. If `boq_id` is
     omitted, the project's first/largest BOQ is used automatically.
     """
+    await verify_project_access(project_id, _user_id, session)
     raw_boq_id = body.get("boq_id") if isinstance(body, dict) else None
     if raw_boq_id:
         try:
@@ -289,9 +320,11 @@ async def create_snapshot(
     project_id: uuid.UUID,
     data: SnapshotCreate,
     _user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> SnapshotResponse:
     """Create a new EVM cost snapshot for a project."""
+    await verify_project_access(project_id, _user_id, session)
     data.project_id = project_id
     snapshot = await service.create_snapshot(data)
     return _snapshot_to_response(snapshot)
@@ -304,6 +337,8 @@ async def create_snapshot(
 )
 async def list_snapshots(
     project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     period_from: str | None = Query(default=None, description="Start period (YYYY-MM)"),
     period_to: str | None = Query(default=None, description="End period (YYYY-MM)"),
     offset: int = Query(default=0, ge=0),
@@ -311,6 +346,7 @@ async def list_snapshots(
     service: CostModelService = Depends(_get_service),
 ) -> list[SnapshotResponse]:
     """List EVM snapshots for a project, optionally filtered by period range."""
+    await verify_project_access(project_id, user_id, session)
     snapshots, _ = await service.list_snapshots(
         project_id,
         period_from=period_from,
@@ -329,9 +365,13 @@ async def list_snapshots(
 async def update_snapshot(
     snapshot_id: uuid.UUID,
     data: SnapshotUpdate,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> SnapshotResponse:
     """Update an EVM cost snapshot (notes, values, etc.)."""
+    existing = await service.get_snapshot(snapshot_id)
+    await verify_project_access(existing.project_id, user_id, session)
     snapshot = await service.update_snapshot(snapshot_id, data)
     return _snapshot_to_response(snapshot)
 
@@ -344,9 +384,12 @@ async def update_snapshot(
 async def delete_snapshot(
     project_id: uuid.UUID,
     snapshot_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> None:
     """Delete an EVM cost snapshot."""
+    await verify_project_access(project_id, user_id, session)
     snapshot = await service.get_snapshot(snapshot_id)
     if str(snapshot.project_id) != str(project_id):
         raise HTTPException(status_code=404, detail="Snapshot not found")
@@ -363,6 +406,8 @@ async def delete_snapshot(
 )
 async def get_evm(
     project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> EVMResponse:
     """Calculate full EVM metrics from schedule progress and budget data.
@@ -370,6 +415,7 @@ async def get_evm(
     Returns BAC, PV, EV, AC, SV, CV, SPI, CPI, EAC, ETC, VAC, TCPI
     computed by linking budget lines to schedule activities.
     """
+    await verify_project_access(project_id, user_id, session)
     return await service.calculate_evm(project_id)
 
 
@@ -386,6 +432,7 @@ async def create_what_if_scenario(
     project_id: uuid.UUID,
     data: WhatIfAdjustments,
     _user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> WhatIfResult:
     """Create a what-if cost scenario by applying percentage adjustments.
@@ -393,6 +440,7 @@ async def create_what_if_scenario(
     Clones current budget state, applies material/labor/duration adjustments,
     and returns the impact on EAC. Also creates a snapshot for the scenario.
     """
+    await verify_project_access(project_id, _user_id, session)
     return await service.create_what_if_scenario(project_id, data)
 
 
@@ -408,9 +456,11 @@ async def create_what_if_scenario(
 async def generate_cash_flow(
     project_id: uuid.UUID,
     _user_id: CurrentUserId,
+    session: SessionDep,
     service: CostModelService = Depends(_get_service),
 ) -> list[CashFlowResponse]:
     """Generate cash flow entries by spreading budget across schedule."""
+    await verify_project_access(project_id, _user_id, session)
     entries = await service.generate_cash_flow_from_schedule(project_id)
     return [_cash_flow_to_response(entry) for entry in entries]
 
@@ -433,6 +483,7 @@ async def run_monte_carlo(
     Generates N random cost outcomes based on category-level uncertainty,
     then returns percentile estimates (P50, P80, P95) and a histogram.
     """
+    await verify_project_access(project_id, _user_id, session)
     import random
 
     from sqlalchemy import Float, func, select

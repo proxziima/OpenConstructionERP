@@ -409,10 +409,13 @@ async def respond_to_rfi(
     rfi_id: uuid.UUID,
     body: RFIRespondRequest,
     user_id: CurrentUserId,
+    session: SessionDep,
     _perm: None = Depends(RequirePermission("rfi.update")),
     service: RFIService = Depends(_get_service),
 ) -> RFIResponse:
     """Record an official response to an RFI."""
+    existing = await service.get_rfi(rfi_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     rfi = await service.respond_to_rfi(rfi_id, body.official_response, responded_by=user_id)
     return _to_response(rfi)
 
@@ -431,6 +434,7 @@ async def create_variation_from_rfi(
     Pre-fills the change order with the RFI's subject, question, and cost impact value.
     """
     rfi = await service.get_rfi(rfi_id)
+    await verify_project_access(rfi.project_id, str(user_id), session)
 
     if not rfi.cost_impact:
         raise HTTPException(

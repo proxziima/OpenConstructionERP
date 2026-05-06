@@ -405,13 +405,19 @@ async def get_photo(
 # ── Serve photo file ────────────────────────────────────────────────────
 
 
-@router.get("/photos/{photo_id}/file/")
+@router.get(
+    "/photos/{photo_id}/file/",
+    dependencies=[Depends(RequirePermission("documents.read"))],
+)
 async def serve_photo_file(
     photo_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: PhotoService = Depends(_get_photo_service),
 ) -> FileResponse:
     """Serve the actual photo file."""
     photo = await service.get_photo(photo_id)
+    await verify_project_access(photo.project_id, user_id, session)
     file_path = Path(photo.file_path).resolve()
     photo_base = Path(PHOTO_BASE).resolve()
 
@@ -460,9 +466,14 @@ async def serve_photo_file(
 # ── Serve photo thumbnail ──────────────────────────────────────────────
 
 
-@router.get("/photos/{photo_id}/thumb/")
+@router.get(
+    "/photos/{photo_id}/thumb/",
+    dependencies=[Depends(RequirePermission("documents.read"))],
+)
 async def serve_photo_thumbnail(
     photo_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: PhotoService = Depends(_get_photo_service),
 ) -> FileResponse:
     """Serve the generated thumbnail for a photo.
@@ -473,6 +484,7 @@ async def serve_photo_thumbnail(
     grid functional rather than showing broken-image tiles.
     """
     photo = await service.get_photo(photo_id)
+    await verify_project_access(photo.project_id, user_id, session)
     thumb_path_str = getattr(photo, "thumbnail_path", None)
 
     thumb_base = Path(PHOTO_THUMB_BASE).resolve()
@@ -674,14 +686,20 @@ async def split_pdf(
 # ── Get single sheet ───────────────────────────────────────────────────
 
 
-@router.get("/sheets/{sheet_id}", response_model=SheetResponse)
+@router.get(
+    "/sheets/{sheet_id}",
+    response_model=SheetResponse,
+    dependencies=[Depends(RequirePermission("documents.read"))],
+)
 async def get_sheet(
     sheet_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: SheetService = Depends(_get_sheet_service),
 ) -> SheetResponse:
     """Get a single sheet's metadata."""
     sheet = await service.get_sheet(sheet_id)
+    await verify_project_access(sheet.project_id, user_id, session)
     return _sheet_to_response(sheet)
 
 
@@ -704,13 +722,20 @@ async def update_sheet(
 # ── Version history ────────────────────────────────────────────────────
 
 
-@router.get("/sheets/{sheet_id}/versions/", response_model=SheetVersionHistory)
+@router.get(
+    "/sheets/{sheet_id}/versions/",
+    response_model=SheetVersionHistory,
+    dependencies=[Depends(RequirePermission("documents.read"))],
+)
 async def get_sheet_versions(
     sheet_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: SheetService = Depends(_get_sheet_service),
 ) -> SheetVersionHistory:
     """Get version history for a sheet."""
+    sheet = await service.get_sheet(sheet_id)
+    await verify_project_access(sheet.project_id, user_id, session)
     result = await service.get_version_history(sheet_id)
     return SheetVersionHistory(
         current=_sheet_to_response(result["current"]),
@@ -1013,14 +1038,14 @@ async def documents_similar(
     session: SessionDep,
     _user_id: CurrentUserId,
     limit: int = Query(default=5, ge=1, le=20),
-    cross_project: bool = Query(default=True),
+    cross_project: bool = Query(default=False),
 ) -> dict:
     """Return documents semantically similar to the given one.
 
-    By default the search is **cross-project** — that's the highest-value
-    use case: engineers want to find how a similar drawing or spec was
-    handled on past projects so they can reuse context.  Pass
-    ``cross_project=false`` to limit the search to the same project.
+    By default the search is **scoped to the same project**.  Pass
+    ``cross_project=true`` to expand the search across all projects the
+    caller has access to (useful for finding how similar drawings/specs
+    were handled on past projects).
 
     Returns a list of :class:`VectorHit` dicts plus the original row id
     so the frontend can highlight the source.

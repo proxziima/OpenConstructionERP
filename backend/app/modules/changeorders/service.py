@@ -258,7 +258,13 @@ class ChangeOrderService:
         logger.info("Change order submitted: %s by %s", order.code, user_id)
         return order
 
-    async def approve_order(self, order_id: uuid.UUID, user_id: str) -> ChangeOrder:
+    async def approve_order(
+        self,
+        order_id: uuid.UUID,
+        user_id: str,
+        *,
+        boq_id: uuid.UUID | None = None,
+    ) -> ChangeOrder:
         """Approve a submitted change order.
 
         On approval the order's ``cost_impact`` is applied to
@@ -333,7 +339,7 @@ class ChangeOrderService:
         # repo.update_fields() above called session.expire_all() which
         # invalidated the original ORM instance.
         fresh_for_apply = await self.repo.get_by_id(order_id)
-        boq_result = await self._apply_to_boq(fresh_for_apply or order)
+        boq_result = await self._apply_to_boq(fresh_for_apply or order, boq_id=boq_id)
 
         await _safe_publish(
             "changeorder.approved",
@@ -358,7 +364,12 @@ class ChangeOrderService:
         )
         return fresh or order
 
-    async def _apply_to_boq(self, order: ChangeOrder) -> dict:
+    async def _apply_to_boq(
+        self,
+        order: ChangeOrder,
+        *,
+        boq_id: uuid.UUID | None = None,
+    ) -> dict:
         """Push the approved CO's items into the project's first non-locked BOQ.
 
         Idempotent — if a section with ``metadata.change_order_id == order.id``
@@ -400,22 +411,40 @@ class ChangeOrderService:
         if not items:
             return {"applied": False, "reason": "no_items"}
 
-        boq = (
-            await self.session.execute(
-                select(BOQ)
-                .where(BOQ.project_id == order.project_id)
-                .where(BOQ.is_locked.is_(False))
-                .order_by(BOQ.created_at)
-                .limit(1)
+        if boq_id is not None:
+            boq = (
+                await self.session.execute(
+                    select(BOQ).where(BOQ.id == boq_id)
+                )
+            ).scalar_one_or_none()
+            if boq is None:
+                return {"applied": False, "reason": "boq_not_found"}
+            if boq.project_id != order.project_id:
+                return {"applied": False, "reason": "boq_project_mismatch"}
+            if boq.is_locked:
+                return {"applied": False, "reason": "boq_locked"}
+        else:
+            boq = (
+                await self.session.execute(
+                    select(BOQ)
+                    .where(BOQ.project_id == order.project_id)
+                    .where(BOQ.is_locked.is_(False))
+                    .order_by(BOQ.created_at)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if boq is None:
+                logger.info(
+                    "Change order %s approved but no unlocked BOQ in project %s "
+                    "— BOQ writeback skipped",
+                    order.code, order.project_id,
+                )
+                return {"applied": False, "reason": "no_active_boq"}
+            logger.warning(
+                "Change order %s applied to BOQ %s by created_at fallback "
+                "(no explicit boq_id supplied)",
+                order.code, boq.id,
             )
-        ).scalar_one_or_none()
-        if boq is None:
-            logger.info(
-                "Change order %s approved but no unlocked BOQ in project %s "
-                "— BOQ writeback skipped",
-                order.code, order.project_id,
-            )
-            return {"applied": False, "reason": "no_active_boq"}
 
         # Idempotent guard: section keyed by change_order_id in metadata.
         existing_sections = (

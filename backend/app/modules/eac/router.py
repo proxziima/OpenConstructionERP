@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import CurrentUserId, SessionDep
+from app.dependencies import CurrentUserId, SessionDep, verify_project_access
 from app.modules.eac.models import (
     GLOBAL_VARIABLE_VALUE_TYPES,
     OUTPUT_MODES,
@@ -91,27 +91,31 @@ async def _resolve_tenant_id(
     its own single-row tenant. This shim keeps tests deterministic and
     is replaced when the tenant table lands.
     """
-    try:
-        from app.modules.users.models import User
+    from app.modules.users.models import User
 
-        user = await session.get(User, uuid.UUID(user_id))
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found",
-            )
-        # Many user models carry tenant_id as nullable. Fall back to
-        # user.id if the project hasn't seeded tenants yet.
-        tenant_attr = getattr(user, "tenant_id", None)
-        if tenant_attr is not None:
+    try:
+        user_uuid = uuid.UUID(user_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid user identifier",
+        ) from exc
+    user = await session.get(User, user_uuid)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not found",
+        )
+    tenant_attr = getattr(user, "tenant_id", None)
+    if tenant_attr is not None:
+        try:
             return uuid.UUID(str(tenant_attr))
-        return user.id
-    except HTTPException:
-        raise
-    except Exception:  # noqa: BLE001
-        # Fall back to deriving a tenant from the user id; never fail the
-        # request because tenancy is not strictly enforced in EAC-1.1.
-        return uuid.UUID(user_id)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid tenant for current user",
+            ) from exc
+    return user.id
 
 
 # ── Validate helpers ─────────────────────────────────────────────────────
@@ -157,6 +161,8 @@ async def create_rule(
     """
     _check_output_mode(payload.output_mode)
     tenant_id = await _resolve_tenant_id(session, user_id)
+    if payload.project_id is not None:
+        await verify_project_access(payload.project_id, user_id, session)
 
     rule = EacRule(
         ruleset_id=payload.ruleset_id,
@@ -231,6 +237,8 @@ async def list_rules(
     """List rules visible to the current tenant, with optional filters."""
     _check_output_mode(output_mode)
     tenant_id = await _resolve_tenant_id(session, user_id)
+    if project_id is not None:
+        await verify_project_access(project_id, user_id, session)
 
     filters = EacRuleListFilters(
         ruleset_id=ruleset_id,
@@ -443,6 +451,8 @@ async def create_ruleset(
     """Create a new ruleset."""
     _check_ruleset_kind(payload.kind)
     tenant_id = await _resolve_tenant_id(session, user_id)
+    if payload.project_id is not None:
+        await verify_project_access(payload.project_id, user_id, session)
 
     ruleset = EacRuleset(
         name=payload.name,
@@ -492,6 +502,8 @@ async def list_rulesets(
     """List rulesets visible to the current tenant."""
     _check_ruleset_kind(kind)
     tenant_id = await _resolve_tenant_id(session, user_id)
+    if project_id is not None:
+        await verify_project_access(project_id, user_id, session)
 
     stmt = select(EacRuleset).where(EacRuleset.tenant_id == tenant_id)
     if project_id is not None:

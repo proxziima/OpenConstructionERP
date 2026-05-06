@@ -148,13 +148,19 @@ def _item_to_response(item: object) -> ChangeOrderItemResponse:
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 
-@router.get("/summary/", response_model=ChangeOrderSummary)
+@router.get(
+    "/summary/",
+    response_model=ChangeOrderSummary,
+    dependencies=[Depends(RequirePermission("changeorders.read"))],
+)
 async def get_summary(
-    project_id: uuid.UUID = Query(...),
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: ChangeOrderService = Depends(_get_service),
 ) -> ChangeOrderSummary:
     """Aggregated change order stats for a project."""
+    await verify_project_access(project_id, str(user_id), session)
     data = await service.get_summary(project_id)
     return ChangeOrderSummary(**data)
 
@@ -186,9 +192,14 @@ async def create_change_order(
 # ── List ─────────────────────────────────────────────────────────────────────
 
 
-@router.get("/", response_model=list[ChangeOrderResponse])
+@router.get(
+    "/",
+    response_model=list[ChangeOrderResponse],
+    dependencies=[Depends(RequirePermission("changeorders.read"))],
+)
 async def list_change_orders(
     user_id: CurrentUserId,
+    session: SessionDep,
     project_id: uuid.UUID | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
@@ -197,11 +208,11 @@ async def list_change_orders(
 ) -> list[ChangeOrderResponse]:
     """List change orders.
 
-    If ``project_id`` is supplied, the result is scoped to that project (the
-    caller still needs to own/admin it via the existing per-project guards on
-    other endpoints). When omitted we scope to every project the caller owns —
-    this matches the convention used by sibling modules and avoids the 422
-    that fresh installs hit before any project is selected.
+    If ``project_id`` is supplied we verify the caller owns/admins that project
+    before returning anything — earlier the route trusted the path parameter
+    and silently leaked change-order data across tenants. When omitted we scope
+    to every project the caller owns, matching the sibling-module convention
+    and avoiding the 422 that fresh installs hit before any project exists.
     """
     if project_id is None:
         orders, _ = await service.list_orders_for_owner(
@@ -211,6 +222,7 @@ async def list_change_orders(
             status_filter=status_filter,
         )
     else:
+        await verify_project_access(project_id, str(user_id), session)
         orders, _ = await service.list_orders(
             project_id, offset=offset, limit=limit, status_filter=status_filter
         )
@@ -276,11 +288,14 @@ async def delete_change_order(
 async def add_item(
     order_id: uuid.UUID,
     data: ChangeOrderItemCreate,
+    session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("changeorders.update")),
     service: ChangeOrderService = Depends(_get_service),
 ) -> ChangeOrderItemResponse:
     """Add an item to a change order."""
+    existing = await service.get_order(order_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     item = await service.add_item(order_id, data)
     return _item_to_response(item)
 
@@ -290,11 +305,14 @@ async def update_item(
     order_id: uuid.UUID,
     item_id: uuid.UUID,
     data: ChangeOrderItemUpdate,
+    session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("changeorders.update")),
     service: ChangeOrderService = Depends(_get_service),
 ) -> ChangeOrderItemResponse:
     """Update an item in a change order."""
+    existing = await service.get_order(order_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     item = await service.update_item(order_id, item_id, data)
     return _item_to_response(item)
 
@@ -303,11 +321,14 @@ async def update_item(
 async def delete_item(
     order_id: uuid.UUID,
     item_id: uuid.UUID,
+    session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("changeorders.update")),
     service: ChangeOrderService = Depends(_get_service),
 ) -> None:
     """Delete an item from a change order."""
+    existing = await service.get_order(order_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     await service.delete_item(order_id, item_id)
 
 
@@ -318,10 +339,13 @@ async def delete_item(
 async def submit_order(
     order_id: uuid.UUID,
     user_id: CurrentUserId,
+    session: SessionDep,
     _perm: None = Depends(RequirePermission("changeorders.update")),
     service: ChangeOrderService = Depends(_get_service),
 ) -> ChangeOrderResponse:
     """Submit a change order for approval."""
+    existing = await service.get_order(order_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     order = await service.submit_order(order_id, user_id)
     return _order_to_response(order)
 
@@ -330,14 +354,18 @@ async def submit_order(
 async def approve_order(
     order_id: uuid.UUID,
     user_id: CurrentUserId,
+    session: SessionDep,
+    boq_id: uuid.UUID | None = Query(default=None),
     _perm: None = Depends(RequirePermission("changeorders.approve")),
     service: ChangeOrderService = Depends(_get_service),
 ) -> ChangeOrderResponse:
     """Approve a submitted change order."""
+    existing = await service.get_order(order_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     allowed, _ = approval_limiter.is_allowed(str(user_id))
     if not allowed:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Rate limit exceeded. Try again later.")
-    order = await service.approve_order(order_id, user_id)
+    order = await service.approve_order(order_id, user_id, boq_id=boq_id)
     return _order_to_response(order)
 
 
@@ -345,9 +373,12 @@ async def approve_order(
 async def reject_order(
     order_id: uuid.UUID,
     user_id: CurrentUserId,
+    session: SessionDep,
     _perm: None = Depends(RequirePermission("changeorders.approve")),
     service: ChangeOrderService = Depends(_get_service),
 ) -> ChangeOrderResponse:
     """Reject a submitted change order."""
+    existing = await service.get_order(order_id)
+    await verify_project_access(existing.project_id, str(user_id), session)
     order = await service.reject_order(order_id, user_id)
     return _order_to_response(order)

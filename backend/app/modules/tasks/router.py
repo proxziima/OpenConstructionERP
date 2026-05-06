@@ -501,12 +501,6 @@ async def import_tasks_file(
             detail="Uploaded file is empty.",
         )
 
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File too large. Maximum size is 10 MB.",
-        )
-
     try:
         if filename.endswith(".xlsx") or filename.endswith(".xls"):
             rows = _parse_task_rows_from_excel(content)
@@ -699,11 +693,14 @@ async def batch_assign_tasks(
 @router.get("/{task_id}", response_model=TaskResponse)
 async def get_task(
     task_id: uuid.UUID,
+    session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("tasks.read")),
     service: TaskService = Depends(_get_service),
 ) -> TaskResponse:
     """Get a single task. Private tasks are only visible to their creator."""
     task = await service.get_task(task_id, current_user_id=user_id)
+    await verify_project_access(task.project_id, user_id, session)
     return _to_response(task)
 
 
@@ -711,11 +708,14 @@ async def get_task(
 async def update_task(
     task_id: uuid.UUID,
     data: TaskUpdate,
+    session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("tasks.update")),
     service: TaskService = Depends(_get_service),
 ) -> TaskResponse:
     """Update a task."""
+    existing = await service.get_task(task_id, current_user_id=user_id)
+    await verify_project_access(existing.project_id, user_id, session)
     task = await service.update_task(task_id, data, current_user_id=user_id)
     return _to_response(task)
 
@@ -723,23 +723,29 @@ async def update_task(
 @router.delete("/{task_id}", status_code=204)
 async def delete_task(
     task_id: uuid.UUID,
+    session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("tasks.delete")),
     service: TaskService = Depends(_get_service),
 ) -> None:
     """Delete a task."""
+    existing = await service.get_task(task_id, current_user_id=user_id)
+    await verify_project_access(existing.project_id, user_id, session)
     await service.delete_task(task_id, current_user_id=user_id)
 
 
 @router.post("/{task_id}/complete/", response_model=TaskResponse)
 async def complete_task(
     task_id: uuid.UUID,
+    session: SessionDep,
     body: TaskCompleteRequest | None = None,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("tasks.update")),
     service: TaskService = Depends(_get_service),
 ) -> TaskResponse:
     """Mark a task as completed with optional result text."""
+    existing = await service.get_task(task_id, current_user_id=user_id)
+    await verify_project_access(existing.project_id, user_id, session)
     result = body.result if body else None
     task = await service.complete_task(task_id, result=result, current_user_id=user_id)
     return _to_response(task)
@@ -749,6 +755,7 @@ async def complete_task(
 async def update_task_bim_links(
     task_id: uuid.UUID,
     body: TaskBimLinkRequest,
+    session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("tasks.update")),
     service: TaskService = Depends(_get_service),
@@ -759,6 +766,8 @@ async def update_task_bim_links(
     fully overwrites the previously stored list. Sending an empty list
     clears all links.
     """
+    existing = await service.get_task(task_id, current_user_id=user_id)
+    await verify_project_access(existing.project_id, user_id, session)
     task = await service.update_bim_links(
         task_id,
         body.bim_element_ids,

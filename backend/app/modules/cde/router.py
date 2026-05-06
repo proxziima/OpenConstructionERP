@@ -19,7 +19,13 @@ import uuid
 
 from fastapi import APIRouter, Depends, Query
 
-from app.dependencies import CurrentUserId, CurrentUserPayload, SessionDep
+from app.dependencies import (
+    CurrentUserId,
+    CurrentUserPayload,
+    RequirePermission,
+    SessionDep,
+    verify_project_access,
+)
 from app.modules.cde.schemas import (
     CDEStatsResponse,
     ContainerCreate,
@@ -125,8 +131,14 @@ async def list_suitability_codes() -> SuitabilityCodesResponse:
 # ── Stats ────────────────────────────────────────────────────────────────────
 
 
-@router.get("/stats/", response_model=CDEStatsResponse)
+@router.get(
+    "/stats/",
+    response_model=CDEStatsResponse,
+    dependencies=[Depends(RequirePermission("cde.read"))],
+)
 async def cde_stats(
+    user_id: CurrentUserId,
+    session: SessionDep,
     project_id: uuid.UUID = Query(...),
     service: CDEService = Depends(_get_service),
 ) -> CDEStatsResponse:
@@ -135,16 +147,22 @@ async def cde_stats(
     Returns total containers, breakdown by CDE state and discipline,
     and count of containers with at least one revision.
     """
+    await verify_project_access(project_id, user_id, session)
     return await service.get_stats(project_id)
 
 
 # ── Container List ────────────────────────────────────────────────────────────
 
 
-@router.get("/containers/", response_model=list[ContainerResponse])
+@router.get(
+    "/containers/",
+    response_model=list[ContainerResponse],
+    dependencies=[Depends(RequirePermission("cde.read"))],
+)
 async def list_containers(
+    user_id: CurrentUserId,
+    session: SessionDep,
     project_id: uuid.UUID = Query(...),
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
     cde_state: str | None = Query(default=None, alias="state"),
@@ -152,6 +170,7 @@ async def list_containers(
     service: CDEService = Depends(_get_service),
 ) -> list[ContainerResponse]:
     """List document containers for a project."""
+    await verify_project_access(project_id, user_id, session)
     containers, _ = await service.list_containers(
         project_id,
         offset=offset,
@@ -165,16 +184,23 @@ async def list_containers(
 # ── Container Create ──────────────────────────────────────────────────────────
 
 
-@router.post("/containers/", response_model=ContainerResponse, status_code=201)
+@router.post(
+    "/containers/",
+    response_model=ContainerResponse,
+    status_code=201,
+    dependencies=[Depends(RequirePermission("cde.create"))],
+)
 async def create_container(
     data: ContainerCreate,
     user_id: CurrentUserId,
+    session: SessionDep,
     service: CDEService = Depends(_get_service),
 ) -> ContainerResponse:
     """Create a new document container."""
     from fastapi import HTTPException
     from fastapi import status as _status
 
+    await verify_project_access(data.project_id, user_id, session)
     logger.info(
         "CDE create_container request: project=%s code=%s state=%s user=%s",
         data.project_id,
@@ -198,28 +224,41 @@ async def create_container(
 # ── Container Get ─────────────────────────────────────────────────────────────
 
 
-@router.get("/containers/{container_id}", response_model=ContainerResponse)
+@router.get(
+    "/containers/{container_id}",
+    response_model=ContainerResponse,
+    dependencies=[Depends(RequirePermission("cde.read"))],
+)
 async def get_container(
     container_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CDEService = Depends(_get_service),
 ) -> ContainerResponse:
     """Get a single document container."""
     container = await service.get_container(container_id)
+    await verify_project_access(container.project_id, user_id, session)
     return _container_to_response(container)
 
 
 # ── Container Update ──────────────────────────────────────────────────────────
 
 
-@router.patch("/containers/{container_id}", response_model=ContainerResponse)
+@router.patch(
+    "/containers/{container_id}",
+    response_model=ContainerResponse,
+    dependencies=[Depends(RequirePermission("cde.update"))],
+)
 async def update_container(
     container_id: uuid.UUID,
     data: ContainerUpdate,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CDEService = Depends(_get_service),
 ) -> ContainerResponse:
     """Update a document container."""
+    existing = await service.get_container(container_id)
+    await verify_project_access(existing.project_id, user_id, session)
     container = await service.update_container(container_id, data)
     return _container_to_response(container)
 
@@ -227,11 +266,16 @@ async def update_container(
 # ── State Transition ──────────────────────────────────────────────────────────
 
 
-@router.post("/containers/{container_id}/transition/", response_model=ContainerResponse)
+@router.post(
+    "/containers/{container_id}/transition/",
+    response_model=ContainerResponse,
+    dependencies=[Depends(RequirePermission("cde.update"))],
+)
 async def transition_state(
     container_id: uuid.UUID,
     data: StateTransitionRequest,
     user_payload: CurrentUserPayload,
+    session: SessionDep,
     service: CDEService = Depends(_get_service),
 ) -> ContainerResponse:
     """Transition a container's CDE state (wip -> shared -> published -> archived).
@@ -242,6 +286,8 @@ async def transition_state(
     """
     user_role = user_payload.get("role", "editor")
     user_id = user_payload.get("sub")
+    existing = await service.get_container(container_id)
+    await verify_project_access(existing.project_id, user_id, session)
     container = await service.transition_state(
         container_id, data, user_role=user_role, user_id=user_id,
     )
@@ -254,13 +300,17 @@ async def transition_state(
 @router.get(
     "/containers/{container_id}/history/",
     response_model=list[StateTransitionEntry],
+    dependencies=[Depends(RequirePermission("cde.read"))],
 )
 async def get_container_history(
     container_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CDEService = Depends(_get_service),
 ) -> list[StateTransitionEntry]:
     """Return the state-transition audit log for a container, newest first."""
+    container = await service.get_container(container_id)
+    await verify_project_access(container.project_id, user_id, session)
     rows = await service.get_container_history(container_id)
     return [StateTransitionEntry.model_validate(r) for r in rows]
 
@@ -271,28 +321,39 @@ async def get_container_history(
 @router.get(
     "/containers/{container_id}/transmittals/",
     response_model=list[ContainerTransmittalLink],
+    dependencies=[Depends(RequirePermission("cde.read"))],
 )
 async def get_container_transmittals(
     container_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CDEService = Depends(_get_service),
 ) -> list[ContainerTransmittalLink]:
     """Return transmittals that carry any revision from this container."""
+    container = await service.get_container(container_id)
+    await verify_project_access(container.project_id, user_id, session)
     return await service.get_container_transmittals(container_id)
 
 
 # ── Revision List ─────────────────────────────────────────────────────────────
 
 
-@router.get("/containers/{container_id}/revisions/", response_model=list[RevisionResponse])
+@router.get(
+    "/containers/{container_id}/revisions/",
+    response_model=list[RevisionResponse],
+    dependencies=[Depends(RequirePermission("cde.read"))],
+)
 async def list_revisions(
     container_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
     service: CDEService = Depends(_get_service),
 ) -> list[RevisionResponse]:
     """List revisions for a document container."""
+    container = await service.get_container(container_id)
+    await verify_project_access(container.project_id, user_id, session)
     revisions, _ = await service.list_revisions(
         container_id,
         offset=offset,
@@ -308,14 +369,18 @@ async def list_revisions(
     "/containers/{container_id}/revisions/",
     response_model=RevisionResponse,
     status_code=201,
+    dependencies=[Depends(RequirePermission("cde.create"))],
 )
 async def create_revision(
     container_id: uuid.UUID,
     data: RevisionCreate,
     user_id: CurrentUserId,
+    session: SessionDep,
     service: CDEService = Depends(_get_service),
 ) -> RevisionResponse:
     """Create a new revision within a container."""
+    container = await service.get_container(container_id)
+    await verify_project_access(container.project_id, user_id, session)
     revision = await service.create_revision(container_id, data, user_id=user_id)
     return _revision_to_response(revision)
 
@@ -323,12 +388,19 @@ async def create_revision(
 # ── Revision Get ──────────────────────────────────────────────────────────────
 
 
-@router.get("/revisions/{revision_id}", response_model=RevisionResponse)
+@router.get(
+    "/revisions/{revision_id}",
+    response_model=RevisionResponse,
+    dependencies=[Depends(RequirePermission("cde.read"))],
+)
 async def get_revision(
     revision_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: CDEService = Depends(_get_service),
 ) -> RevisionResponse:
     """Get a single document revision."""
     revision = await service.get_revision(revision_id)
+    container = await service.get_container(revision.container_id)
+    await verify_project_access(container.project_id, user_id, session)
     return _revision_to_response(revision)

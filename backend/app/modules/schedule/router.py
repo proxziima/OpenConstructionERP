@@ -319,12 +319,16 @@ async def delete_schedule(
 async def create_activity(
     schedule_id: uuid.UUID,
     data: ActivityCreate,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: ScheduleService = Depends(_get_service),
 ) -> ActivityResponse:
     """Add a new activity to a schedule.
 
     The schedule_id in the URL takes precedence over the body field.
     """
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
     # Override body schedule_id with URL path parameter
     data.schedule_id = schedule_id
     activity = await service.create_activity(data)
@@ -451,9 +455,14 @@ async def get_risk_analysis(
 async def update_activity(
     activity_id: uuid.UUID,
     data: ActivityUpdate,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: ScheduleService = Depends(_get_service),
 ) -> ActivityResponse:
     """Update a schedule activity. Recalculates duration if dates changed."""
+    existing = await service.get_activity(activity_id)
+    await _verify_schedule_owner(service, session, existing.schedule_id, _user_id, payload)
     activity = await service.update_activity(activity_id, data)
     return _activity_to_response(activity)
 
@@ -466,9 +475,14 @@ async def update_activity(
 )
 async def delete_activity(
     activity_id: uuid.UUID,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: ScheduleService = Depends(_get_service),
 ) -> None:
     """Delete an activity and its work orders."""
+    existing = await service.get_activity(activity_id)
+    await _verify_schedule_owner(service, session, existing.schedule_id, _user_id, payload)
     await service.delete_activity(activity_id)
 
 
@@ -481,9 +495,14 @@ async def delete_activity(
 async def link_boq_position(
     activity_id: uuid.UUID,
     body: LinkPositionRequest,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: ScheduleService = Depends(_get_service),
 ) -> ActivityResponse:
     """Link a BOQ position to an activity."""
+    existing = await service.get_activity(activity_id)
+    await _verify_schedule_owner(service, session, existing.schedule_id, _user_id, payload)
     activity = await service.link_boq_position(activity_id, body.boq_position_id)
     return _activity_to_response(activity)
 
@@ -497,9 +516,14 @@ async def link_boq_position(
 async def update_activity_progress(
     activity_id: uuid.UUID,
     body: ProgressUpdateRequest,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: ScheduleService = Depends(_get_service),
 ) -> ActivityResponse:
     """Update activity progress percentage. Auto-adjusts status."""
+    existing = await service.get_activity(activity_id)
+    await _verify_schedule_owner(service, session, existing.schedule_id, _user_id, payload)
     activity = await service.update_progress(activity_id, body.progress_pct)
     return _activity_to_response(activity)
 
@@ -570,12 +594,17 @@ async def list_activities_by_bim_element(
 async def create_work_order(
     activity_id: uuid.UUID,
     data: WorkOrderCreate,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: ScheduleService = Depends(_get_service),
 ) -> WorkOrderResponse:
     """Create a new work order for an activity.
 
     The activity_id in the URL takes precedence over the body field.
     """
+    existing = await service.get_activity(activity_id)
+    await _verify_schedule_owner(service, session, existing.schedule_id, _user_id, payload)
     # Override body activity_id with URL path parameter
     data.activity_id = activity_id
     work_order = await service.create_work_order(data)
@@ -608,9 +637,15 @@ async def list_work_orders(
 async def update_work_order(
     work_order_id: uuid.UUID,
     data: WorkOrderUpdate,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: ScheduleService = Depends(_get_service),
 ) -> WorkOrderResponse:
     """Update a work order."""
+    existing_wo = await service.get_work_order(work_order_id)
+    existing_act = await service.get_activity(existing_wo.activity_id)
+    await _verify_schedule_owner(service, session, existing_act.schedule_id, _user_id, payload)
     work_order = await service.update_work_order(work_order_id, data)
     return _work_order_to_response(work_order)
 
@@ -631,6 +666,9 @@ async def create_relationship(
     schedule_id: uuid.UUID,
     data: RelationshipCreate,
     session: SessionDep,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    service: ScheduleService = Depends(_get_service),
 ) -> RelationshipResponse:
     """Create a CPM dependency relationship between two activities.
 
@@ -638,6 +676,7 @@ async def create_relationship(
     - predecessor and successor are not the same activity
     - no circular dependency would be created
     """
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
     from sqlalchemy import select
 
     from app.modules.schedule.models import ScheduleRelationship
@@ -708,8 +747,12 @@ async def create_relationship(
 async def list_relationships(
     schedule_id: uuid.UUID,
     session: SessionDep,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    service: ScheduleService = Depends(_get_service),
 ) -> list[RelationshipResponse]:
     """List all CPM relationships for a schedule."""
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
     from sqlalchemy import select
 
     from app.modules.schedule.models import ScheduleRelationship
@@ -935,8 +978,10 @@ async def calculate_cpm_full(
 async def create_baseline(
     data: BaselineCreate,
     session: SessionDep,
+    _user_id: CurrentUserId,
 ) -> BaselineResponse:
     """Create a schedule baseline snapshot."""
+    await verify_project_access(data.project_id, _user_id, session)
     from app.modules.schedule.models import ScheduleBaseline
 
     baseline = ScheduleBaseline(
@@ -990,6 +1035,7 @@ async def list_baselines(
 async def get_baseline(
     baseline_id: uuid.UUID,
     session: SessionDep,
+    _user_id: CurrentUserId,
 ) -> BaselineResponse:
     """Get a single baseline by ID."""
     from app.modules.schedule.models import ScheduleBaseline
@@ -997,6 +1043,7 @@ async def get_baseline(
     baseline = await session.get(ScheduleBaseline, baseline_id)
     if baseline is None:
         raise HTTPException(status_code=404, detail="Baseline not found")
+    await verify_project_access(baseline.project_id, _user_id, session)
     return BaselineResponse.model_validate(baseline)
 
 
@@ -1010,6 +1057,7 @@ async def update_baseline(
     baseline_id: uuid.UUID,
     data: BaselineUpdate,
     session: SessionDep,
+    _user_id: CurrentUserId,
 ) -> BaselineResponse:
     """Toggle a baseline's ``is_active`` flag.
 
@@ -1027,6 +1075,7 @@ async def update_baseline(
     baseline = await session.get(ScheduleBaseline, baseline_id)
     if baseline is None:
         raise HTTPException(status_code=404, detail="Baseline not found")
+    await verify_project_access(baseline.project_id, _user_id, session)
 
     updates = data.model_dump(exclude_unset=True)
     if updates:
@@ -1051,6 +1100,7 @@ async def update_baseline(
 async def delete_baseline(
     baseline_id: uuid.UUID,
     session: SessionDep,
+    _user_id: CurrentUserId,
 ) -> None:
     """Delete a baseline. Admin-only: see ``schedule.baselines.delete``."""
     from app.modules.schedule.models import ScheduleBaseline
@@ -1058,6 +1108,7 @@ async def delete_baseline(
     baseline = await session.get(ScheduleBaseline, baseline_id)
     if baseline is None:
         raise HTTPException(status_code=404, detail="Baseline not found")
+    await verify_project_access(baseline.project_id, _user_id, session)
     await session.delete(baseline)
     await session.flush()
 
@@ -1075,8 +1126,10 @@ async def delete_baseline(
 async def create_progress_update(
     data: ProgressUpdateCreate,
     session: SessionDep,
+    _user_id: CurrentUserId,
 ) -> ProgressUpdateResponse:
     """Create a progress update record."""
+    await verify_project_access(data.project_id, _user_id, session)
     from app.modules.schedule.models import ProgressUpdate as ProgressUpdateModel
 
     record = ProgressUpdateModel(
@@ -1135,6 +1188,7 @@ async def list_progress_updates(
 async def get_progress_update(
     update_id: uuid.UUID,
     session: SessionDep,
+    _user_id: CurrentUserId,
 ) -> ProgressUpdateResponse:
     """Get a single progress update by ID."""
     from app.modules.schedule.models import ProgressUpdate as ProgressUpdateModel
@@ -1142,6 +1196,7 @@ async def get_progress_update(
     record = await session.get(ProgressUpdateModel, update_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Progress update not found")
+    await verify_project_access(record.project_id, _user_id, session)
     return ProgressUpdateResponse.model_validate(record)
 
 
@@ -1155,6 +1210,7 @@ async def update_progress_update(
     update_id: uuid.UUID,
     data: ProgressUpdateEdit,
     session: SessionDep,
+    _user_id: CurrentUserId,
 ) -> ProgressUpdateResponse:
     """Update a progress update record."""
     from sqlalchemy import update
@@ -1164,6 +1220,7 @@ async def update_progress_update(
     record = await session.get(ProgressUpdateModel, update_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Progress update not found")
+    await verify_project_access(record.project_id, _user_id, session)
 
     updates = data.model_dump(exclude_unset=True)
     if "metadata" in updates:
@@ -1190,6 +1247,7 @@ async def update_progress_update(
 async def delete_progress_update(
     update_id: uuid.UUID,
     session: SessionDep,
+    _user_id: CurrentUserId,
 ) -> None:
     """Delete a progress update record."""
     from app.modules.schedule.models import ProgressUpdate as ProgressUpdateModel
@@ -1197,6 +1255,7 @@ async def delete_progress_update(
     record = await session.get(ProgressUpdateModel, update_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Progress update not found")
+    await verify_project_access(record.project_id, _user_id, session)
     await session.delete(record)
     await session.flush()
 
@@ -1249,6 +1308,8 @@ def _parse_xer_tables(content: str) -> dict[str, list[dict[str, str]]]:
     dependencies=[Depends(RequirePermission("schedule.update"))],
 )
 async def import_xer(
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
     schedule_id: uuid.UUID = Query(..., description="Target schedule to import into"),
     file: UploadFile = File(...),
     session: SessionDep = None,
@@ -1262,7 +1323,7 @@ async def import_xer(
     from app.modules.schedule.models import Activity, ScheduleRelationship
 
     # Verify schedule exists
-    await service.get_schedule(schedule_id)
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
 
     # Read and decode file
     raw = await file.read()
@@ -1484,6 +1545,8 @@ def _parse_msp_duration_to_days(duration_str: str) -> int:
     dependencies=[Depends(RequirePermission("schedule.update"))],
 )
 async def import_msp_xml(
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
     schedule_id: uuid.UUID = Query(..., description="Target schedule to import into"),
     file: UploadFile = File(...),
     session: SessionDep = None,
@@ -1497,7 +1560,7 @@ async def import_msp_xml(
     from app.modules.schedule.models import Activity, ScheduleRelationship
 
     # Verify schedule exists
-    await service.get_schedule(schedule_id)
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
 
     raw = await file.read()
     try:
