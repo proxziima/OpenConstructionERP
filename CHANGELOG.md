@@ -5,6 +5,12 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.22] — 2026-05-07
+
+### Fixed
+
+- **Hotfix: revert `default_response_class=ORJSONResponse` from v2.9.21.** orjson rejects NaN/Infinity floats by default — DDC cad2data BIM elements can emit NaN bbox coordinates for degenerate geometry, which broke `/api/v1/bim_hub/{model_id}` element-list responses with a 500 and surfaced as "IFC conversion broken" in the UI. FastAPI's own deprecation warning also flagged the override as unnecessary ("FastAPI now serializes data directly to JSON bytes via Pydantic when a return type or response model is set, which is faster"). orjson is still used by handlers that explicitly opt in.
+
 ## [2.9.21] — 2026-05-07
 
 ### Changed (perf — backend & static serving)

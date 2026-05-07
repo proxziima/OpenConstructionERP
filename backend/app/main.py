@@ -57,7 +57,6 @@ from pathlib import Path
 import structlog
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse
 
 from app.config import Settings, get_settings
 from app.core.module_loader import module_loader
@@ -664,13 +663,16 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json" if not settings.is_production else None,
         swagger_ui_oauth2_redirect_url=("/api/docs/oauth2-redirect" if not settings.is_production else None),
         redirect_slashes=False,
-        # ORJSONResponse skips stdlib ``json`` for serialisation — it's
-        # 5-10× faster on dict/list payloads and 2× faster at producing
-        # UTF-8 bytes. orjson is already a base dep (used by the
-        # non-finite-float middleware below), so this only flips the
-        # default response class. Existing callers that explicitly
-        # ``return JSONResponse(...)`` keep working unchanged.
-        default_response_class=ORJSONResponse,
+        # NOTE: do NOT set default_response_class=ORJSONResponse here.
+        # FastAPI's own deprecation warning explains why: "FastAPI now
+        # serializes data directly to JSON bytes via Pydantic when a
+        # return type or response model is set, which is faster and
+        # doesn't need a custom response class." More importantly,
+        # orjson rejects NaN/Infinity floats by default — DDC cad2data
+        # BIM elements occasionally emit NaN bbox coordinates for
+        # degenerate geometry, which would 500 the response. Stick with
+        # FastAPI's default Pydantic-direct path; orjson is still used
+        # by handlers that explicitly opt in.
     )
 
     # ── Middleware ───────────────────────────────────────────────────────
