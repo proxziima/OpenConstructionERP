@@ -5,6 +5,24 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.24] — 2026-05-07
+
+### Added
+
+- **One-click DWG converter install on `/dwg-takeoff`.** The "Install converter" pill in the page header now opens a popover with an actual install button — clicking it POSTs to `/v1/takeoff/converters/dwg/install/` (the same endpoint the `/bim` page uses for RVT/IFC), and the offline-readiness query refetches so the badge flips to green "Offline Ready" the moment the binary is detected. On Linux the popover surfaces the apt one-liner from the backend instead of attempting an auto-shell-out. Closes the gap reported as "нужно одним нажатием установить актуальный последний конвертер".
+- **"New version available — recommend updating" amber banner on the BIM converter panel** (dismissible per session). Previously the only signal that a newer SHA existed upstream was the small `→ def5678` tail — easy to miss. The expanded panel now renders an amber banner whenever `version-check.any_outdated` is true, with an X to hide it for the current session (sessionStorage; reappears on next visit). Banner is i18n-keyed.
+- **Mini-icon mode on the BIM converter panel when everything is fully up to date.** The panel now collapses to a single emerald `N/M` pill ("4/4" when all four converters are working AND on the latest SHA). Click expands to the full strip + details. Per Artem's spec: "если все конверторы на самом последней версии то это окно показывать не нужно и можно сделать только маленький значок".
+- **Per-converter "card" rendering on the BIM converter panel.** Each row now has a tinted background + rounded border that mirrors the row's state (emerald = working & up to date, amber = working but outdated or missing binary, rose = broken). Replaces the dense single-line strip — one glance now tells you which row needs attention.
+
+### Changed
+
+- **Green pill is now reserved for "working AND on the latest version".** Per-row pills downgrade to amber `Working · update available` when the version-check flags an outdated SHA — green no longer means "smoke-test passed but the binary is from three months ago". Panel-level summary changes from `"X/Y verified"` to `"X/Y up to date"` / `"X/Y working · update available"` / `"X/Y working"` to match. The header tone (border + background) likewise stays amber until everything is on the latest SHA.
+- **Dock entries can be dismissed mid-conversion.** Previously the corner upload dock only offered Cancel during `uploading`/`converting`, which aborted the actual server-side work. A separate Dismiss action is now available in every state — it just clears the dock entry; the server keeps processing. Closes the "10m+ stuck at 95% Modelleinrichtung wird abgeschlossen with no way out" complaint.
+
+### Fixed
+
+- **`oe_dwg_takeoff` and `oe_takeoff` modules no longer trapped in a disabled state.** When persisted module-state was set to `enabled: false` (e.g. from an earlier admin-toggle test), `/dwg-takeoff` rendered as "module is disabled" and the install endpoint at `/v1/takeoff/converters/{id}/install/` returned 404, leaving the user with no recoverable UI surface. The install button now triggers the install on a known-loaded module path; if a fresh install ever lands with these modules disabled, the toast points back at the `/modules` admin page instead of failing silently.
+
 ## [2.9.23] — 2026-05-07
 
 ### Fixed (Wave A — bugs.md/improvements.md QA pass)

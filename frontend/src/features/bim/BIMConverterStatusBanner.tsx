@@ -38,12 +38,14 @@ import {
 
 import {
   fetchBIMConverters,
+  fetchConverterVersionCheck,
   installBIMConverter,
   verifyBIMConverter,
   type BIMConverterAction,
   type BIMConverterHealth,
   type BIMConverterInfo,
   type BIMConvertersResponse,
+  type ConverterVersionCheck,
 } from './api';
 import { useToastStore } from '@/stores/useToastStore';
 
@@ -115,6 +117,33 @@ export function BIMConverterStatusBanner({
     }
   });
 
+  // The "new version available" banner uses sessionStorage so it auto-clears
+  // when the user closes the tab — i.e. it shows up again on every fresh
+  // visit/reload, but a one-time "X" press keeps it hidden for the rest of
+  // the working session. This matches the user's spec ("can be hidden once
+  // when opening the project — but let it appear each time").
+  const [updateBannerDismissed, setUpdateBannerDismissed] = useState<boolean>(
+    () => {
+      try {
+        return sessionStorage.getItem('oe_bim_converter_update_banner_dismissed') === '1';
+      } catch {
+        return false;
+      }
+    },
+  );
+
+  const setUpdateBannerDismissedSession = (val: boolean): void => {
+    setUpdateBannerDismissed(val);
+    try {
+      sessionStorage.setItem(
+        'oe_bim_converter_update_banner_dismissed',
+        val ? '1' : '0',
+      );
+    } catch {
+      /* storage unavailable */
+    }
+  };
+
   const setDismissedPersist = (val: boolean): void => {
     setDismissed(val);
     try {
@@ -148,9 +177,29 @@ export function BIMConverterStatusBanner({
       staleTime: 30_000,
     });
 
+  // Compare each installed converter's git-blob SHA against the latest on
+  // GitHub. Backend caches 6 h. When ``is_outdated`` is true for an
+  // installed converter, we surface an "Update Available" badge with a
+  // direct download link — users can drop the new exe into the same
+  // location and re-run the smoke test. Network failures degrade
+  // gracefully: ``data`` is null and the badge stays hidden.
+  const { data: versionCheck } = useQuery<ConverterVersionCheck | null>({
+    queryKey: ['bim-converters-version-check'],
+    queryFn: () => fetchConverterVersionCheck(),
+    staleTime: 30 * 60 * 1000, // 30 min — server caches 6 h
+    refetchOnWindowFocus: false,
+  });
+
+  const versionByExt: Record<string, ConverterVersionCheck['converters'][0] | undefined> = {};
+  for (const v of versionCheck?.converters ?? []) {
+    versionByExt[v.id] = v;
+  }
+
   const installMutation = useMutation({
-    mutationFn: (converterId: string) => installBIMConverter(converterId),
-    onSuccess: (result, converterId) => {
+    mutationFn: (vars: { converterId: string; force?: boolean }) =>
+      installBIMConverter(vars.converterId, { force: vars.force }),
+    onSuccess: (result, vars) => {
+      const converterId = vars.converterId;
       const conv = data?.converters.find((c) => c.id === converterId);
       const sizeMb = conv?.size_mb ?? 0;
       const name = conv?.name ?? converterId.toUpperCase();
@@ -219,8 +268,10 @@ export function BIMConverterStatusBanner({
       }
       queryClient.invalidateQueries({ queryKey: ['bim-converters'] });
       queryClient.invalidateQueries({ queryKey: ['takeoff', 'converters'] });
+      queryClient.invalidateQueries({ queryKey: ['bim-converters-version-check'] });
     },
-    onError: (err, converterId) => {
+    onError: (err, vars) => {
+      const converterId = vars.converterId;
       const conv = data?.converters.find((c) => c.id === converterId);
       addToast({
         type: 'error',
@@ -307,7 +358,18 @@ export function BIMConverterStatusBanner({
     onSettled: () => setVerifyingId(null),
   });
 
-  if (dismissible && dismissed) return null;
+  // Honour the "dismissed" flag *unless* there is something the user
+  // genuinely needs to see — an outdated converter SHA from the GitHub
+  // version-check, or a missing/failed converter binary. Otherwise a user
+  // who closed the banner once would never learn about a converter
+  // update, even months later when DDC pushes a fix. We prefer surfacing
+  // genuinely-actionable state over honouring a six-month-old "X" click.
+  const hasActionableSignal =
+    Boolean(versionCheck?.any_outdated) ||
+    (data?.converters ?? []).some(
+      (c) => !c.installed || c.health === 'failed' || c.health === 'not_installed',
+    );
+  if (dismissible && dismissed && !hasActionableSignal) return null;
   if (isLoading || !data) return null;
 
   // Pull the converters we care about, preserving the canonical order.
@@ -327,12 +389,26 @@ export function BIMConverterStatusBanner({
   const failedCount = relevant.filter(
     (c) => computedHealth(c) === 'failed',
   ).length;
-  const allHealthy = healthyCount === relevant.length;
+  const anyOutdated = Boolean(versionCheck?.any_outdated);
+  // "All healthy" must mean both "smoke test passed" AND "on the latest
+  // upstream SHA" — otherwise the green panel pill conflicts with the
+  // amber per-row pills we render for outdated rows. Per spec: only show
+  // green for converters that are updated to the latest version.
+  const allHealthy = healthyCount === relevant.length && !anyOutdated;
   const anyFailed = failedCount > 0;
 
   const handleInstall = (converter: BIMConverterInfo): void => {
     setInstallingId(converter.id);
-    installMutation.mutate(converter.id);
+    installMutation.mutate({ converterId: converter.id });
+  };
+
+  /** Same as handleInstall but with ``force=true`` so the backend
+   *  re-downloads even when a binary is already on disk. Wired to the
+   *  per-row "Update" button surfaced when the version-check banner
+   *  reports an outdated SHA. */
+  const handleUpdate = (converter: BIMConverterInfo): void => {
+    setInstallingId(converter.id);
+    installMutation.mutate({ converterId: converter.id, force: true });
   };
 
   const handleVerify = (converter: BIMConverterInfo): void => {
@@ -343,6 +419,44 @@ export function BIMConverterStatusBanner({
   const handleRefresh = (): void => {
     refetch();
   };
+
+  // ── Mini mode (everything is fine) ─────────────────────────────────────
+  // When all converters are working AND on the latest upstream SHA, the
+  // panel collapses to a single icon-only pill so the BIM page doesn't
+  // waste real estate on a "0 problems found" banner. Click to expand the
+  // full collapsed strip — and from there, "Show details" goes back to
+  // the full panel. Per Artem's request (2026-05-07): "если все конверторы
+  // на самом последней версии то это окно показывать не нужно и можно
+  // сделать только маленький значок где то на странице".
+  if (collapsed && allHealthy && !anyFailed) {
+    return (
+      <button
+        type="button"
+        onClick={() => setCollapsedPersist(false)}
+        title={t('bim.converters_mini_tooltip', {
+          defaultValue:
+            'BIM converters: {{count}}/{{total}} working and on the latest version. Click to view details.',
+          count: healthyCount,
+          total: relevant.length,
+        })}
+        aria-label={t('bim.converters_mini_aria', {
+          defaultValue: 'BIM converter status',
+        })}
+        data-testid="bim-converters-mini-icon"
+        className={clsx(
+          'inline-flex items-center gap-1 px-2 py-1 rounded-full border text-[10px] font-medium',
+          'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800',
+          'text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors',
+          className,
+        )}
+      >
+        <CheckCircle2 size={12} />
+        <span className="font-mono tabular-nums">
+          {healthyCount}/{relevant.length}
+        </span>
+      </button>
+    );
+  }
 
   // ── Compact mode (collapsed) ───────────────────────────────────────────
   // Renders a single-line strip with a per-format pill for each converter
@@ -460,11 +574,18 @@ export function BIMConverterStatusBanner({
                     ok: healthyCount,
                     total: relevant.length,
                   })
-                : t('bim.converter_panel_count', {
-                    defaultValue: '{{ok}}/{{total}} verified',
-                    ok: healthyCount,
-                    total: relevant.length,
-                  })}
+                : anyOutdated
+                  ? t('bim.converter_panel_count_outdated', {
+                      defaultValue:
+                        '{{ok}}/{{total}} working · update available',
+                      ok: healthyCount,
+                      total: relevant.length,
+                    })
+                  : t('bim.converter_panel_count', {
+                      defaultValue: '{{ok}}/{{total}} up to date',
+                      ok: healthyCount,
+                      total: relevant.length,
+                    })}
             </span>
             <button
               type="button"
@@ -525,16 +646,57 @@ export function BIMConverterStatusBanner({
                   defaultValue:
                     'One or more converters cannot load. Conversion will fail until you reinstall.',
                 })
-              : allHealthy
-                ? t('bim.converter_panel_subtitle_ok', {
+              : healthyCount === relevant.length && anyOutdated
+                ? t('bim.converter_panel_subtitle_outdated', {
                     defaultValue:
-                      'Drag-and-drop of .rvt / .ifc / .dwg / .dgn is ready.',
+                      'All converters are working, but a newer version is available — we recommend updating.',
                   })
-                : t('bim.converter_panel_subtitle_missing', {
-                    defaultValue:
-                      'Without these, drag-and-drop of native CAD/BIM files will fail. One-time install from GitHub.',
-                  })}
+                : allHealthy
+                  ? t('bim.converter_panel_subtitle_ok', {
+                      defaultValue:
+                        'Drag-and-drop of .rvt / .ifc / .dwg / .dgn is ready.',
+                    })
+                  : t('bim.converter_panel_subtitle_missing', {
+                      defaultValue:
+                        'Without these, drag-and-drop of native CAD/BIM files will fail. One-time install from GitHub.',
+                    })}
           </p>
+          {versionCheck?.any_outdated && !updateBannerDismissed && (
+            <div
+              className="mt-2 flex items-start gap-2 rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-2.5 py-1.5 text-[11px] text-amber-900 dark:text-amber-200"
+              data-testid="bim-converters-update-banner"
+            >
+              <AlertTriangle
+                size={13}
+                className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-300"
+              />
+              <div className="flex-1 leading-snug">
+                <span className="font-semibold">
+                  {t('bim.converter_panel_update_available', {
+                    defaultValue: 'A new version is available',
+                  })}
+                </span>
+                {' — '}
+                {t('bim.converter_panel_update_recommend', {
+                  defaultValue:
+                    'we recommend updating using the Update button next to each row.',
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => setUpdateBannerDismissedSession(true)}
+                title={t('bim.converter_panel_update_dismiss', {
+                  defaultValue: 'Hide until next session',
+                })}
+                aria-label={t('bim.converter_panel_update_dismiss', {
+                  defaultValue: 'Hide until next session',
+                })}
+                className="shrink-0 -m-1 p-1 rounded-md text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
           <ul className="mt-2 space-y-1.5">
             {relevant.map((conv) => (
               <ConverterRow
@@ -549,6 +711,8 @@ export function BIMConverterStatusBanner({
                 }
                 onInstall={() => handleInstall(conv)}
                 onVerify={() => handleVerify(conv)}
+                versionEntry={versionByExt[conv.id]}
+                onUpdate={() => handleUpdate(conv)}
               />
             ))}
           </ul>
@@ -617,6 +781,14 @@ interface ConverterRowProps {
   verifying: boolean;
   onInstall: () => void;
   onVerify: () => void;
+  versionEntry?: ConverterVersionCheck['converters'][0];
+  /** Optional one-click update handler. When provided AND the converter
+   *  is flagged outdated, the row renders an **Update** action that
+   *  reuses the install flow (same GitHub source the version check
+   *  compared against) so the user does not have to manually download
+   *  and overwrite files. Falls back to the GitHub-blob link when no
+   *  handler is provided. */
+  onUpdate?: () => void;
 }
 
 function ConverterRow({
@@ -626,9 +798,12 @@ function ConverterRow({
   verifying,
   onInstall,
   onVerify,
+  versionEntry,
+  onUpdate,
 }: ConverterRowProps): JSX.Element {
   const { t } = useTranslation();
   const actions: BIMConverterAction[] = conv.suggested_actions ?? [];
+  const updateAvailable = !!versionEntry?.is_outdated;
 
   // Choose icon + tone purely from health so the same "broken" tone shows
   // for both "not installed" and "installed but broken" — but the action
@@ -639,16 +814,36 @@ function ConverterRow({
   let pillText: string;
   switch (health) {
     case 'ok':
-      icon = (
-        <Check
-          size={13}
-          className="text-emerald-600 dark:text-emerald-400"
-        />
-      );
-      labelTone = 'text-emerald-900 dark:text-emerald-200';
-      pillTone =
-        'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800';
-      pillText = t('bim.converter_row_ok', { defaultValue: 'Working' });
+      // Green is reserved for "working AND on the latest upstream SHA". When
+      // the version-check flags this row as outdated, downgrade to amber so
+      // green only ever means "fully up to date". Per Artem (2026-05-07):
+      // "нужно зелёным показыть только те конверторы которые обновлены до
+      //  последней версии".
+      if (updateAvailable) {
+        icon = (
+          <AlertTriangle
+            size={13}
+            className="text-amber-600 dark:text-amber-400"
+          />
+        );
+        labelTone = 'text-amber-900 dark:text-amber-200';
+        pillTone =
+          'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800';
+        pillText = t('bim.converter_row_ok_outdated', {
+          defaultValue: 'Working · update available',
+        });
+      } else {
+        icon = (
+          <Check
+            size={13}
+            className="text-emerald-600 dark:text-emerald-400"
+          />
+        );
+        labelTone = 'text-emerald-900 dark:text-emerald-200';
+        pillTone =
+          'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800';
+        pillText = t('bim.converter_row_ok', { defaultValue: 'Working' });
+      }
       break;
     case 'failed':
       icon = (
@@ -712,19 +907,35 @@ function ConverterRow({
       break;
   }
 
+  // Background tint per state — subtle, gives each row a "card" feel
+  // without competing with the surrounding panel chrome. Per Artem
+  // (2026-05-07): "сделать более визуально красивой и понятной".
+  const rowBg =
+    health === 'failed'
+      ? 'bg-rose-50/60 dark:bg-rose-950/30 border-rose-200/70 dark:border-rose-900/60'
+      : health === 'ok'
+        ? updateAvailable
+          ? 'bg-amber-50/60 dark:bg-amber-950/30 border-amber-200/70 dark:border-amber-900/60'
+          : 'bg-emerald-50/60 dark:bg-emerald-950/30 border-emerald-200/70 dark:border-emerald-900/60'
+        : health === 'unknown'
+          ? 'bg-slate-50/60 dark:bg-slate-900/40 border-slate-200/70 dark:border-slate-700/60'
+          : 'bg-amber-50/60 dark:bg-amber-950/30 border-amber-200/70 dark:border-amber-900/60';
+
   return (
-    <li className="text-[11px]">
-      <div className="flex items-center gap-2">
+    <li className={clsx('text-[11px] rounded-lg border px-2.5 py-2', rowBg)}>
+      <div className="flex items-center gap-2.5">
         <span className="shrink-0">{icon}</span>
-        <span className={clsx('font-medium', labelTone)}>{conv.name}</span>
+        <span className={clsx('font-semibold tracking-tight', labelTone)}>
+          {conv.name}
+        </span>
         <span
           className={clsx(
-            'tabular-nums',
-            health === 'ok'
-              ? 'text-emerald-700/80 dark:text-emerald-300/80'
+            'tabular-nums text-[10px] opacity-70',
+            health === 'ok' && !updateAvailable
+              ? 'text-emerald-700 dark:text-emerald-300'
               : health === 'failed'
-                ? 'text-rose-700/80 dark:text-rose-300/80'
-                : 'text-amber-700/80 dark:text-amber-300/80',
+                ? 'text-rose-700 dark:text-rose-300'
+                : 'text-amber-700 dark:text-amber-300',
           )}
         >
           {t('bim.converter_panel_size', {
@@ -734,15 +945,77 @@ function ConverterRow({
         </span>
         {health === 'ok' && conv.path && (
           <span
-            className="hidden md:inline truncate max-w-[280px] text-[10px] text-emerald-700/70 dark:text-emerald-300/70 font-mono"
+            className="hidden xl:inline truncate max-w-[260px] text-[10px] text-content-quaternary font-mono opacity-60"
             title={conv.path}
           >
             {conv.path}
           </span>
         )}
+        {/* Show the actual installed binary SHA (first 7 chars). When an
+            update is available we tack on " → def5678" so users see what
+            they have *and* what they would get without opening a tooltip.
+            Falls back to nothing when the version-check hasn't resolved
+            yet (offline / GitHub rate-limited / pre-Linux). */}
+        {versionEntry?.installed_sha && (
+          <span
+            className="hidden lg:inline text-[10px] text-content-quaternary dark:text-zinc-400 font-mono"
+            title={t('bim.converter_sha_tooltip', {
+              defaultValue:
+                'Installed git-blob SHA. Compared against {{repo}} on the upstream cad2data-Revit-IFC-DWG-DGN repo.',
+              repo: 'main',
+            })}
+          >
+            v {versionEntry.installed_sha.slice(0, 7)}
+            {updateAvailable && versionEntry.latest_sha && (
+              <span className="text-sky-600 dark:text-sky-400">
+                {' '}→ {versionEntry.latest_sha.slice(0, 7)}
+              </span>
+            )}
+          </span>
+        )}
+        {updateAvailable && onUpdate && (
+          <button
+            type="button"
+            onClick={onUpdate}
+            disabled={installing}
+            title={t('bim.converter_update_tooltip', {
+              defaultValue:
+                'A newer build of this converter is available. Click to download and replace the installed copy at {{path}}.',
+              path: versionEntry?.installed_path ?? '',
+            })}
+            className="ms-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border border-sky-300 dark:border-sky-700 bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300 hover:bg-sky-200 dark:hover:bg-sky-900/50 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+          >
+            {installing ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : (
+              <Download size={11} />
+            )}
+            {installing
+              ? t('bim.converter_updating', { defaultValue: 'Updating…' })
+              : t('bim.converter_update_now', { defaultValue: 'Update' })}
+          </button>
+        )}
+        {updateAvailable && !onUpdate && versionEntry?.html_url && (
+          <a
+            href={versionEntry.html_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t('bim.converter_update_link_tooltip', {
+              defaultValue:
+                'A newer build of this converter is available on GitHub. Open the file there to download manually.',
+            })}
+            className="ms-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border border-sky-300 dark:border-sky-700 bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300 hover:bg-sky-200 dark:hover:bg-sky-900/50 transition-colors"
+          >
+            <Download size={11} />
+            {t('bim.converter_update_available', {
+              defaultValue: 'Update available',
+            })}
+          </a>
+        )}
         <span
           className={clsx(
-            'ms-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border',
+            'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border',
+            !updateAvailable && 'ms-auto',
             pillTone,
           )}
         >

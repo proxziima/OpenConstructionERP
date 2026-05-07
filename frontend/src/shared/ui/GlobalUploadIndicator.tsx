@@ -378,14 +378,27 @@ function JobRow({
               {t('bim.upload_indicator_retry', { defaultValue: 'Retry' })}
             </button>
           )}
-          {!isActive && (
-            <button
-              onClick={onDismiss}
-              className="text-[10px] text-content-quaternary hover:text-content-secondary"
-            >
-              {t('common.dismiss', { defaultValue: 'Dismiss' })}
-            </button>
-          )}
+          {/* Dismiss is always available — for finished jobs it's the
+              normal "clear from queue" action; for jobs still in flight
+              it lets the user hide a stuck dock entry without aborting
+              the server-side conversion (Cancel does that). Without
+              this, a job that hangs in 'converting' (e.g. backend
+              processing without a status update) traps the dock on
+              screen with no way to dismiss it short of full reload. */}
+          <button
+            onClick={onDismiss}
+            className="text-[10px] text-content-quaternary hover:text-content-secondary ms-auto"
+            title={
+              isActive
+                ? t('bim.upload_indicator_dismiss_active_tip', {
+                    defaultValue:
+                      'Hide this entry from the dock. The conversion continues on the server.',
+                  })
+                : undefined
+            }
+          >
+            {t('common.dismiss', { defaultValue: 'Dismiss' })}
+          </button>
         </div>
       </div>
     </div>

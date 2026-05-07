@@ -59,6 +59,7 @@ import { useDwgUploadStore } from '@/stores/useDwgUploadStore';
 import { apiGet } from '@/shared/lib/api';
 import { boqApi, normalizePositions, type Position } from '@/features/boq/api';
 import { projectsApi } from '@/features/projects/api';
+import { installBIMConverter } from '@/features/bim/api';
 import {
   fetchDrawings,
   deleteDrawing,
@@ -382,7 +383,72 @@ function OfflineReadyBadge({
   'data-testid'?: string;
 }) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
   const [showHint, setShowHint] = useState(false);
+
+  // One-click DDC DWG converter install. Hits the same
+  // /v1/takeoff/converters/dwg/install/ endpoint the BIM page uses, then
+  // invalidates `dwg-offline-readiness` so the green "Offline Ready" pill
+  // appears without a manual refresh.
+  const installMutation = useMutation({
+    mutationFn: () => installBIMConverter('dwg'),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['dwg-offline-readiness'] });
+      queryClient.invalidateQueries({ queryKey: ['bim-converters'] });
+      if (result.installed) {
+        addToast({
+          type: 'success',
+          title: t('dwg_takeoff.converter_install_success_title', {
+            defaultValue: 'DWG converter installed',
+          }),
+          message:
+            result.message ||
+            t('dwg_takeoff.converter_install_success_msg', {
+              defaultValue: '.dwg uploads will now run locally.',
+            }),
+        });
+        setShowHint(false);
+      } else if (result.platform_unsupported && result.platform === 'linux') {
+        const instructions = result.instructions
+          ? `\n\n${result.instructions}`
+          : result.apt_package
+            ? `\n\nsudo apt install -y ${result.apt_package}`
+            : '';
+        addToast(
+          {
+            type: 'info',
+            title: t('dwg_takeoff.converter_install_linux_title', {
+              defaultValue: 'Run apt to finish installing',
+            }),
+            message:
+              (result.message || 'Install via apt to enable .dwg uploads') +
+              instructions,
+          },
+          { duration: 45_000 },
+        );
+      } else {
+        addToast({
+          type: 'warning',
+          title: t('dwg_takeoff.converter_install_partial_title', {
+            defaultValue: 'Install needs attention',
+          }),
+          message: result.message || 'Could not finish the install.',
+        });
+      }
+    },
+    onError: (error: unknown) => {
+      const message =
+        error instanceof Error ? error.message : String(error ?? 'Unknown error');
+      addToast({
+        type: 'error',
+        title: t('dwg_takeoff.converter_install_error_title', {
+          defaultValue: 'Install failed',
+        }),
+        message,
+      });
+    },
+  });
 
   if (isLoading) {
     return (
@@ -474,12 +540,47 @@ function OfflineReadyBadge({
               })}
           </p>
           {converterMissing && (
-            <div className="mt-2 rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-1.5 text-[10px] text-amber-300">
-              {t('dwg_takeoff.offline_install_hint', {
-                defaultValue:
-                  'Upload DXF files to continue without the converter, or install it to enable .dwg support.',
-              })}
-            </div>
+            <>
+              <div className="mt-2 rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-1.5 text-[10px] text-amber-300">
+                {t('dwg_takeoff.offline_install_hint', {
+                  defaultValue:
+                    'Upload DXF files to continue without the converter, or install it to enable .dwg support.',
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => installMutation.mutate()}
+                disabled={installMutation.isPending}
+                data-testid="dwg-converter-install-btn"
+                className="mt-2 w-full inline-flex items-center justify-center gap-1.5 rounded-md bg-oe-blue text-white text-[11px] font-semibold px-2.5 py-2 hover:bg-oe-blue-dark disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+              >
+                {installMutation.isPending ? (
+                  <>
+                    <Loader2 size={12} className="animate-spin" />
+                    {t('dwg_takeoff.converter_installing', {
+                      defaultValue: 'Installing…',
+                    })}
+                  </>
+                ) : (
+                  <>
+                    <Download size={12} />
+                    {t('dwg_takeoff.converter_install_now', {
+                      defaultValue: 'Install latest DWG converter',
+                    })}
+                  </>
+                )}
+              </button>
+              <a
+                href="https://github.com/datadrivenconstruction/cad2data-Revit-IFC-DWG-DGN/tree/main/DDC_WINDOWS_Converters/DDC_CONVERTER_DWG"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1.5 block text-center text-[10px] text-content-tertiary hover:text-content-secondary underline"
+              >
+                {t('dwg_takeoff.converter_install_manual', {
+                  defaultValue: 'Manual install instructions',
+                })}
+              </a>
+            </>
           )}
         </div>
       )}
