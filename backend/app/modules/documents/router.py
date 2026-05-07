@@ -52,6 +52,7 @@ from app.modules.documents.service import (
     DocumentService,
     PhotoService,
     SheetService,
+    _sanitize_filename,
 )
 
 router = APIRouter()
@@ -456,10 +457,12 @@ async def serve_photo_file(
     }
     media_type = media_types.get(ext, "image/jpeg")
 
+    safe_dl_name = _sanitize_filename(photo.filename or f"photo{ext}")
     return FileResponse(
         path=str(file_path),
-        filename=photo.filename,
+        filename=safe_dl_name,
         media_type=media_type,
+        content_disposition_type="attachment",
     )
 
 

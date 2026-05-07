@@ -58,6 +58,20 @@ def detect(head: bytes) -> str | None:
     if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return "webp"
 
+    # ISO-BMFF (HEIC/HEIF) — bytes 4..8 == "ftyp", brand at 8..12. Brand
+    # whitelist split: HEIC brands → "heic", HEIF/AVIF-style brands → "heif".
+    if head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in (b"heic", b"heix", b"hevc", b"heim", b"hevx", b"heis", b"hevm"):
+            return "heic"
+        if brand in (b"mif1", b"msf1", b"avif", b"avis"):
+            return "heif"
+
+    # — TIFF — both endiannesses are valid magic; matters because cameras
+    # in the wild emit either depending on architecture.
+    if head[:4] == b"II*\x00" or head[:4] == b"MM\x00*":
+        return "tiff"
+
     # — ZIP container (xlsx, docx, pptx, glb containers, some RVT
     # variants). Caller must inspect central directory for the exact
     # OOXML flavour if needed. We accept ``PK\x03\x04`` (local file
@@ -111,6 +125,9 @@ ALLOWED_CAD_TYPES: Final[frozenset[str]] = (
     ALLOWED_BIM_TYPES | ALLOWED_DWG_TYPES
 )
 ALLOWED_GAEB_TYPES: Final[frozenset[str]] = frozenset({"xml"})
+ALLOWED_PHOTO_TYPES: Final[frozenset[str]] = frozenset(
+    {"jpeg", "png", "gif", "webp", "heic", "heif", "tiff"}
+)
 
 
 class FileSignatureMismatch(ValueError):
@@ -132,3 +149,29 @@ def require(head: bytes, allowed: frozenset[str], *, filename: str | None = None
             f"Allowed: {', '.join(sorted(allowed))}"
         )
     return detected
+
+
+if __name__ == "__main__":
+    cases = [
+        (b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00", "heic"),
+        (b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00", "heif"),
+        (b"\x00\x00\x00\x18ftypavif\x00\x00\x00\x00", "heif"),
+        (b"II*\x00\x08\x00\x00\x00", "tiff"),
+        (b"MM\x00*\x00\x00\x00\x08", "tiff"),
+        (b"%PDF-1.7\n", "pdf"),
+        (b"\x89PNG\r\n\x1a\n", "png"),
+        (b"\xff\xd8\xff\xe0", "jpeg"),
+        (b"random nonsense", None),
+        (b"<?xml version='1.0'?><svg/>", "xml"),
+    ]
+    failures = 0
+    for head, expected in cases:
+        got = detect(head)
+        if got != expected:
+            failures += 1
+            print(f"FAIL: head={head!r} expected={expected!r} got={got!r}")
+        else:
+            print(f"ok:   head[:12]={head[:12]!r} -> {got!r}")
+    if failures:
+        raise SystemExit(f"{failures} failures")
+    print("all signature self-tests pass")

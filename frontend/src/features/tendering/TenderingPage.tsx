@@ -569,6 +569,22 @@ function BidComparisonTable({
   currency: string;
 }) {
   const { t } = useTranslation();
+  const [hideLowVariance, setHideLowVariance] = useState(false);
+  const [varianceThreshold, setVarianceThreshold] = useState(5);
+
+  const visibleRows = useMemo(() => {
+    if (!hideLowVariance) return comparison.rows;
+    return comparison.rows.filter((row) => {
+      const rates = row.bids.map((b) => b.unit_rate).filter((r) => r > 0);
+      if (rates.length < 2) return true;
+      const mean = rates.reduce((s, r) => s + r, 0) / rates.length;
+      if (mean === 0) return true;
+      const min = Math.min(...rates);
+      const max = Math.max(...rates);
+      const spreadPct = ((max - min) / mean) * 100;
+      return spreadPct > varianceThreshold;
+    });
+  }, [comparison.rows, hideLowVariance, varianceThreshold]);
 
   if (comparison.bid_count === 0) {
     return (
@@ -583,83 +599,128 @@ function BidComparisonTable({
     );
   }
 
+  const stickyColClass =
+    'sticky left-0 z-10 bg-surface-primary shadow-[2px_0_3px_-2px_rgba(0,0,0,0.1)]';
+  const hiddenCount = comparison.rows.length - visibleRows.length;
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-border-light">
-            <th className="whitespace-nowrap px-3 py-2.5 text-left font-semibold text-content-primary">
-              {t('tendering.position', 'Position')}
-            </th>
-            <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-content-primary">
-              {t('tendering.budget', 'Budget')}
-            </th>
-            {comparison.bid_companies.map((company) => (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-3 text-xs">
+        <label className="inline-flex items-center gap-2 text-content-secondary cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={hideLowVariance}
+            onChange={(e) => setHideLowVariance(e.target.checked)}
+            className="h-3.5 w-3.5 rounded border-border text-oe-blue focus:ring-oe-blue/30"
+          />
+          {t('tendering.compare.collapseLowVariance', 'Hide low-variance positions')}
+        </label>
+        <label
+          className={`inline-flex items-center gap-2 transition-opacity ${
+            hideLowVariance ? 'text-content-secondary' : 'text-content-tertiary opacity-60'
+          }`}
+        >
+          <span>{t('tendering.compare.varianceThreshold', 'Variance threshold')}</span>
+          <select
+            value={varianceThreshold}
+            onChange={(e) => setVarianceThreshold(Number(e.target.value))}
+            disabled={!hideLowVariance}
+            className="h-7 rounded border border-border bg-surface-primary px-1.5 text-xs text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue/30 disabled:cursor-not-allowed"
+          >
+            <option value={5}>5%</option>
+            <option value={10}>10%</option>
+            <option value={15}>15%</option>
+            <option value={20}>20%</option>
+            <option value={25}>25%</option>
+          </select>
+        </label>
+        {hideLowVariance && hiddenCount > 0 && (
+          <span className="text-content-tertiary">
+            {t('tendering.compare.hiddenCount', { defaultValue: '{{count}} hidden', count: hiddenCount })}
+          </span>
+        )}
+      </div>
+      <div className="overflow-x-auto relative">
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 z-10 bg-surface-primary">
+            <tr className="border-b border-border-light">
               <th
-                key={company}
-                className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-content-primary"
+                className={`whitespace-nowrap px-3 py-2.5 text-left font-semibold text-content-primary ${stickyColClass} z-20`}
               >
-                <span className="flex items-center justify-end gap-1.5">
-                  <Building2 size={12} className="text-content-tertiary" />
-                  {company}
-                </span>
+                {t('tendering.position', 'Position')}
               </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {comparison.rows.map((row, idx) => (
-            <tr
-              key={`${row.description}-${row.unit}-${idx}`}
-              className="border-b border-border-light/50 transition-colors hover:bg-surface-secondary/30"
-            >
-              <td className="px-3 py-2.5">
-                <span className="text-content-primary">{row.description || '-'}</span>
-                <span className="ml-2 text-xs text-content-tertiary">{row.unit}</span>
-              </td>
-              <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-content-secondary">
-                {formatNumber(row.budget_rate)}
-              </td>
-              {row.bids.map((bid, bi) => (
-                <td
-                  key={`bid-${comparison.bid_companies[bi]}`}
-                  className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums"
+              <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-content-primary">
+                {t('tendering.budget', 'Budget')}
+              </th>
+              {comparison.bid_companies.map((company) => (
+                <th
+                  key={company}
+                  className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-content-primary"
                 >
-                  <span className="text-content-primary">{formatNumber(bid.unit_rate)}</span>
-                  {bid.unit_rate > 0 && (
-                    <span className="ml-1.5">
-                      <DeviationBadge pct={bid.deviation_pct} />
-                    </span>
-                  )}
+                  <span className="flex items-center justify-end gap-1.5">
+                    <Building2 size={12} className="text-content-tertiary" />
+                    {company}
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows.map((row, idx) => (
+              <tr
+                key={`${row.description}-${row.unit}-${idx}`}
+                className="group border-b border-border-light/50 transition-colors hover:bg-surface-secondary/30"
+              >
+                <td className={`px-3 py-2.5 ${stickyColClass} group-hover:bg-surface-secondary/30`}>
+                  <span className="text-content-primary">{row.description || '-'}</span>
+                  <span className="ml-2 text-xs text-content-tertiary">{row.unit}</span>
+                </td>
+                <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-content-secondary">
+                  {formatNumber(row.budget_rate)}
+                </td>
+                {row.bids.map((bid, bi) => (
+                  <td
+                    key={`bid-${comparison.bid_companies[bi]}`}
+                    className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums"
+                  >
+                    <span className="text-content-primary">{formatNumber(bid.unit_rate)}</span>
+                    {bid.unit_rate > 0 && (
+                      <span className="ml-1.5">
+                        <DeviationBadge pct={bid.deviation_pct} />
+                      </span>
+                    )}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t-2 border-border bg-surface-secondary/30">
+              <td
+                className={`px-3 py-3 font-bold text-content-primary sticky left-0 z-10 bg-surface-secondary shadow-[2px_0_3px_-2px_rgba(0,0,0,0.1)]`}
+              >
+                {t('tendering.total', 'TOTAL')}
+              </td>
+              <td className="whitespace-nowrap px-3 py-3 text-right font-bold tabular-nums text-content-primary">
+                {formatCurrency(comparison.budget_total, currency)}
+              </td>
+              {comparison.bid_totals.map((bt, i) => (
+                <td
+                  key={`total-${comparison.bid_companies[i]}`}
+                  className="whitespace-nowrap px-3 py-3 text-right tabular-nums"
+                >
+                  <span className="font-bold text-content-primary">
+                    {formatCurrency(bt.total, bt.currency)}
+                  </span>
+                  <span className="ml-1.5">
+                    <DeviationBadge pct={bt.deviation_pct} />
+                  </span>
                 </td>
               ))}
             </tr>
-          ))}
-        </tbody>
-        <tfoot>
-          <tr className="border-t-2 border-border bg-surface-secondary/30">
-            <td className="px-3 py-3 font-bold text-content-primary">
-              {t('tendering.total', 'TOTAL')}
-            </td>
-            <td className="whitespace-nowrap px-3 py-3 text-right font-bold tabular-nums text-content-primary">
-              {formatCurrency(comparison.budget_total, currency)}
-            </td>
-            {comparison.bid_totals.map((bt, i) => (
-              <td
-                key={`total-${comparison.bid_companies[i]}`}
-                className="whitespace-nowrap px-3 py-3 text-right tabular-nums"
-              >
-                <span className="font-bold text-content-primary">
-                  {formatCurrency(bt.total, bt.currency)}
-                </span>
-                <span className="ml-1.5">
-                  <DeviationBadge pct={bt.deviation_pct} />
-                </span>
-              </td>
-            ))}
-          </tr>
-        </tfoot>
-      </table>
+          </tfoot>
+        </table>
+      </div>
     </div>
   );
 }

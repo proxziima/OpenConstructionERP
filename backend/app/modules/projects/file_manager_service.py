@@ -68,7 +68,7 @@ _MIME_BY_EXT: dict[str, str] = {
     "gif": "image/gif",
     "webp": "image/webp",
     "heic": "image/heic",
-    "svg": "image/svg+xml",
+    "heif": "image/heif",
     "dwg": "application/acad",
     "dxf": "image/vnd.dxf",
     "ifc": "application/x-step",

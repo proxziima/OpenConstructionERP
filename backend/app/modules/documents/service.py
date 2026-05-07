@@ -59,6 +59,7 @@ VALID_PHOTO_CATEGORIES = {"site", "progress", "defect", "delivery", "safety", "o
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg",
     "image/png",
+    "image/gif",
     "image/webp",
     "image/heic",
     "image/heif",
@@ -496,12 +497,40 @@ class PhotoService:
         raw_name = file.filename or "untitled.jpg"
         safe_name = _sanitize_filename(raw_name)
 
+        # Block dangerous extensions on the photo path too — a renamed
+        # ``evil.exe`` with a fake ``image/jpeg`` content_type still gets
+        # caught here even before the magic-byte check.
+        ext = Path(safe_name).suffix.lower()
+        if ext in BLOCKED_EXTENSIONS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File type '{ext}' is not allowed for security reasons.",
+            )
+
         # Validate category
         if category not in VALID_PHOTO_CATEGORIES:
             category = "site"
 
         # Read file content (no upload size cap per product policy).
         content = await file.read()
+
+        # Magic-byte cross-check — content_type is fully attacker-controlled
+        # (it's a request header), so we re-derive the real format from the
+        # bytes. Reject anything that isn't a recognised raster image.
+        from app.core.file_signature import (
+            ALLOWED_PHOTO_TYPES,
+            SIGNATURE_BYTES_REQUIRED,
+        )
+        from app.core.file_signature import (
+            detect as _sig_detect,
+        )
+
+        detected_photo_type = _sig_detect(content[:SIGNATURE_BYTES_REQUIRED])
+        if detected_photo_type is None or detected_photo_type not in ALLOWED_PHOTO_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="uploaded file content does not match an image format",
+            )
 
         # Build storage path
         file_uuid = uuid.uuid4().hex[:12]

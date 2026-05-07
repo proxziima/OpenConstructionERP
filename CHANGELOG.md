@@ -5,6 +5,24 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.19] — 2026-05-07
+
+### Added (Tendering — readable bid comparison)
+
+- **Sticky position column on the bid comparison matrix.** The first column (position description / WBS code / item name) now `position: sticky; left: 0` with a subtle right shadow, so it stays visible when 4+ vendors push the table beyond viewport width on 1366×768 / 1280×800 screens. Header row also `top: 0` sticky; the top-left corner cell sits at `z-20` to layer correctly. Row-hover tint extends across the sticky cell.
+- **Collapse low-variance rows.** New checkbox + threshold select (5/10/15/20/25%) above the table hides rows where every vendor's `unit_rate` is within the threshold of the mean — reduces visual noise on long bid packages where most positions agree. Counts hidden rows in a small "{n} hidden" indicator. Rows with fewer than 2 valid bids are always kept (no spread to compare).
+
+### Added (Documents — photo MIME hardening)
+
+- **HEIC / HEIF / TIFF magic-byte detection.** `app/core/file_signature.detect()` now recognises:
+  - HEIC: ISO-BMFF `ftyp` + brand `heic / heix / hevc / heim / hevx / heis / hevm`.
+  - HEIF: ISO-BMFF `ftyp` + brand `mif1 / msf1 / avif / avis`.
+  - TIFF: little-endian `b"II*\x00"` and big-endian `b"MM\x00*"`.
+  Photos uploaded with these formats now pass the magic-byte check; previously they relied entirely on the client-asserted Content-Type and a renamed `.txt` could spoof an HEIC upload.
+- **Photo upload now cross-checks magic bytes.** After buffering the upload, `documents/service.py` calls `detect()` and rejects with HTTP 422 `{"detail": "uploaded file content does not match an image format"}` when the detected type isn't in `ALLOWED_PHOTO_TYPES = {jpeg, png, gif, webp, heic, heif, tiff}`. SVG bytes detect as `xml` and are rejected even with a spoofed `Content-Type: image/jpeg`.
+- **SVG removed from image MIME map.** `projects/file_manager_service._MIME_BY_EXT` no longer maps `.svg` to `image/svg+xml`. SVG uploads via the file manager are still allowed but classify as a generic file — `FileGrid` no longer renders them inline via `<img>`. Closes the inline-`<script>` XSS surface where a malicious SVG could execute in the app's same-origin auth-cookie context.
+- **Photo file-serve now `Content-Disposition: attachment`.** `/api/v1/documents/photos/{id}/file/` switched to explicit attachment with sanitized filename. Even if a non-image somehow lands on disk, browsers won't inline-render it. The `/thumb/` endpoint stays inline since the thumbnail JPEG/PNG is server-generated and trusted.
+
 ## [2.9.18] — 2026-05-07
 
 ### Added (Procurement — 3-way invoice match)
