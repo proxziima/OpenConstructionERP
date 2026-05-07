@@ -175,7 +175,7 @@ class AdminUserCreate(BaseModel):
 
     Constraints versus ``UserCreate``:
       - ``role`` is a strict ``Literal`` whitelist — admin / manager /
-        estimator / viewer — so unknown values produce 422 instead of being
+        editor / viewer — so unknown values produce 422 instead of being
         silently persisted as the literal string.
       - ``password`` minimum length is bumped to 12 (admins can mint
         long-lived elevated accounts; weak passwords are unacceptable here
@@ -198,9 +198,9 @@ class AdminUserCreate(BaseModel):
         max_length=255,
         description="Full display name (HTML tags are stripped)",
     )
-    role: Literal["admin", "manager", "estimator", "viewer"] = Field(
+    role: Literal["admin", "manager", "editor", "viewer"] = Field(
         default="viewer",
-        description="User role. One of: admin, manager, estimator, viewer.",
+        description="User role. One of: admin, manager, editor, viewer.",
     )
     locale: str = Field(default="en", max_length=10)
     is_active: bool = Field(default=True)

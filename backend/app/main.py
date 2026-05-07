@@ -523,7 +523,7 @@ async def _seed_demo_account() -> None:
             "email": "estimator@openestimator.io",
             "env_var": "DEMO_ESTIMATOR_PASSWORD",
             "full_name": "Sarah Chen",
-            "role": "estimator",
+            "role": "editor",
         },
         {
             "email": "manager@openestimator.io",

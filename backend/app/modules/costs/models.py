@@ -24,6 +24,13 @@ class CostItem(Base):
         # Without this composite the planner picks ix_costs_is_active and
         # sorts 55K rows in a temp B-tree — 6 s vs 1 ms with the index.
         Index("ix_costs_region_active_code", "region", "is_active", "code"),
+        # Mirrors the above for the all-regions search ("region" filter
+        # absent). The leading-column rule means ``ix_costs_region_active_code``
+        # cannot satisfy ``WHERE is_active=? ORDER BY code`` without a
+        # region predicate, so on a 111 k-row catalogue the planner falls
+        # back to ``ix_costs_is_active`` + temp B-tree sort (15 s). With
+        # this composite the same query is ~1 ms.
+        Index("ix_costs_active_code", "is_active", "code"),
     )
 
     code: Mapped[str] = mapped_column(String(100), index=True, nullable=False)

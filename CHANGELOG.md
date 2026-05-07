@@ -5,6 +5,13 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.25] — 2026-05-07
+
+### Fixed
+
+- **`/costs` list view scaled poorly with no region filter — 80 s for one page on a 111 k-row catalogue.** Companion to v2.8.3's `(region, is_active, code)` composite index. The leading-column rule meant the previous index could not satisfy `WHERE is_active=? ORDER BY code` when no `region` filter was supplied (the default "all regions" view). SQLite fell back to `ix_costs_is_active` plus a temp B-tree sort over the entire active set. Added `ix_costs_active_code` `(is_active, code)` to mirror the per-region index for the all-regions case — the same query now plans against the new B-tree directly. Measured 15 s → 1 ms (~10 000×) on the dev box. Migration `v2924_costs_active_code_index` is inspector-guarded so re-running is a no-op.
+- **Seeded "Sarah Chen" demo account had role `estimator`, which neither the registration schema nor the admin update schema accepted.** The 4-role frontend (`admin|manager|editor|viewer`) rendered her with the viewer fallback and the role dropdown produced 422s on submit. Aligned the seeder + `AdminUserCreate.role` Literal on `editor`. Migration `v2924_normalize_estimator_role` rewrites any pre-existing `estimator` rows on production DBs that booted the older seeder. The legacy `estimator → EDITOR` permission alias is retained so old runtime checks still work.
+
 ## [2.9.24] — 2026-05-07
 
 ### Added
