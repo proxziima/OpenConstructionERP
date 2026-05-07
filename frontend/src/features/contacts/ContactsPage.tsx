@@ -34,6 +34,7 @@ import { useCreateShortcut } from '@/shared/hooks/useCreateShortcut';
 import { useToastStore } from '@/stores/useToastStore';
 import {
   fetchContacts,
+  fetchContactTags,
   createContact,
   updateContact,
   deleteContact,
@@ -49,7 +50,28 @@ import {
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
 
-const CONTACT_TYPES: ContactType[] = ['client', 'subcontractor', 'supplier', 'consultant'];
+const CONTACT_TYPES: ContactType[] = [
+  'customer',
+  'lead',
+  'client',
+  'subcontractor',
+  'supplier',
+  'consultant',
+];
+
+/* Tag-prefix → display group used by the CRM chip strip. The order
+ * defines the row order rendered in the UI. */
+const TAG_GROUPS: { prefix: string; label: string }[] = [
+  { prefix: 'group:', label: 'Tier' },
+  { prefix: 'topic:', label: 'Topic' },
+  { prefix: 'lang:', label: 'Language' },
+  { prefix: 'country:', label: 'Country' },
+  { prefix: 'inbox:', label: 'Inbox' },
+  { prefix: 'consent:', label: 'Consent' },
+];
+
+/* Cap per group so the strip stays scannable at 6.6K contacts. */
+const TAG_GROUP_CAP = 8;
 
 const TYPE_BADGE_VARIANT: Record<ContactType, 'blue' | 'warning' | 'success' | 'neutral'> = {
   client: 'blue',
@@ -57,6 +79,8 @@ const TYPE_BADGE_VARIANT: Record<ContactType, 'blue' | 'warning' | 'success' | '
   supplier: 'success',
   consultant: 'neutral',
   internal: 'neutral',
+  lead: 'warning',
+  customer: 'success',
 };
 
 const PREQUAL_CONFIG: Record<
@@ -100,6 +124,8 @@ const TYPE_CARD_CONFIG: Record<ContactType, { icon: React.ElementType; color: st
   supplier: { icon: Truck, color: 'text-green-600 bg-green-50 border-green-200 dark:text-green-400 dark:bg-green-950/30 dark:border-green-800' },
   consultant: { icon: Briefcase, color: 'text-gray-600 bg-gray-50 border-gray-200 dark:text-gray-400 dark:bg-gray-800/50 dark:border-gray-700' },
   internal: { icon: Users, color: 'text-indigo-600 bg-indigo-50 border-indigo-200 dark:text-indigo-400 dark:bg-indigo-950/30 dark:border-indigo-800' },
+  lead: { icon: User, color: 'text-amber-600 bg-amber-50 border-amber-200 dark:text-amber-400 dark:bg-amber-950/30 dark:border-amber-800' },
+  customer: { icon: Users, color: 'text-emerald-600 bg-emerald-50 border-emerald-200 dark:text-emerald-400 dark:bg-emerald-950/30 dark:border-emerald-800' },
 };
 
 function SectionHeader({ icon: Icon, label }: { icon: React.ElementType; label: string }) {
@@ -804,6 +830,7 @@ export function ContactsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<ContactType | ''>('');
   const [countryFilter, setCountryFilter] = useState('');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
 
   // "n" shortcut → open new contact form
   useCreateShortcut(
@@ -813,13 +840,50 @@ export function ContactsPage() {
 
   // Data
   const { data: contacts = [], isLoading } = useQuery({
-    queryKey: ['contacts', typeFilter],
+    queryKey: ['contacts', typeFilter, selectedTags],
     queryFn: () =>
       fetchContacts({
         contact_type: typeFilter || undefined,
-        limit: 50,
+        tags: selectedTags.length > 0 ? selectedTags : undefined,
+        // Bumped to 500 so the CRM tier views (e.g. ~3,500 inbound leads)
+        // surface enough rows for client-side search to feel right after
+        // chip filtering. The backend caps at 500.
+        limit: 500,
       }),
   });
+
+  // CRM tag facets — feeds the chip strip above the search bar.
+  const { data: tagFacets = [] } = useQuery({
+    queryKey: ['contacts', 'tags'],
+    queryFn: fetchContactTags,
+    staleTime: 60_000,
+  });
+
+  /* Group facets by prefix and cap per group so the chip strip stays
+   * scannable. Tags without a known prefix bucket land under "Other". */
+  const groupedFacets = useMemo(() => {
+    const buckets = new Map<string, { tag: string; count: number; label: string }[]>();
+    for (const def of TAG_GROUPS) {
+      buckets.set(def.label, []);
+    }
+    buckets.set('Other', []);
+
+    for (const facet of tagFacets) {
+      const group = TAG_GROUPS.find((g) => facet.tag.startsWith(g.prefix));
+      const label = group ? facet.tag.slice(group.prefix.length) : facet.tag;
+      const target = buckets.get(group?.label ?? 'Other')!;
+      target.push({ tag: facet.tag, count: facet.count, label });
+    }
+    return Array.from(buckets.entries())
+      .map(([label, items]) => ({ label, items: items.slice(0, TAG_GROUP_CAP) }))
+      .filter((g) => g.items.length > 0);
+  }, [tagFacets]);
+
+  const toggleTag = useCallback((tag: string) => {
+    setSelectedTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+    );
+  }, []);
 
   // Client-side search + country filter
   const filtered = useMemo(() => {
@@ -1068,6 +1132,68 @@ export function ContactsPage() {
         </div>
       </div>
 
+      {/* CRM tag-chip strip — surfaces metadata.tags from imported
+          contacts so a user can pivot the list by tier / topic / language /
+          country / inbox / consent without typing into search. AND-combined:
+          selecting two chips returns only contacts that carry both tags. */}
+      {groupedFacets.length > 0 && (
+        <Card padding="none" className="mb-4">
+          <div className="flex flex-col gap-2 p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wide text-content-tertiary">
+                {t('contacts.filter_by_tag', { defaultValue: 'Quick filter' })}
+              </span>
+              {selectedTags.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedTags([])}
+                  className="text-xs font-medium text-oe-blue hover:underline"
+                >
+                  {t('contacts.clear_tags', {
+                    defaultValue: 'Clear ({{n}})',
+                    n: selectedTags.length,
+                  })}
+                </button>
+              )}
+            </div>
+            {groupedFacets.map((group) => (
+              <div key={group.label} className="flex flex-wrap items-center gap-1.5">
+                <span className="mr-1 w-16 shrink-0 text-[11px] font-medium uppercase tracking-wide text-content-tertiary">
+                  {group.label}
+                </span>
+                {group.items.map((item) => {
+                  const active = selectedTags.includes(item.tag);
+                  return (
+                    <button
+                      key={item.tag}
+                      type="button"
+                      onClick={() => toggleTag(item.tag)}
+                      aria-pressed={active}
+                      className={clsx(
+                        'h-7 rounded-full border px-2.5 text-xs font-medium transition-colors',
+                        active
+                          ? 'border-oe-blue bg-oe-blue text-white'
+                          : 'border-border bg-surface-primary text-content-secondary hover:border-border-light hover:text-content-primary',
+                      )}
+                    >
+                      {item.label}
+                      <span
+                        className={clsx(
+                          'ml-1.5 text-[10px]',
+                          active ? 'text-white/80' : 'text-content-tertiary',
+                        )}
+                      >
+                        {item.count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
       {/* Filter bar */}
       <Card padding="none" className="mb-6">
         <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
@@ -1180,12 +1306,12 @@ export function ContactsPage() {
           <EmptyState
             icon={<Building2 size={28} strokeWidth={1.5} />}
             title={
-              searchQuery || typeFilter || countryFilter
+              searchQuery || typeFilter || countryFilter || selectedTags.length > 0
                 ? t('contacts.no_results', { defaultValue: 'No matching contacts' })
                 : t('contacts.no_contacts', { defaultValue: 'No contacts yet' })
             }
             description={
-              searchQuery || typeFilter || countryFilter
+              searchQuery || typeFilter || countryFilter || selectedTags.length > 0
                 ? t('contacts.no_results_hint', {
                     defaultValue: 'Try adjusting your search or filters',
                   })

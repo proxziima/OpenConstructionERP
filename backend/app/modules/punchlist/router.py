@@ -345,23 +345,6 @@ async def upload_photo(
             detail=f"Unsupported file type: {file.content_type}. Allowed: {', '.join(allowed_types)}",
         )
 
-    # Early rejection based on Content-Length — refuse oversize uploads
-    # *before* reading the body into memory. This stops a hostile client
-    # from OOM'ing the server with a multi-GB POST.
-    if content_length is not None and content_length > MAX_PUNCHLIST_PHOTO_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Photo exceeds 25 MB limit",
-        )
-
-    # Read into memory and enforce size cap *before* touching the
-    # filesystem. Order matters: a hostile client that lies about
-    # Content-Length must still be rejected with 413 even if the
-    # storage directory is somehow unwritable, and we don't want to
-    # create empty dirs for uploads we're going to reject anyway.
-    # Starlette's UploadFile buffers to a SpooledTemporaryFile that
-    # rolls over to disk past ~1MB, so the in-memory footprint is
-    # bounded.
     try:
         content = await file.read()
     except Exception:
@@ -369,12 +352,6 @@ async def upload_photo(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to read uploaded photo",
-        )
-
-    if len(content) > MAX_PUNCHLIST_PHOTO_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Photo exceeds 25 MB limit",
         )
 
     # Now that we've accepted the body, prepare the destination.

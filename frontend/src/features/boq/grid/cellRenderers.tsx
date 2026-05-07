@@ -2258,16 +2258,19 @@ function useDisplayedColumnSlots(api: GridApi | undefined | null): ColumnSlot[] 
 }
 
 /**
- * Compose the ``leftPad`` (the visual left-indent that pushes the
- * resource's code chip noticeably to the right of the position
- * ordinal) from the three pre-ordinal columns plus a 56px nudge.
- * We hide the slots for these three columns and absorb their width
- * into a single padding-left value on the row container — this keeps
- * the indent independent of column-resize drift on the helper cols.
+ * v2.9.31: ``leftPad`` is now exactly the combined width of the three
+ * pre-ordinal helper columns (``_drag`` + ``_checkbox`` + ``_expand``).
+ * The earlier ``+56`` indent nudge made every downstream slot start 56px
+ * right of the corresponding position cell, so Unit/Qty/Rate/Total no
+ * longer aligned column-for-column with the position row above —
+ * exactly the regression the v2.9.29 column-driven refactor was meant
+ * to fix. Visual differentiation between position and resource rows
+ * still comes from background tone, inset shadow, and the provenance
+ * left-edge bar; we don't need a horizontal shift on top of that.
  */
 function computeLeftPad(slots: ColumnSlot[]): number {
   const get = (id: string) => slots.find((s) => s.colId === id)?.width ?? 0;
-  return get('_drag') + get('_checkbox') + get('_expand') + 56;
+  return get('_drag') + get('_checkbox') + get('_expand');
 }
 
 /** Columns that contribute to ``leftPad`` and therefore should NOT be
@@ -3535,19 +3538,42 @@ export function EditableResourceRow({ data, ctx, slots, leftPad }: { data: Recor
   const renderQuantitySlot = (width: number) => (
     <span
       key="quantity"
-      className="shrink-0 text-right tabular-nums text-content-secondary self-center pr-1 pl-1"
+      className="shrink-0 text-right tabular-nums text-content-secondary self-center pr-2 pl-2"
       style={{ width: `${width}px` }}
     >
-      <InlineNumberInput value={qty} onCommit={handleQtyChange} fmt={ctx.fmt} className="w-full text-xs" />
+      {/* v2.9.31: !px-0 cancels InlineNumberInput's built-in px-1 so the
+          right edge of the formatted number sits exactly at slot.right - 8,
+          matching the position quantity cell's `!pr-2` padding. */}
+      <InlineNumberInput value={qty} onCommit={handleQtyChange} fmt={ctx.fmt} className="w-full text-xs !px-0" />
     </span>
   );
 
   const renderUnitRateSlot = (width: number) => (
+    /* v2.9.31: layout reordered so the formatted number sits at the
+     *  slot's right edge (slot.right - 8px) — matching the position
+     *  unit_rate cell's `!pr-2` padding. Auxiliary controls (currency
+     *  combobox, variant pill) flow LEFT of the number, not right; the
+     *  earlier order pushed the number 25-30px in from the right edge,
+     *  so resource numbers no longer aligned vertically with position
+     *  numbers above. The combobox and pill stay mid-row, the number
+     *  is the last child and absorbs the remaining width via flex-1. */
     <span
       key="unit_rate"
       className="shrink-0 inline-flex items-center justify-end self-center gap-1 pr-2 pl-2"
       style={{ width: `${width}px` }}
     >
+      <ResourceCurrencyCombobox
+        value={resourceCurrency}
+        onCommit={handleCurrencyChange}
+        projectGroup={projectGroup}
+        otherGroup={otherGroup}
+        fxRate={fxRate}
+        fxSource={fxSource}
+        baseCode={baseCurrency}
+        onCommitFxRate={handleGlobalFxRateChange}
+        isForeign={isForeign}
+        t={ctx.t}
+      />
       {canRepick && (
         <button
           ref={variantPillRef}
@@ -3581,19 +3607,7 @@ export function EditableResourceRow({ data, ctx, slots, leftPad }: { data: Recor
         value={rate}
         onCommit={handleRateChange}
         fmt={ctx.fmt}
-        className="flex-1 min-w-0 text-right tabular-nums text-content-secondary text-xs"
-      />
-      <ResourceCurrencyCombobox
-        value={resourceCurrency}
-        onCommit={handleCurrencyChange}
-        projectGroup={projectGroup}
-        otherGroup={otherGroup}
-        fxRate={fxRate}
-        fxSource={fxSource}
-        baseCode={baseCurrency}
-        onCommitFxRate={handleGlobalFxRateChange}
-        isForeign={isForeign}
-        t={ctx.t}
+        className="flex-1 min-w-0 text-right tabular-nums text-content-secondary text-xs !px-0"
       />
       {variantPickerOpen && hasVariants && (
         <VariantPicker
@@ -3995,7 +4009,7 @@ function VariantHeaderResourceRow({
   const renderQuantitySlot = (width: number) => (
     <span
       key="quantity"
-      className="shrink-0 text-right tabular-nums text-content-secondary self-center pr-1 pl-1"
+      className="shrink-0 text-right tabular-nums text-content-secondary self-center pr-2 pl-2"
       style={{ width: `${width}px` }}
       data-variant-header-interactive="1"
       title={ctx.t('boq.variant_header_qty_edit_tooltip', {
@@ -4007,7 +4021,7 @@ function VariantHeaderResourceRow({
           value={qty}
           onCommit={handleQtyCommit}
           fmt={ctx.fmt}
-          className="w-full text-xs"
+          className="w-full text-xs !px-0"
         />
       ) : (
         ''
@@ -4045,16 +4059,16 @@ function VariantHeaderResourceRow({
       </button>
       {showNumbers && (
         <>
+          <span className="shrink-0 inline-flex items-center justify-center w-7 text-[10px] font-mono text-content-secondary">
+            {currency}
+          </span>
           <span className="flex-1 min-w-0 text-right tabular-nums text-content-primary text-xs font-semibold">
             <InlineNumberInput
               value={rate}
               onCommit={handleRateCommit}
               fmt={ctx.fmt}
-              className="w-full text-xs"
+              className="w-full text-xs !px-0"
             />
-          </span>
-          <span className="shrink-0 inline-flex items-center justify-center w-7 text-[10px] font-mono text-content-secondary">
-            {currency}
           </span>
         </>
       )}

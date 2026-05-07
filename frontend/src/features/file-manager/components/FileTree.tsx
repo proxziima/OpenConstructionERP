@@ -82,7 +82,9 @@ export function FileTree({ nodes, selectedId, onSelect, isLoading }: FileTreePro
                 title={node.physical_path ?? undefined}
               >
                 <Icon size={14} className="shrink-0" />
-                <span className="flex-1 truncate">{node.label}</span>
+                <span className="flex-1 truncate">
+                  {t(`files.category.${kind}`, { defaultValue: node.label })}
+                </span>
                 <span className="text-2xs text-content-tertiary tabular-nums shrink-0">
                   {node.file_count}
                 </span>

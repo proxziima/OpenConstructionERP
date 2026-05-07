@@ -5,6 +5,23 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.31] — 2026-05-07
+
+### Fixed
+
+- **BOQ resource sub-rows now align column-for-column with position rows.** v2.9.29 refactored the resource row to a column-driven layout reading live AG Grid column geometry, but `computeLeftPad()` still added a `+56px` "indent nudge" on top of the helper-column widths. That nudge shifted every downstream slot — Unit, Quantity, Unit rate, Total, Actions — 56 pixels right of the matching position cell, so the columns no longer lined up vertically. Removed the nudge: `leftPad` is now exactly `_drag + _checkbox + _expand` width, matching the position row's left edge. Visual differentiation between position and resource rows still comes from the inset shadow, secondary background tone, and the provenance left-edge bar.
+- **Documents-module download no longer returns 403 for demo PDFs whose stored `file_path` resolves outside the current upload base.** The download endpoint's path-containment guard treated *any* resolved path outside `UPLOAD_BASE` as a security violation (HTTP 403 "Access denied"), even when the document was a synthetic demo seed record whose placeholder hadn't been materialized yet. Re-anchors demo PDFs to a deterministic safe path inside `upload_base` (`{base}/demo/{doc.id}.pdf`) before the materialize-placeholder step, and degrades real uploads with stale paths to HTTP 404 "File not found on disk" instead of 403. Path-traversal protection (symlink rejection, strict containment) still applies to non-demo paths. Surface: `/files?kind=document` → click → `/takeoff?doc=…&source=document` no longer fails to load PDF on fresh installs.
+
+## [2.9.30] — 2026-05-07
+
+### Changed
+
+- **Project weather forecast extended from 16 to 18 days.** `ProjectWeather` widget now requests `forecast_days=18` from Open-Meteo (capped server-side if the free tier rejects it) and the project detail card / summary chip labels reflect the new horizon. Affects the full grid on `/projects/:id` and the one-line stat chip on dashboard project cards.
+
+### Fixed
+
+- **`/reports` BOQ-export error toasts no longer dump raw HTML/error pages into the UI.** `downloadBoqExport()` previously threw `new Error("Export failed (500): " + response.text())`, so a backend error returning an HTML 502 page or a Caddy/nginx error template was rendered verbatim in the toast — including unparsed `<html>` markup. Now the response body is parsed as JSON first to extract a FastAPI `detail` string; falls back to short plain-text bodies via the shared `extractErrorMessageFromBody()` helper, which already rejects HTML-shaped strings and length > 240. Toasts now show either a clean detail message or just the status code.
+
 ## [2.9.29] — 2026-05-07
 
 ### Fixed

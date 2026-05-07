@@ -238,14 +238,64 @@ export async function verifyBIMConverter(
   );
 }
 
+export interface ConverterVersionEntry {
+  id: string;
+  name: string;
+  exe: string;
+  installed: boolean;
+  installed_path: string | null;
+  installed_size: number | null;
+  installed_sha: string | null;
+  latest_size: number | null;
+  latest_sha: string | null;
+  is_outdated: boolean;
+  download_url: string | null;
+  html_url: string | null;
+}
+
+export interface ConverterVersionCheck {
+  converters: ConverterVersionEntry[];
+  any_outdated: boolean;
+  network_ok: boolean;
+  checked_at: string;
+  ttl_seconds: number;
+}
+
+/** Compare each installed DDC converter against the latest on GitHub.
+ *
+ *  Backend computes git-blob SHA-1 of every locally-installed converter
+ *  and matches against GitHub Contents API. Cached server-side for 6 h,
+ *  so polling here is cheap. Mounted at the system level (not under the
+ *  takeoff module) so it works even when ``oe_takeoff`` is disabled. */
+export async function fetchConverterVersionCheck(): Promise<ConverterVersionCheck | null> {
+  try {
+    // Note: this is a system-level endpoint at /api/system/, not under /api/v1/.
+    const r = await fetch('/api/system/converters/version-check', {
+      headers: { Accept: 'application/json' },
+    });
+    if (!r.ok) return null;
+    return (await r.json()) as ConverterVersionCheck;
+  } catch {
+    return null;
+  }
+}
+
 /** Trigger an auto-install of a DDC converter from GitHub releases.
  *  The request is blocking on the backend (downloads + extracts +
- *  verifies) and typically takes 60–120 s for the RVT converter. */
+ *  verifies) and typically takes 60–120 s for the RVT converter.
+ *
+ *  Pass ``force=true`` to bypass the "already installed" short-circuit
+ *  and re-download even when a binary is already present — used by the
+ *  "Update" button when the version-check banner reports an outdated
+ *  converter SHA.
+ */
 export async function installBIMConverter(
   converterId: string,
+  options: { force?: boolean } = {},
 ): Promise<BIMConverterInstallResult> {
+  const qs = options.force ? '?force=true' : '';
   return apiPost<BIMConverterInstallResult>(
-    `/v1/takeoff/converters/${encodeURIComponent(converterId)}/install/`,
+    `/v1/takeoff/converters/${encodeURIComponent(converterId)}/install/${qs}`,
     {},
   );
 }

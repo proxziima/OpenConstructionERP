@@ -16,7 +16,7 @@ class ContactCreate(BaseModel):
 
     contact_type: str = Field(
         ...,
-        pattern=r"^(client|subcontractor|supplier|consultant|internal)$",
+        pattern=r"^(client|subcontractor|supplier|consultant|internal|lead|customer)$",
         description="Contact role. Must be one of: client, subcontractor, supplier, consultant, internal",
         examples=["subcontractor"],
     )
@@ -98,7 +98,7 @@ class ContactUpdate(BaseModel):
 
     contact_type: str | None = Field(
         default=None,
-        pattern=r"^(client|subcontractor|supplier|consultant|internal)$",
+        pattern=r"^(client|subcontractor|supplier|consultant|internal|lead|customer)$",
     )
     is_platform_user: bool | None = None
     user_id: UUID | None = None

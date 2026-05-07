@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import String, and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.contacts.models import Contact
@@ -58,6 +58,7 @@ class ContactRepository:
         search: str | None = None,
         is_active: bool = True,
         owner_id: str | None = None,
+        tags: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
         sort_by: str | None = None,
@@ -90,6 +91,16 @@ class ContactRepository:
                     Contact.primary_email.ilike(term),
                 )
             )
+        if tags:
+            # Tags live in metadata.tags as a JSON array of strings. We
+            # filter by casting metadata to text and substring-matching
+            # the quoted tag — portable across SQLite and Postgres without
+            # dialect-specific JSON operators. AND-combined: a contact
+            # must carry every requested tag.
+            metadata_text = func.cast(Contact.metadata_, String)
+            tag_clauses = [metadata_text.ilike(f'%"{t}"%') for t in tags if t]
+            if tag_clauses:
+                base = base.where(and_(*tag_clauses))
 
         count_stmt = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(count_stmt)).scalar_one()
@@ -192,6 +203,37 @@ class ContactRepository:
             "by_country_top10": by_country_top10,
             "with_expiring_prequalification": with_expiring,
         }
+
+    async def tag_facets(
+        self,
+        *,
+        owner_id: str | None = None,
+        limit: int = 60,
+    ) -> list[tuple[str, int]]:
+        """Aggregate tag counts from active contacts.
+
+        Returns the top ``limit`` tags as ``(tag, count)`` tuples, sorted
+        by count desc. Walks the metadata.tags arrays in Python — at
+        contact-list scale (a few thousand rows) this is cheaper than
+        dialect-specific JSON unnest queries.
+        """
+        base = select(Contact.metadata_).where(Contact.is_active.is_(True))
+        if owner_id is not None:
+            base = base.where(_tenant_scope(owner_id))
+
+        rows = (await self.session.execute(base)).scalars().all()
+        counts: dict[str, int] = {}
+        for meta in rows:
+            if not isinstance(meta, dict):
+                continue
+            tags = meta.get("tags")
+            if not isinstance(tags, list):
+                continue
+            for t in tags:
+                if isinstance(t, str) and t:
+                    counts[t] = counts.get(t, 0) + 1
+
+        return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
 
     async def list_by_company(
         self,

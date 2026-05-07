@@ -909,23 +909,54 @@ async def download_document(
     doc = await service.get_document(document_id)
     await verify_project_access(doc.project_id, user_id, session)
     upload_base = Path(UPLOAD_BASE).resolve()
+    meta = getattr(doc, "metadata_", None) or {}
+    is_demo_pdf = bool(meta.get("is_demo")) and (doc.mime_type or "").lower() == "application/pdf"
 
     # file_path stored in DB may be relative (demo seed records) or absolute
     # (real uploads). Normalize relatives against UPLOAD_BASE before resolving
     # so they don't escape the base via CWD.
-    raw = Path(doc.file_path)
-    file_path = (raw if raw.is_absolute() else upload_base / raw).resolve()
+    raw = Path(doc.file_path) if doc.file_path else None
+    if raw is None:
+        file_path = (upload_base / "demo" / f"{doc.id}.pdf").resolve()
+    else:
+        file_path = (raw if raw.is_absolute() else upload_base / raw).resolve()
 
     # Security: path must be STRICTLY inside upload_base after full resolution.
     # ``str.startswith`` can be fooled on Windows case-insensitive FS and by
     # symlinks; ``relative_to`` rejects both cases explicitly.
+    contained = True
     try:
         file_path.relative_to(upload_base)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
-        )
+        contained = False
+
+    if not contained:
+        # v2.9.31: demo seed records that were ingested under a different
+        # UPLOAD_BASE (e.g. the user moved the upload dir between releases,
+        # or the wheel ran a demo seeded with absolute Windows paths from
+        # the developer's machine) used to 403 here. The doc IS accessible
+        # to this user (project_access already verified), the failed leg is
+        # only that the *stored* path no longer lands inside the current
+        # upload_base. For demo PDFs we re-anchor the path to a deterministic
+        # safe location and materialize the placeholder there. For real
+        # uploads we degrade to 404 ("file is missing") rather than 403
+        # ("access denied"), which is the truthful error and unblocks the
+        # /files → /takeoff cross-module open the user reported.
+        if is_demo_pdf:
+            file_path = (upload_base / "demo" / f"{doc.id}.pdf").resolve()
+            logger.info(
+                "Re-anchored demo doc %s to %s (stored path outside upload_base)",
+                doc.id, file_path,
+            )
+        else:
+            logger.warning(
+                "Document %s file_path %s resolves outside upload_base %s",
+                doc.id, doc.file_path, upload_base,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found on disk",
+            )
 
     if file_path.is_symlink():
         raise HTTPException(
@@ -939,8 +970,7 @@ async def download_document(
         # "Open in Module" → /takeoff for a demo document, materialize a
         # minimal placeholder PDF on first download so the cross-module
         # deeplink lands on a real preview instead of a raw 404.
-        meta = getattr(doc, "metadata_", None) or {}
-        if meta.get("is_demo") and (doc.mime_type or "").lower() == "application/pdf":
+        if is_demo_pdf:
             try:
                 _materialize_demo_pdf_placeholder(file_path, doc.name, meta.get("demo_id"))
             except Exception:  # pragma: no cover — degrade to 404 if reportlab missing

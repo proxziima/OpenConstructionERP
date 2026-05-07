@@ -27,7 +27,7 @@ import { Breadcrumb, InfoHint } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
-import { apiGet, apiPost, triggerDownload } from '@/shared/lib/api';
+import { apiGet, apiPost, extractErrorMessageFromBody, triggerDownload } from '@/shared/lib/api';
 import { projectsApi, type Project } from '@/features/projects/api';
 import { boqApi, type BOQ } from '@/features/boq/api';
 import { scheduleApi } from '@/features/schedule/api';
@@ -768,8 +768,17 @@ async function downloadBoqExport(
   });
 
   if (!response.ok) {
-    const errorText = await response.text().catch(() => 'Unknown error');
-    throw new Error(`Export failed (${response.status}): ${errorText}`);
+    // v2.9.30: parse JSON detail when available; never leak raw HTML error pages to toasts.
+    let detail: string | null = null;
+    const raw = await response.text().catch(() => '');
+    if (raw) {
+      try {
+        detail = extractErrorMessageFromBody(JSON.parse(raw));
+      } catch {
+        detail = extractErrorMessageFromBody(raw);
+      }
+    }
+    throw new Error(detail ? `Export failed (${response.status}): ${detail}` : `Export failed (${response.status})`);
   }
 
   const blob = await response.blob();

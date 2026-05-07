@@ -358,7 +358,7 @@ function computeProjectHealth(
  */
 /**
  * ProjectLocationPanel — full-width panel combining an interactive OSM
- * map (left, 60%) with a 16-day weather forecast (right, 40%).  Each
+ * map (left, 60%) with an 18-day weather forecast (right, 40%).  Each
  * half is independently toggleable via widget settings, and the panel
  * collapses entirely if the project has no address and both widgets
  * are off.

@@ -1,5 +1,26 @@
 """‌⁠‍Catalog API routes.
 
+The catalog stores **resources** — single-input items (one material, one
+labour rate, one machine, etc.) with one price per region. Resources do
+not have a material/labour/equipment breakdown because each resource
+*already is* one of those — the kind is in ``resource_type``.
+
+Resources are referenced by **cost positions** (work compositions) in
+``oe_costs_item``, exposed at ``/api/v1/costs/``. A position's
+``components[]`` array names the resources it consumes by ``code`` and
+adds quantity / unit-rate / cost. So:
+
+    /api/v1/costs/         — work positions (≈55k canonical, more with
+                             regional price variants). The "work items"
+                             you see referenced in legacy CSV columns
+                             *are* these.
+    /api/v1/catalog/       — leaf resources with prices. Each maps to
+                             zero or more cost positions via the
+                             ``components[].code`` field.
+
+Use ``/api/v1/catalog/{resource_id}/used-by/`` to walk the relation in
+the resource→positions direction (the inverse of ``components[]``).
+
 Endpoints:
     GET  /           -- Search/list catalog resources (public, query params)
     GET  /stats      -- Counts by type and category
@@ -7,7 +28,8 @@ Endpoints:
     POST /import/{region} -- Download catalog from GitHub and import
     DELETE /region/{region} -- Remove all resources for a region
     PATCH /adjust-prices -- Bulk price adjustment by factor
-    GET  /{resource_id}  -- Get single resource by ID
+    GET  /{resource_id}            -- Get single resource by ID
+    GET  /{resource_id}/used-by/   -- Cost positions that reference this resource
     POST /           -- Create a custom resource (auth required)
     POST /extract    -- Extract resources from cost items (admin)
 """
@@ -18,6 +40,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import String
 
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep
 from app.modules.catalog.schemas import (
@@ -370,6 +393,113 @@ async def catalog_stats(
 ) -> CatalogStatsResponse:
     """Get aggregated counts by type and category."""
     return await service.get_stats()
+
+
+# ── Inverse lookup: positions that use a resource ─────────────────────────
+# Declared BEFORE ``/{resource_id}`` so FastAPI's ordered path-matcher
+# considers the longer pattern first — otherwise the bare resource-id
+# route can shadow this one.
+
+
+@router.get("/{resource_id}/used-by/")
+async def list_cost_positions_using_resource(
+    resource_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """List the cost positions that reference this resource.
+
+    The catalog resource is the *leaf* (one material / labour rate /
+    equipment item). Cost positions are the *compositions* — each one
+    carries a ``components[]`` array naming the resources it consumes.
+    This endpoint walks that link in the resource→positions direction:
+    given a resource id, return every cost position whose
+    ``components[].code`` matches the resource's ``resource_code``.
+
+    Result shape:
+
+    ::
+
+        {
+          "resource_code": "...",
+          "items": [
+            {"id": "...", "code": "...", "description": "...",
+             "unit": "...", "rate": "...", "currency": "...",
+             "region": "...",
+             "component": {"quantity": 1.0, "unit_rate": ..., "cost": ..., "type": "material"}}
+          ],
+          "total": 106,
+          "limit": 50,
+          "offset": 0,
+        }
+
+    Implementation: SQLAlchemy + DB-side JSON ``LIKE`` filter on the
+    serialised ``components`` column. We post-filter in Python to extract
+    the matched ``component`` dict (the row may carry many components).
+    For SQLite/Postgres parity we don't use JSON-path operators here —
+    the LIKE on a small per-row payload is fast enough for catalog UI.
+    """
+    from sqlalchemy import func, or_, select
+
+    from app.modules.catalog.models import CatalogResource
+    from app.modules.costs.models import CostItem
+
+    resource = (await session.execute(
+        select(CatalogResource).where(CatalogResource.id == resource_id)
+    )).scalar_one_or_none()
+    if resource is None:
+        raise HTTPException(status_code=404, detail="Resource not found")
+
+    code = resource.resource_code
+    # JSON column stored as text — match the code as a quoted substring so
+    # we don't false-positive on prefix collisions ("ME_X" matching "ME_XYZ").
+    needle = f'"code": "{code}"'
+    needle_alt = f'"code":"{code}"'  # compact JSON variant
+
+    base_filter = or_(
+        func.cast(CostItem.components, String).like(f"%{needle}%"),
+        func.cast(CostItem.components, String).like(f"%{needle_alt}%"),
+    )
+
+    total = (await session.execute(
+        select(func.count()).select_from(CostItem).where(base_filter)
+    )).scalar_one()
+
+    rows = (await session.execute(
+        select(CostItem)
+        .where(base_filter)
+        .order_by(CostItem.code, CostItem.id)
+        .limit(limit)
+        .offset(offset)
+    )).scalars().all()
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        matched_component: dict[str, Any] | None = None
+        for c in row.components or []:
+            if isinstance(c, dict) and c.get("code") == code:
+                matched_component = c
+                break
+        items.append({
+            "id": str(row.id),
+            "code": row.code,
+            "description": row.description,
+            "unit": row.unit,
+            "rate": row.rate,
+            "currency": row.currency,
+            "region": row.region,
+            "component": matched_component,
+        })
+
+    return {
+        "resource_code": code,
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 # ── Single resource ───────────────────────────────────────────────────────

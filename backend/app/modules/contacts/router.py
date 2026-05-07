@@ -21,7 +21,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.upload_guards import reject_if_xlsx_bomb
@@ -127,6 +127,12 @@ async def list_contacts(
     contact_type: str | None = Query(default=None),
     country_code: str | None = Query(default=None),
     is_active: bool = Query(default=True),
+    tag: list[str] | None = Query(
+        default=None,
+        description="Filter by metadata.tags entries. Repeat to AND-combine "
+        "(e.g. ?tag=paid&tag=de). Each tag is a substring match against the "
+        "JSON-serialised metadata column.",
+    ),
     offset: int = Query(default=0, ge=0),
     # Raised cap from 100 → 500 so the shared ``ContactSearchInput``
     # "Select from contacts" browse dropdown (which requests
@@ -154,6 +160,7 @@ async def list_contacts(
         country_code=country_code,
         is_active=is_active,
         owner_id=owner_filter,
+        tags=tag,
         offset=offset,
         limit=limit,
         sort_by=resolved_sort,
@@ -240,6 +247,28 @@ async def contact_stats(
         by_country_top10=raw["by_country_top10"],
         with_expiring_prequalification=raw["with_expiring_prequalification"],
     )
+
+
+# ── Tag facets ───────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/tags/",
+    summary="List tag facets",
+    description="Aggregate counts of metadata.tags entries across the caller's "
+    "active contacts. Used to drive the contacts list filter chip strip.",
+)
+async def contact_tag_facets(
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    limit: int = Query(default=60, ge=1, le=200),
+    _perm: None = Depends(RequirePermission("contacts.read")),
+    service: ContactService = Depends(_get_service),
+) -> dict[str, Any]:
+    """Return ``[{tag, count}, ...]`` sorted by count desc."""
+    owner_filter: str | None = None if await _is_admin(session, user_id) else user_id
+    facets = await service.tag_facets(owner_id=owner_filter, limit=limit)
+    return {"items": [{"tag": t, "count": c} for t, c in facets]}
 
 
 # ── By Company ───────────────────────────────────────────────────────────────
@@ -352,7 +381,15 @@ _CONTACT_COLUMN_ALIASES: dict[str, list[str]] = {
     ],
 }
 
-_ALLOWED_CONTACT_TYPES = {"client", "subcontractor", "supplier", "consultant", "internal"}
+_ALLOWED_CONTACT_TYPES = {
+    "client",
+    "subcontractor",
+    "supplier",
+    "consultant",
+    "internal",
+    "lead",
+    "customer",
+}
 _ALLOWED_PREQUAL = {"pending", "approved", "rejected", "expired"}
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -488,13 +525,6 @@ async def import_contacts_file(
             detail="Uploaded file is empty.",
         )
 
-    # Limit file size (10 MB)
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File too large. Maximum size is 10 MB.",
-        )
-
     # Zip-bomb guard: reject .xlsx whose uncompressed sheets exceed 50 MB.
     reject_if_xlsx_bomb(content)
 
@@ -624,16 +654,35 @@ async def import_contacts_file(
 )
 async def export_contacts(
     session: SessionDep,
-    _user_id: CurrentUserId,
+    user_id: CurrentUserId,
     _perm: None = Depends(RequirePermission("contacts.read")),
 ) -> StreamingResponse:
-    """Export all active contacts as Excel file."""
+    """Export the caller's active contacts as an Excel file.
+
+    Mirrors the tenant-scope filter used by ``list_contacts`` /
+    ``search_contacts`` / ``get_stats`` — admins see every row, everyone
+    else only sees contacts whose ``tenant_id`` matches their user id (with
+    a ``created_by`` fallback for pre-v2.3.1 rows). The earlier
+    implementation ran a plain ``select(Contact).where(is_active)`` with no
+    owner filter and exported every tenant's data to anyone with the
+    ``contacts.read`` permission.
+    """
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
-    result = await session.execute(
-        select(Contact).where(Contact.is_active.is_(True)).limit(50000)
-    )
+    stmt = select(Contact).where(Contact.is_active.is_(True))
+    if not await _is_admin(session, user_id):
+        caller = str(user_id)
+        stmt = stmt.where(
+            or_(
+                Contact.tenant_id == caller,
+                and_(
+                    Contact.tenant_id.is_(None),
+                    Contact.created_by == caller,
+                ),
+            )
+        )
+    result = await session.execute(stmt.limit(50000))
     items = result.scalars().all()
 
     wb = Workbook()

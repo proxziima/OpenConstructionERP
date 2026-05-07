@@ -28,6 +28,10 @@ import { apiGet, apiPost } from '@/shared/lib/api';
 import { isModuleLoaded } from '@/shared/lib/moduleProbe';
 import { Breadcrumb } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
+import {
+  fetchConverterVersionCheck,
+  type ConverterVersionCheck,
+} from '../bim/api';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -212,6 +216,8 @@ function ConverterCard({
   isInstalled: _isInstalled,
   onInstall,
   onUninstall,
+  onUpdate,
+  versionEntry,
   disabled,
 }: {
   converter: ConverterInfo;
@@ -219,11 +225,27 @@ function ConverterCard({
   isInstalled: boolean;
   onInstall: () => void;
   onUninstall: () => void;
+  /** Triggered by the "Update" button when the version-check banner has
+   *  reported the installed binary's git-blob SHA is older than the one on
+   *  GitHub `main`. Same code path as Install but with `force=true` so the
+   *  backend overwrites the existing files. */
+  onUpdate?: () => void;
+  /** Per-converter row from `/api/system/converters/version-check`. Carries
+   *  the locally computed git-blob SHA, the upstream SHA, the
+   *  `is_outdated` flag, and a `html_url` deep-link to the GitHub blob. */
+  versionEntry?: ConverterVersionCheck['converters'][0];
   disabled: boolean;
 }) {
   const { t } = useTranslation();
   const colors = CONVERTER_COLORS[converter.id] ?? CONVERTER_COLORS['dwg'] ?? { bg: 'from-gray-500/8 to-gray-500/8', border: 'border-gray-200', icon: 'bg-gray-500' };
   const installed = converter.installed;
+  const updateAvailable = installed && Boolean(versionEntry?.is_outdated);
+  const installedShortSha = versionEntry?.installed_sha
+    ? versionEntry.installed_sha.slice(0, 7)
+    : null;
+  const latestShortSha = versionEntry?.latest_sha
+    ? versionEntry.latest_sha.slice(0, 7)
+    : null;
 
   return (
     <div
@@ -256,6 +278,21 @@ function ConverterCard({
           <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-2xs font-semibold text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
             <Loader2 size={10} className="animate-spin" />
             {t('quantities.converter_installing', { defaultValue: 'Installing...‌⁠‍' })}
+          </span>
+        ) : installed && updateAvailable ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-0.5 text-2xs font-semibold text-sky-700 dark:bg-sky-900/30 dark:text-sky-400"
+            title={t('quantities.converter_update_tooltip', {
+              defaultValue:
+                'A newer build is available on GitHub (installed: {{installed}}, latest: {{latest}}).',
+              installed: installedShortSha ?? '?',
+              latest: latestShortSha ?? '?',
+            })}
+          >
+            <Download size={10} />
+            {t('quantities.converter_update_available', {
+              defaultValue: 'Update available‌⁠‍',
+            })}
           </span>
         ) : installed ? (
           <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-2xs font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
@@ -301,17 +338,69 @@ function ConverterCard({
         ))}
       </div>
 
-      {/* Footer: size + actions */}
+      {/* Footer: version + size + actions
+          Version display: when the version-check endpoint has a SHA for the
+          installed binary we render it as a 7-char prefix ("v abc1234").
+          Pre-install or before the check resolves we fall back to the
+          static manifest version so the line is never empty. When an
+          update is available we tack on "→ def5678" to make the diff
+          obvious without opening a tooltip. */}
       <div className="mt-3 flex items-center justify-between pt-2 border-t border-border-light">
-        <span className="text-2xs text-content-quaternary">
-          v{converter.version} &middot;{' '}
+        <span className="text-2xs text-content-quaternary font-mono">
+          {installed && installedShortSha ? (
+            <>
+              v {installedShortSha}
+              {updateAvailable && latestShortSha && (
+                <span className="text-sky-600 dark:text-sky-400">
+                  {' '}→ {latestShortSha}
+                </span>
+              )}
+            </>
+          ) : (
+            <>v{converter.version}</>
+          )}{' '}
+          &middot;{' '}
           {converter.size_mb >= 1024
             ? `${(converter.size_mb / 1024).toFixed(1)} GB`
             : `${converter.size_mb} MB`}
         </span>
 
         <div className="flex items-center gap-1.5">
-          {installed ? (
+          {installed && updateAvailable && onUpdate ? (
+            <>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUpdate();
+                }}
+                disabled={installing || disabled}
+                title={t('quantities.update_tooltip', {
+                  defaultValue:
+                    'Re-download the converter from GitHub and overwrite the installed binary.',
+                })}
+                className="inline-flex items-center gap-1 rounded bg-sky-50 dark:bg-sky-900/20 px-2 py-1 text-2xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900/30 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {installing ? (
+                  <Loader2 size={10} className="animate-spin" />
+                ) : (
+                  <Download size={10} />
+                )}
+                {installing
+                  ? t('quantities.updating', { defaultValue: 'Updating…‌⁠‍' })
+                  : t('quantities.update_now', { defaultValue: 'Update‌⁠‍' })}
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUninstall();
+                }}
+                disabled={installing || disabled}
+                className="inline-flex items-center gap-1 rounded bg-red-50 dark:bg-red-900/20 px-2 py-1 text-2xs font-medium text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+              >
+                <Trash2 size={10} />
+              </button>
+            </>
+          ) : installed ? (
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -686,6 +775,22 @@ export function QuantitiesPage() {
     enabled: takeoffLoaded === true,
   });
 
+  // Version check — compares the installed binary's git-blob SHA against
+  // the upstream `cad2data-Revit-IFC-DWG-DGN` repo. Server caches the
+  // result for 6 h to stay clear of the unauth'd GitHub rate limit so a
+  // 30-minute client staleTime is conservative.
+  const { data: versionCheck } = useQuery<ConverterVersionCheck | null>({
+    queryKey: ['bim-converters-version-check'],
+    queryFn: fetchConverterVersionCheck,
+    staleTime: 30 * 60 * 1000,
+    enabled: takeoffLoaded === true,
+  });
+
+  const versionByExt: Record<string, ConverterVersionCheck['converters'][0] | undefined> = {};
+  for (const v of versionCheck?.converters ?? []) {
+    versionByExt[v.id] = v;
+  }
+
   // Recent documents from API
   const { data: documents } = useQuery({
     queryKey: ['takeoff', 'documents'],
@@ -717,16 +822,19 @@ export function QuantitiesPage() {
     return () => clearInterval(interval);
   }, [installing]);
 
-  // Install handler
+  // Install handler. Pass ``force=true`` to bypass the backend's
+  // "already installed" short-circuit — used by the per-card Update button
+  // when the version-check banner has reported an outdated SHA.
   const handleInstall = useCallback(
-    async (converter: ConverterInfo) => {
+    async (converter: ConverterInfo, opts: { force?: boolean } = {}) => {
       setInstalling(converter.id);
       setInstallResult(null);
       setInstallError(null);
 
       try {
+        const qs = opts.force ? '?force=true' : '';
         const data = await apiPost<InstallResult>(
-          `/v1/takeoff/converters/${converter.id}/install`,
+          `/v1/takeoff/converters/${converter.id}/install/${qs}`,
         );
 
         setLocalInstalled((prev) => new Set(prev).add(converter.id));
@@ -735,12 +843,18 @@ export function QuantitiesPage() {
 
         addToast({
           type: 'success',
-          title: `${converter.name} installed`,
+          title: opts.force
+            ? `${converter.name} updated`
+            : `${converter.name} installed`,
           message: data.message,
         });
 
-        // Refresh converter status from API
+        // Refresh converter status + version-check from API. Without the
+        // version-check invalidation the "Update available" badge would
+        // linger until the 6-h server cache TTL expired.
         queryClient.invalidateQueries({ queryKey: ['takeoff', 'converters'] });
+        queryClient.invalidateQueries({ queryKey: ['bim-converters'] });
+        queryClient.invalidateQueries({ queryKey: ['bim-converters-version-check'] });
       } catch (err: unknown) {
         const detail =
           err instanceof Error ? err.message : 'Failed to install converter';
@@ -755,6 +869,11 @@ export function QuantitiesPage() {
       }
     },
     [addToast, queryClient],
+  );
+
+  const handleUpdate = useCallback(
+    (converter: ConverterInfo) => handleInstall(converter, { force: true }),
+    [handleInstall],
   );
 
   // Uninstall handler
@@ -949,6 +1068,8 @@ export function QuantitiesPage() {
               isInstalled={localInstalled.has(converter.id)}
               onInstall={() => handleInstall(converter)}
               onUninstall={() => handleUninstall(converter.id)}
+              onUpdate={() => handleUpdate(converter)}
+              versionEntry={versionByExt[converter.id]}
               disabled={installing !== null && installing !== converter.id}
             />
           ))}

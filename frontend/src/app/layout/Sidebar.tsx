@@ -731,18 +731,6 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
             the left, Telegram on the right — both in the same surface
             colour so neither louder than the other. */}
         <div className="px-2 pb-2 pt-1 flex flex-col gap-1.5">
-          <div className="flex items-center justify-center gap-1.5 min-w-0">
-            <span className="text-2xs text-content-tertiary">v{APP_VERSION}</span>
-            <span className="text-2xs text-content-quaternary/40">·</span>
-            <a
-              href="/api/source"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-2xs text-content-tertiary hover:text-content-secondary transition-colors"
-            >
-              AGPL-3.0
-            </a>
-          </div>
           <div className="flex items-center gap-1.5">
             <a
               href="https://github.com/datadrivenconstruction/OpenConstructionERP"
@@ -769,6 +757,18 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
               <span className="text-xs font-medium text-content-secondary">
                 {t('sidebar.community_title', { defaultValue: 'Community' })}
               </span>
+            </a>
+          </div>
+          <div className="flex items-center justify-center gap-1.5 min-w-0">
+            <span className="text-2xs text-content-tertiary">v{APP_VERSION}</span>
+            <span className="text-2xs text-content-quaternary/40">·</span>
+            <a
+              href="/api/source"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-2xs text-content-tertiary hover:text-content-secondary transition-colors"
+            >
+              AGPL-3.0
             </a>
           </div>
         </div>

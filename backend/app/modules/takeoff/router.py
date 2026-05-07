@@ -41,7 +41,7 @@ from pathlib import Path
 from statistics import mean as _mean
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
@@ -514,7 +514,16 @@ def _download_converter_files_windows(converter_id: str) -> Path:
 )
 async def install_converter(
     converter_id: str,
+    request: Request,
     _user_id: CurrentUserId,
+    force: bool = Query(
+        default=False,
+        description=(
+            "Bypass the 'already installed' short-circuit and re-download "
+            "even when a binary is already present. Used by the 'Update' "
+            "action when the version-check banner reports an outdated SHA."
+        ),
+    ),
 ) -> dict[str, Any]:
     """Download and install a DDC CAD/BIM converter.
 
@@ -562,7 +571,10 @@ async def install_converter(
     try:
         # Already installed?
         existing = find_converter(converter_id)
-        if existing:
+        if existing and not force:
+            # Skip the short-circuit when ``force=true`` so the "Update"
+            # button can re-download a binary whose blob SHA no longer
+            # matches the upstream GitHub Contents API.
             return {
                 "converter_id": converter_id,
                 "installed": True,
@@ -669,6 +681,15 @@ async def install_converter(
             # a cached pre-install ``not_installed`` result.
             from app.modules.boq.cad_import import invalidate_converter_health
             invalidate_converter_health(converter_id)
+
+            # Bust the 6-hour version-check cache so the "Update available"
+            # banner re-evaluates against the freshly written blob — without
+            # this the badge stays "outdated" for up to 6 h after a Windows
+            # install and the user thinks the Update button did nothing.
+            try:
+                request.app.state._converter_version_cache = None
+            except AttributeError:
+                pass
 
             return {
                 "converter_id": converter_id,
@@ -933,11 +954,6 @@ async def cad_extract(
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    if len(content) > MAX_CAD_SIZE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File too large ({len(content) / 1024 / 1024:.1f} MB). Max: {MAX_CAD_SIZE // 1024 // 1024} MB.",
-        )
 
     start_time = time.monotonic()
 
@@ -1129,11 +1145,6 @@ async def cad_columns(
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    if len(content) > MAX_CAD_SIZE:
-        raise HTTPException(
-            status_code=400,
-            detail=(f"File too large ({len(content) / 1024 / 1024:.1f} MB). Max: {MAX_CAD_SIZE // 1024 // 1024} MB."),
-        )
 
     start_time = time.monotonic()
 
@@ -2523,12 +2534,6 @@ async def upload_document(
         )
 
     content = await file.read()
-
-    if len(content) > MAX_PDF_SIZE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File too large ({len(content) / 1024 / 1024:.1f} MB). Maximum is {MAX_PDF_SIZE / 1024 / 1024:.0f} MB.",
-        )
 
     # Magic byte check — every legitimate PDF starts with "%PDF-".
     # Block JPGs/HTML/other files that have been renamed to .pdf to bypass

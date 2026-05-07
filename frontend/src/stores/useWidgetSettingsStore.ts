@@ -13,7 +13,7 @@ import { persist } from 'zustand/middleware';
 interface WidgetSettingsState {
   /** Show an OSM map thumbnail in project cards + full map on detail page. */
   projectMapEnabled: boolean;
-  /** Show a 16-day weather forecast on the project detail page. */
+  /** Show an 18-day weather forecast on the project detail page. */
   projectWeatherEnabled: boolean;
 
   toggleProjectMap: () => void;

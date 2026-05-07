@@ -46,6 +46,7 @@ const TITLE_I18N_MAP: Record<string, string> = {
   'Change Orders': 'nav.change_orders',
   'Documents': 'nav.documents',
   'Project Photos': 'nav.photos',
+  'Project Files': 'nav.project_files',
   'Risk Register': 'nav.risk_register',
   'Analytics': 'nav.analytics',
   'About': 'nav.about',

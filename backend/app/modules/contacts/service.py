@@ -160,6 +160,7 @@ class ContactService:
         search: str | None = None,
         is_active: bool = True,
         owner_id: str | None = None,
+        tags: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
         sort_by: str | None = None,
@@ -178,11 +179,21 @@ class ContactService:
             search=search,
             is_active=is_active,
             owner_id=owner_id,
+            tags=tags,
             limit=limit,
             offset=offset,
             sort_by=sort_by,
             sort_order=sort_order,
         )
+
+    async def tag_facets(
+        self,
+        *,
+        owner_id: str | None = None,
+        limit: int = 60,
+    ) -> list[tuple[str, int]]:
+        """Return top tags with counts from active contacts."""
+        return await self.repo.tag_facets(owner_id=owner_id, limit=limit)
 
     # ── Update ────────────────────────────────────────────────────────────
 

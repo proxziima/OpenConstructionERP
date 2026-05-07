@@ -9,7 +9,14 @@ import { useAuthStore } from '@/stores/useAuthStore';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
-export type ContactType = 'client' | 'subcontractor' | 'supplier' | 'consultant' | 'internal';
+export type ContactType =
+  | 'client'
+  | 'subcontractor'
+  | 'supplier'
+  | 'consultant'
+  | 'internal'
+  | 'lead'
+  | 'customer';
 
 export type PrequalificationStatus = 'pending' | 'approved' | 'expired' | 'rejected';
 
@@ -29,6 +36,7 @@ export interface Contact {
   prequalification_status: PrequalificationStatus | null;
   payment_terms_days: string | null;
   notes: string | null;
+  metadata?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
   // Computed display helpers
@@ -43,6 +51,12 @@ export interface ContactFilters {
   country?: string;
   search?: string;
   limit?: number;
+  tags?: string[];
+}
+
+export interface TagFacet {
+  tag: string;
+  count: number;
 }
 
 export interface CreateContactPayload {
@@ -70,9 +84,19 @@ export async function fetchContacts(filters?: ContactFilters): Promise<Contact[]
   if (filters?.country) params.set('country', filters.country);
   if (filters?.search) params.set('search', filters.search);
   if (filters?.limit) params.set('limit', String(filters.limit));
+  if (filters?.tags && filters.tags.length > 0) {
+    for (const tag of filters.tags) {
+      params.append('tag', tag);
+    }
+  }
   const qs = params.toString();
   const res = await apiGet<Contact[] | { items: Contact[] }>(`/v1/contacts/${qs ? `?${qs}` : ''}`);
   return Array.isArray(res) ? res : res.items ?? [];
+}
+
+export async function fetchContactTags(): Promise<TagFacet[]> {
+  const res = await apiGet<{ items: TagFacet[] }>(`/v1/contacts/tags/`);
+  return res.items ?? [];
 }
 
 export async function createContact(data: CreateContactPayload): Promise<Contact> {
