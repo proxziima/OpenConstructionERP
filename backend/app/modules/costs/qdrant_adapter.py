@@ -554,6 +554,79 @@ async def lookup_full_rows(
     return await lookup_rows(country=country, rate_codes=rate_codes)
 
 
+async def search_by_filter(
+    *,
+    country: str,
+    filters: dict[str, Any] | None = None,
+    limit: int = 100,
+) -> list[QdrantHit]:
+    """Filter-only fetch — no vector encoding, no fusion.
+
+    Pulls candidates by Qdrant payload filter using the scroll API. The
+    rows come back with ``score=0.0`` because there is no vector query
+    to score against; the caller is expected to score them using
+    metadata signals (lexical overlap, region match, unit family,
+    material match, classification).
+
+    This is the encoder-free path. When the BGE-M3 / sentence-transformers
+    encoder is offline (broken HF cache, missing extras, slow first cold
+    download), the hybrid :func:`search` raises; the ranker falls
+    through to this function so the user still gets a deterministic
+    candidate set ranked on payload signals instead of a blank list.
+
+    Falls back to the versionless collection name on lookup failure,
+    same logic as :func:`search` (covers dev installs that ingested
+    pre-v3 without flipping ``CWICR_COLLECTION_VERSION``).
+    """
+
+    collection = country_to_collection(country)
+    merged_filters: dict[str, Any] = dict(filters or {})
+    if "country" not in merged_filters:
+        auto_country = country_filter_for(country)
+        if auto_country:
+            merged_filters["country"] = auto_country
+    qdrant_filter = _build_filter(merged_filters)
+
+    client = _get_client()
+    try:
+        points, _ = client.scroll(
+            collection_name=collection,
+            scroll_filter=qdrant_filter,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception:
+        base = collection.rsplit("_v", 1)[0] if "_v" in collection else collection
+        if base == collection:
+            return []
+        try:
+            points, _ = client.scroll(
+                collection_name=base,
+                scroll_filter=qdrant_filter,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("search_by_filter: scroll failed for %s / %s: %s", collection, base, exc)
+            return []
+
+    hits: list[QdrantHit] = []
+    for point in points:
+        payload = point.payload or {}
+        rate_code = str(payload.get("rate_code") or point.id)
+        hits.append(
+            QdrantHit(
+                rate_code=rate_code,
+                country=str(payload.get("country", country)),
+                score=0.0,
+                payload=payload,
+            )
+        )
+    return hits
+
+
 # ── v3-P7: Search hardening ──────────────────────────────────────────────
 #
 # A naive ``search()`` against the indexed CWICR collections will under-

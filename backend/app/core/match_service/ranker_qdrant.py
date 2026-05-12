@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 import uuid
 from types import SimpleNamespace
@@ -62,6 +63,9 @@ from app.modules.costs.qdrant_adapter import (
     country_to_collection,
     lookup_full_rows,
     substitute_abstract_parents,
+)
+from app.modules.costs.qdrant_adapter import (
+    search_by_filter as qdrant_search_by_filter,
 )
 from app.modules.costs.qdrant_adapter import (
     search_with_fallback as qdrant_search_with_fallback,
@@ -473,6 +477,211 @@ def _apply_soft_boosts(
     return score, deltas
 
 
+# ── Encoder-free metadata scorer ─────────────────────────────────────────
+#
+# When the encoder is offline (broken HF cache, [semantic] extra missing,
+# slow first cold download), the dense+sparse fusion path returns nothing
+# and the user sees a blank result. The function below produces a
+# deterministic ranking from payload signals alone so the matcher still
+# returns plausible candidates, just with lower confidence.
+#
+# Score is a weighted sum of four components in [0, 1]:
+#
+#   * lexical (0.45): Jaccard overlap on tokenised text — element
+#     description/material/type vs catalogue collection_name/category_type.
+#     Generic IFC stems (Ifc, Wall, Door, Slab) are excluded so common
+#     IFC noise doesn't dominate.
+#   * unit_dim (0.25): matching coarse unit family (volume/area/length/
+#     mass/count/time). Hard signal — a wall (m³) shouldn't compete
+#     with flooring (m²) for top slots.
+#   * region (0.15): catalogue ``country`` payload matches the project
+#     region two-letter prefix.
+#   * material (0.15): catalogue ``material_class`` overlaps element
+#     material token (concrete ↔ ReinforcedConcrete, brick ↔ Brick).
+#
+# The weights are deliberately modest so a perfect metadata match
+# scores around 1.0 but never gets auto-confirmed without human review.
+# A future vector run on the same envelope will overwrite the score.
+
+_GENERIC_TOKEN_STOP = frozenset({
+    "ifc", "wall", "door", "window", "slab", "beam", "column", "stair",
+    "space", "covering", "pipe", "duct", "fitting", "element", "type",
+    "standard", "case", "and", "or", "of", "the", "a", "an", "with",
+    "is", "as", "for",
+})
+
+
+def _tokenise(text: str | None) -> set[str]:
+    if not text:
+        return set()
+    raw = re.sub(r"[^\w]+", " ", str(text).lower())
+    return {t for t in raw.split() if len(t) >= 2 and t not in _GENERIC_TOKEN_STOP}
+
+
+def _unit_family(unit: str | None) -> str | None:
+    if not unit:
+        return None
+    u = str(unit).strip().lower()
+    if u in {"m3", "m³", "cy", "cbm", "cum"}:
+        return "volume"
+    if u in {"m2", "m²", "sm", "sf", "sqm", "sqft"}:
+        return "area"
+    if u in {"m", "lm", "lf", "lfm", "rm"}:
+        return "length"
+    if u in {"kg", "t", "ton", "tonne", "tn"}:
+        return "mass"
+    if u in {"pcs", "ea", "stk", "nr", "no", "u", "stck"}:
+        return "count"
+    if u in {"h", "hr", "hour"}:
+        return "time"
+    return None
+
+
+def _score_payload_against_envelope(
+    payload: dict[str, Any],
+    *,
+    envelope: ElementEnvelope,
+    project_region: str | None,
+) -> tuple[float, dict[str, float]]:
+    """Score a catalogue payload against the envelope without a vector.
+
+    Returns ``(score, breakdown)`` so the caller can surface why a row
+    ranked where it did. Score is normalised to [0, 1].
+    """
+
+    env_text_parts = [
+        envelope.description or "",
+        envelope.category or "",
+        getattr(envelope, "ost_category", "") or "",
+        " ".join(str(v) for v in (envelope.properties or {}).values()),
+    ]
+    env_tokens = _tokenise(" ".join(env_text_parts))
+
+    pay_text = " ".join(
+        str(payload.get(k) or "")
+        for k in ("collection_name", "category_type", "ost_category", "material_class")
+    )
+    pay_tokens = _tokenise(pay_text)
+
+    if env_tokens and pay_tokens:
+        intersection = env_tokens & pay_tokens
+        union = env_tokens | pay_tokens
+        lexical = len(intersection) / len(union) if union else 0.0
+    else:
+        lexical = 0.0
+
+    env_unit_family = _unit_family(envelope.unit_hint)
+    pay_unit_family = (payload.get("unit_type") or "").strip().lower() or None
+    if pay_unit_family is None:
+        pay_unit_family = _unit_family(payload.get("rate_unit"))
+    unit_score = 1.0 if (env_unit_family and pay_unit_family and env_unit_family == pay_unit_family) else 0.0
+
+    region_score = 0.0
+    if project_region:
+        pay_country = str(payload.get("country") or "").upper()
+        proj_head = project_region.upper()[:2]
+        if pay_country and pay_country.startswith(proj_head):
+            region_score = 1.0
+
+    env_material = (envelope.properties or {}).get("material") if envelope.properties else None
+    material_score = 0.0
+    if env_material:
+        env_mat_tokens = _tokenise(str(env_material))
+        pay_mat_tokens = _tokenise(payload.get("material_class"))
+        if env_mat_tokens and pay_mat_tokens and (env_mat_tokens & pay_mat_tokens):
+            material_score = 1.0
+
+    score = (
+        0.45 * lexical
+        + 0.25 * unit_score
+        + 0.15 * region_score
+        + 0.15 * material_score
+    )
+
+    return score, {
+        "lexical": round(lexical, 3),
+        "unit": round(unit_score, 3),
+        "region": round(region_score, 3),
+        "material": round(material_score, 3),
+    }
+
+
+async def _metadata_only_candidates(
+    *,
+    envelope: ElementEnvelope,
+    catalog_id: str | None,
+    hard_filters: dict[str, Any],
+    project_region: str | None,
+    top_k: int,
+    fetch: int,
+) -> list[QdrantHit]:
+    """Encoder-free candidate fetch + score.
+
+    Pulls up to ``fetch`` rows from Qdrant by hard filter (IFC class +
+    is_abstract=False is the bedrock), then scores each by metadata
+    signals. Falls back to no-filter scroll if the strict filter set
+    under-returns — this catches the case where the catalogue's
+    ``ifc_class`` payload has gaps. Returns top-``top_k`` hits sorted by
+    metadata score descending.
+    """
+
+    if not catalog_id:
+        return []
+
+    # Strict filter first, then relax to bedrock if it under-returns.
+    relax_ladder: list[dict[str, Any]] = [
+        hard_filters,
+        {k: v for k, v in hard_filters.items() if k in {"ifc_class", "ost_category", "is_abstract"}},
+        {"is_abstract": False},
+    ]
+    seen_codes: set[str] = set()
+    raw_hits: list[QdrantHit] = []
+    for f in relax_ladder:
+        try:
+            tier_hits = await qdrant_search_by_filter(
+                country=catalog_id,
+                filters=f,
+                limit=fetch,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("metadata fallback: scroll tier failed: %s", exc)
+            tier_hits = []
+        for h in tier_hits:
+            if h.rate_code in seen_codes:
+                continue
+            seen_codes.add(h.rate_code)
+            raw_hits.append(h)
+        if len(raw_hits) >= fetch:
+            break
+
+    if not raw_hits:
+        return []
+
+    scored: list[tuple[float, dict[str, float], QdrantHit]] = []
+    for h in raw_hits:
+        score, breakdown = _score_payload_against_envelope(
+            h.payload or {}, envelope=envelope, project_region=project_region,
+        )
+        scored.append((score, breakdown, h))
+
+    scored.sort(key=lambda t: t[0], reverse=True)
+    out: list[QdrantHit] = []
+    for score, breakdown, h in scored[:top_k]:
+        # Annotate payload so downstream UI/log can show why this ranked.
+        new_payload = dict(h.payload or {})
+        new_payload["_match_breakdown"] = breakdown
+        new_payload["_match_method"] = "metadata"
+        out.append(
+            QdrantHit(
+                rate_code=h.rate_code,
+                country=h.country,
+                score=score,
+                payload=new_payload,
+            )
+        )
+    return out
+
+
 # ── Core entrypoint ──────────────────────────────────────────────────────
 
 
@@ -653,25 +862,53 @@ async def rank(
                 len(hits),
             )
     except RuntimeError as exc:
-        # Qdrant unreachable / [semantic] extra missing — surface an
-        # empty result with the catalog_not_vectorized status so the UI
-        # can render the right CTA instead of a generic empty state.
-        logger.warning("ranker_qdrant: search degraded (%s)", exc)
-        return MatchResponse(
-            request=req,
-            candidates=[],
-            translation_used=translation_used,
-            auto_linked=None,
-            took_ms=int((time.perf_counter() - started) * 1000),
-            cost_usd=cost_usd,
-            status="catalog_not_vectorized",
-            catalog_id=catalog_id,
-            catalog_count=catalog_count,
-            catalog_vectorized_count=0,
-        )
+        # Encoder offline ([semantic] extra missing, broken HF cache,
+        # Qdrant unreachable). Don't blank the result — fall through to
+        # an encoder-free metadata path so the user still gets a ranked
+        # candidate list from payload signals (IFC class filter +
+        # lexical + region + unit + material). Confidence will be lower
+        # than the hybrid path but ordering is meaningful.
+        logger.warning("ranker_qdrant: search degraded (%s) — using metadata fallback", exc)
+        try:
+            hits = await _metadata_only_candidates(
+                envelope=translated_envelope,
+                catalog_id=catalog_id,
+                hard_filters=plan.hard_filters,
+                project_region=project_region,
+                top_k=req.top_k,
+                fetch=max(fetch, 50),
+            )
+        except Exception as fallback_exc:  # pragma: no cover — defensive
+            logger.warning(
+                "ranker_qdrant: metadata fallback also failed (%s)", fallback_exc,
+            )
+            hits = []
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning("ranker_qdrant: vector search failed: %s", exc)
         hits = []
+
+    # Encoder ran but came back empty (e.g. dense returned nothing
+    # because the element description is too sparse, or the relax
+    # ladder exhausted without a hit). Try the metadata path once more
+    # so the user gets *some* ranked output rather than a blank page.
+    if not hits:
+        try:
+            fallback_hits = await _metadata_only_candidates(
+                envelope=translated_envelope,
+                catalog_id=catalog_id,
+                hard_filters=plan.hard_filters,
+                project_region=project_region,
+                top_k=req.top_k,
+                fetch=max(fetch, 50),
+            )
+            if fallback_hits:
+                logger.info(
+                    "ranker_qdrant: vector miss — metadata fallback returned %d hits",
+                    len(fallback_hits),
+                )
+                hits = fallback_hits
+        except Exception as fb_exc:  # pragma: no cover — defensive
+            logger.debug("ranker_qdrant: metadata fallback skipped: %s", fb_exc)
 
     # ── Attach 84-column parquet data ────────────────────────────────
     full_rows: dict[str, dict[str, Any]] = {}
