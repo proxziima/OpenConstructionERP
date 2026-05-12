@@ -229,3 +229,13 @@ class DocumentBIMLink(Base):
         return (
             f"<DocumentBIMLink doc={self.document_id} elem={self.bim_element_id}>"
         )
+
+
+# ── Side-effect re-export ─────────────────────────────────────────────────
+# The module loader only imports ``<module>.models`` so it can rely on a
+# single import to pull every ORM class into ``Base.metadata``. The
+# activity log lives in its own file for readability; re-export the symbol
+# here so the loader still discovers it and alembic autogenerate sees it.
+from app.modules.documents.activity_models import (  # noqa: E402,F401
+    DocumentActivity,
+)

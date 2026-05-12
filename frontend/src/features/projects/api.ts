@@ -148,5 +148,14 @@ export const projectsApi = {
     apiPatch<Project>(`/v1/projects/${id}`, data),
   archive: (id: string) => apiDelete(`/v1/projects/${id}`),
   restore: (id: string) => apiPost<Project>(`/v1/projects/${id}/restore/`, {}),
+  /**
+   * Server-side deep-clone. The backend copies every column (incl.
+   * WBS tree, milestones, match-settings, fx_rates, custom_units, VAT,
+   * address, validation_rule_sets, custom_fields) inside one transaction
+   * and returns the cloned project. Replaces the prior create+patch dance
+   * that silently lost child collections and bespoke JSON fields.
+   */
+  duplicate: (id: string) =>
+    apiPost<Project>(`/v1/projects/${id}/duplicate/`, {}),
   dashboard: (id: string) => apiGet<ProjectDashboard>(`/v1/projects/${id}/dashboard/`),
 };

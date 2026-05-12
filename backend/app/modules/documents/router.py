@@ -31,6 +31,7 @@ from app.core.bulk_ops import BulkDeleteRequest
 from app.core.rate_limiter import upload_limiter
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
 from app.modules.documents.schemas import (
+    DocumentActivityResponse,
     DocumentBIMLinkCreate,
     DocumentBIMLinkListResponse,
     DocumentBIMLinkResponse,
@@ -855,9 +856,25 @@ async def batch_delete_documents(
     owned_project_ids = {str(p.id) for p in owned_projects}
 
     rows = (await session.execute(
-        _select(Document.id, Document.project_id).where(Document.id.in_(body.ids))
+        _select(Document.id, Document.project_id, Document.name).where(Document.id.in_(body.ids))
     )).all()
     allowed = [r[0] for r in rows if str(r[1]) in owned_project_ids]
+    name_by_id = {r[0]: r[2] for r in rows if str(r[1]) in owned_project_ids}
+
+    # Audit log BEFORE the bulk delete so the rows still reference a
+    # live document_id. The FK cascade wipes them along with the parent,
+    # so retention is best-effort; the event-bus publish carries the
+    # same payload for external audit collectors.
+    from app.modules.documents.activity_service import record_activity
+
+    for doc_id in allowed:
+        await record_activity(
+            session,
+            doc_id,
+            str(user_id) if user_id else None,
+            "deleted",
+            {"name": name_by_id.get(doc_id, ""), "batch": True},
+        )
 
     deleted = await bulk_delete(session, Document, allowed)
     logger.info(
@@ -1033,7 +1050,7 @@ async def update_document(
     """Update document metadata."""
     existing = await service.get_document(document_id)
     await verify_project_access(existing.project_id, user_id, session)
-    doc = await service.update_document(document_id, data)
+    doc = await service.update_document(document_id, data, user_id=str(user_id) if user_id else None)
     return _doc_to_response(doc)
 
 
@@ -1051,7 +1068,36 @@ async def delete_document(
     """Delete a document and its file."""
     existing = await service.get_document(document_id)
     await verify_project_access(existing.project_id, user_id, session)
-    await service.delete_document(document_id)
+    await service.delete_document(document_id, user_id=str(user_id) if user_id else None)
+
+
+# ── Activity log ─────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/{document_id}/activity/",
+    response_model=list[DocumentActivityResponse],
+)
+async def list_document_activity(
+    document_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    limit: int = Query(default=20, ge=1, le=100),
+    service: DocumentService = Depends(_get_service),
+) -> list[DocumentActivityResponse]:
+    """Return the newest-first audit timeline for a document.
+
+    Used by the file-preview pane to render "X uploaded this on T;
+    renamed by Y on T+1; …". Returns 404 when the document is missing
+    or the caller has no access to its project (mirrors the cross-module
+    secret-by-id convention from :func:`verify_project_access`).
+    """
+    from app.modules.documents.activity_service import list_activity
+
+    existing = await service.get_document(document_id)
+    await verify_project_access(existing.project_id, user_id, session)
+    rows = await list_activity(session, document_id, limit=limit)
+    return [DocumentActivityResponse.model_validate(r) for r in rows]
 
 
 # ── Vector / semantic memory endpoints ───────────────────────────────────

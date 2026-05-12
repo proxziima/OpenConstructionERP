@@ -98,6 +98,8 @@ class RFIService:
             response_due_date=response_due_date,
             linked_drawing_ids=data.linked_drawing_ids,
             change_order_id=data.change_order_id,
+            priority=data.priority,
+            discipline=data.discipline,
             created_by=user_id,
             metadata_=data.metadata,
         )

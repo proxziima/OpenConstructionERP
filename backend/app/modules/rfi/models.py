@@ -40,6 +40,15 @@ class RFI(Base):
     date_required: Mapped[str | None] = mapped_column(String(20), nullable=True)
     response_due_date: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
+    # Priority: low | normal | high | critical (validated by the Pydantic
+    # schema; free-form on the DB side so future values can land without
+    # a migration).
+    priority: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Discipline: architectural / structural / mep / electrical / plumbing /
+    # civil / landscape. Kept free-form server-side; the frontend picker
+    # constrains the user-visible values.
+    discipline: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     # Linked drawing IDs: array of document/drawing UUID strings
     linked_drawing_ids: Mapped[list] = mapped_column(  # type: ignore[assignment]
         JSON,

@@ -106,6 +106,8 @@ def _to_response(item: object) -> RFIResponse:
         linked_drawing_ids=item.linked_drawing_ids or [],  # type: ignore[attr-defined]
         change_order_id=item.change_order_id,  # type: ignore[attr-defined]
         created_by=item.created_by,  # type: ignore[attr-defined]
+        priority=getattr(item, "priority", None),
+        discipline=getattr(item, "discipline", None),
         metadata=getattr(item, "metadata_", {}),
         created_at=item.created_at,  # type: ignore[attr-defined]
         updated_at=item.updated_at,  # type: ignore[attr-defined]

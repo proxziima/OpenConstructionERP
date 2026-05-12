@@ -157,9 +157,13 @@ CWICR_V3_CATALOGUES: tuple[CwicrV3Catalogue, ...] = (
         city="Toronto",
         language="en",
         currency="CAD",
-        ddc_path="EN___DDC_CWICR/CA_TORONTO_workitems_costs_resources_EMBEDDINGS_BGEM3_V3_DDC_CWICR.snapshot",
-        size_mb=420,
-        available=False,
+        # DDC publishes this snapshot under the legacy `ENG_TORONTO_*`
+        # filename (region_language treats ENG_TORONTO as an alias for
+        # CA_TORONTO). Pulls the real file from GitHub LFS; the row stays
+        # keyed to CA_TORONTO so cwicr_en_v3 routing is unchanged.
+        ddc_path="EN___DDC_CWICR/ENG_TORONTO_workitems_costs_resources_EMBEDDINGS_BGEM3_V3_DDC_CWICR.snapshot",
+        size_mb=415,
+        available=True,
         default_classification_standard="masterformat",
     ),
     CwicrV3Catalogue(

@@ -2,11 +2,13 @@
 
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { Download, Mail, FolderOpen, Copy, X, FileText, Image as ImageIcon, Layout, Box, Pencil, File, PenTool, FileBarChart, Tag, ExternalLink } from 'lucide-react';
+import { Download, Mail, FolderOpen, Copy, X, FileText, Image as ImageIcon, Layout, Box, Pencil, File, PenTool, FileBarChart, Tag, ExternalLink, Activity } from 'lucide-react';
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { useToastStore } from '@/stores/useToastStore';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
+import { apiGet } from '@/shared/lib/api';
 import type { FileRow, FileKind } from '../types';
 import { isTauri, openInOSFinder, copyToClipboard } from '../lib/tauri';
 import { modulesForKind, primaryModule } from '../kindModule';
@@ -34,6 +36,17 @@ function fmtBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/* Inline preview probe — relies on file extension first (cheap, exact)
+   and falls back to mime sniff for documents uploaded without a .pdf
+   suffix. The native browser PDF viewer renders via <iframe>; we drop
+   the chrome with #toolbar=0&navpanes=0&view=FitH so the pane reads as
+   a thumbnail rather than a full reader. */
+function isPdf(row: FileRow): boolean {
+  if (row.extension && row.extension.toLowerCase().replace(/^\./, '') === 'pdf') return true;
+  if (row.mime_type && row.mime_type.toLowerCase() === 'application/pdf') return true;
+  return false;
 }
 
 export function FilePreviewPane({ row, onClose, onEmail }: FilePreviewPaneProps) {
@@ -105,8 +118,15 @@ export function FilePreviewPane({ row, onClose, onEmail }: FilePreviewPaneProps)
       </div>
 
       <div className="p-4 space-y-4">
-        <div className="flex items-center justify-center bg-surface-secondary/60 rounded-lg aspect-[4/3]">
-          {row.thumbnail_url ? (
+        <div className="flex items-center justify-center overflow-hidden bg-surface-secondary/60 rounded-lg aspect-[4/3]">
+          {isPdf(row) && row.download_url ? (
+            <iframe
+              src={`${row.download_url}#toolbar=0&navpanes=0&view=FitH`}
+              title={row.name}
+              className="h-full w-full border-0 rounded-lg"
+              loading="lazy"
+            />
+          ) : row.thumbnail_url ? (
             <img
               src={row.thumbnail_url}
               alt=""
@@ -259,8 +279,139 @@ export function FilePreviewPane({ row, onClose, onEmail }: FilePreviewPaneProps)
             </dl>
           </div>
         )}
+
+        {/* Per-file audit timeline. Renders for any kind backed by the
+            ``oe_documents_document`` table; the section gracefully
+            returns null for other backings (photo / bim_model / dwg)
+            because the API responds 404 and useQuery is in retry:false. */}
+        <ActivityLogSection documentId={row.id} />
       </div>
     </aside>
+  );
+}
+
+/* ── Activity log timeline ─────────────────────────────────────────────
+   Backend endpoint: GET /v1/documents/{id}/activity/?limit=20. Returns
+   newest-first audit events for the document (upload / rename / cde
+   state change / delete). Renders a vertical timeline keyed by action,
+   with the action chip colour-coded so a quick glance tells the user
+   what happened. Gracefully renders nothing on 404 / error so an
+   un-migrated backend can't break the preview pane. */
+interface ActivityEvent {
+  id: string;
+  document_id: string;
+  user_id: string | null;
+  action: string;
+  meta: Record<string, unknown>;
+  created_at: string;
+}
+
+const ACTIVITY_ACTION_STYLE: Record<string, string> = {
+  uploaded: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300',
+  renamed: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
+  downloaded: 'bg-surface-secondary text-content-secondary',
+  deleted: 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300',
+  cde_state_changed: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300',
+};
+
+function formatActivityMeta(action: string, meta: Record<string, unknown>): string {
+  /* Render a short, locale-neutral summary of the JSON meta blob. The
+     parent caller turns this into a localised label when the action is
+     well-known; unknown actions fall through to an empty string and the
+     chip alone tells the user what happened. */
+  if (action === 'renamed') {
+    const oldName = typeof meta.old === 'string' ? meta.old : '';
+    const newName = typeof meta.new === 'string' ? meta.new : '';
+    if (oldName && newName) return `${oldName} → ${newName}`;
+  }
+  if (action === 'cde_state_changed') {
+    const oldState = typeof meta.old === 'string' ? meta.old : 'wip';
+    const newState = typeof meta.new === 'string' ? meta.new : '';
+    if (newState) return `${oldState} → ${newState}`;
+  }
+  if (action === 'uploaded') {
+    const name = typeof meta.name === 'string' ? meta.name : '';
+    return name;
+  }
+  if (action === 'deleted') {
+    const name = typeof meta.name === 'string' ? meta.name : '';
+    return name;
+  }
+  return '';
+}
+
+function ActivityLogSection({ documentId }: { documentId: string }) {
+  const { t } = useTranslation();
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['document-activity', documentId],
+    queryFn: () =>
+      apiGet<ActivityEvent[]>(`/v1/documents/${documentId}/activity/?limit=20`),
+    staleTime: 30_000,
+    retry: false,
+  });
+  /* 404 / 5xx must never break the pane — the endpoint is new and may
+     legitimately be missing on an un-migrated backend, and photo / BIM
+     IDs aren't valid document ids so the API responds 404 for them. */
+  if (isError) return null;
+  const events = data ?? [];
+  if (!isLoading && events.length === 0) return null;
+  return (
+    <div className="border-t border-border-light pt-3">
+      <h4 className="flex items-center gap-1.5 text-2xs font-medium uppercase tracking-wider text-content-tertiary mb-2">
+        <Activity size={11} strokeWidth={2} />
+        {t('files.detail.activity', { defaultValue: 'Activity' })}
+        {events.length > 0 && (
+          <span className="ms-1 text-content-quaternary tabular-nums">({events.length})</span>
+        )}
+      </h4>
+      {isLoading ? (
+        <div className="h-3 rounded bg-surface-secondary animate-pulse" />
+      ) : (
+        <ol className="relative space-y-2 ps-3 before:absolute before:top-1 before:bottom-1 before:start-1 before:w-px before:bg-border-light">
+          {events.map((ev) => {
+            const chipStyle =
+              ACTIVITY_ACTION_STYLE[ev.action] ?? 'bg-surface-secondary text-content-secondary';
+            const summary = formatActivityMeta(ev.action, ev.meta ?? {});
+            const actionLabel = t(`files.activity.action.${ev.action}`, {
+              defaultValue: ev.action.replace(/_/g, ' '),
+            });
+            return (
+              <li key={ev.id} className="relative">
+                <span className="absolute -start-[7px] top-1 h-2 w-2 rounded-full bg-oe-blue" />
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={clsx(
+                      'inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
+                      chipStyle,
+                    )}
+                  >
+                    {actionLabel}
+                  </span>
+                  <DateDisplay
+                    value={ev.created_at}
+                    format="relative"
+                    className="text-2xs text-content-quaternary"
+                  />
+                </div>
+                {summary && (
+                  <p className="mt-0.5 text-[11px] text-content-secondary break-words">
+                    {summary}
+                  </p>
+                )}
+                {ev.user_id && (
+                  <p
+                    className="mt-0.5 text-[10px] font-mono text-content-quaternary truncate"
+                    title={ev.user_id}
+                  >
+                    {ev.user_id}
+                  </p>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </div>
   );
 }
 

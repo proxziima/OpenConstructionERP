@@ -50,6 +50,12 @@ class RFICreate(BaseModel):
     response_due_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     linked_drawing_ids: list[str] = Field(default_factory=list)
     change_order_id: str | None = Field(default=None, max_length=36)
+    priority: str | None = Field(
+        default=None,
+        pattern=r"^(low|normal|high|critical)$",
+        description="Priority — low | normal | high | critical.",
+    )
+    discipline: str | None = Field(default=None, max_length=50)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -80,6 +86,12 @@ class RFIUpdate(BaseModel):
     response_due_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     linked_drawing_ids: list[str] | None = None
     change_order_id: str | None = Field(default=None, max_length=36)
+    priority: str | None = Field(
+        default=None,
+        pattern=r"^(low|normal|high|critical)$",
+        description="Priority — low | normal | high | critical.",
+    )
+    discipline: str | None = Field(default=None, max_length=50)
     metadata: dict[str, Any] | None = None
 
 
@@ -120,6 +132,8 @@ class RFIResponse(BaseModel):
     linked_drawing_ids: list[str] = Field(default_factory=list)
     change_order_id: str | None = None
     created_by: str | None = None
+    priority: str | None = None
+    discipline: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_")
     created_at: datetime
     updated_at: datetime

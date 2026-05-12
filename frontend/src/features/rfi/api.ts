@@ -10,6 +10,27 @@ import { apiGet, apiPost } from '@/shared/lib/api';
 
 export type RFIStatus = 'draft' | 'open' | 'answered' | 'closed' | 'void';
 
+export type RFIPriority = 'low' | 'normal' | 'high' | 'critical';
+
+/**
+ * Common construction disciplines for an RFI. Kept as a constant so the
+ * picker and the filter dropdown stay in lockstep.
+ *
+ * The backend column is free-form `String(50)` so future disciplines can
+ * land without a migration — this list is only what the frontend offers.
+ */
+export const RFI_DISCIPLINES = [
+  'architectural',
+  'structural',
+  'mep',
+  'electrical',
+  'plumbing',
+  'civil',
+  'landscape',
+] as const;
+
+export type RFIDiscipline = (typeof RFI_DISCIPLINES)[number];
+
 export interface RFI {
   id: string;
   project_id: string;
@@ -32,6 +53,13 @@ export interface RFI {
   linked_drawing_ids: string[];
   change_order_id: string | null;
   created_by: string | null;
+  priority: RFIPriority | null;
+  /**
+   * Discipline — typically one of {@link RFI_DISCIPLINES} but kept as a
+   * raw string here because the backend column is free-form and might
+   * already carry custom values from other clients.
+   */
+  discipline: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -70,6 +98,8 @@ export interface CreateRFIPayload {
   schedule_impact?: boolean;
   schedule_impact_days?: number;
   linked_drawing_ids?: string[];
+  priority?: RFIPriority;
+  discipline?: string;
 }
 
 export interface RespondRFIPayload {
@@ -77,6 +107,10 @@ export interface RespondRFIPayload {
 }
 
 /* ── API Functions ─────────────────────────────────────────────────────── */
+
+export async function getRFI(id: string): Promise<RFI> {
+  return apiGet<RFI>(`/v1/rfi/${id}/`);
+}
 
 export async function fetchRFIs(filters?: RFIFilters): Promise<RFI[]> {
   const params = new URLSearchParams();

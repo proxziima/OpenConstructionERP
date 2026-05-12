@@ -7,7 +7,7 @@ No business logic — pure data access.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import String, cast, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.documents.models import Document, ProjectPhoto, Sheet
@@ -34,18 +34,52 @@ class DocumentRepository:
         sort_by: str | None = None,
         sort_order: str = "desc",
     ) -> tuple[list[Document], int]:
-        """List documents for a project with pagination and filters."""
+        """List documents for a project with pagination and filters.
+
+        Search matches against (case-insensitive ILIKE):
+            * ``Document.name`` / ``Document.description``
+            * ``Document.metadata_["ocr_text"]`` — text extracted from PDFs by
+              the takeoff / sheet-split pipelines and stored in the JSON
+              ``metadata`` column under the ``ocr_text`` key.
+            * ``Sheet.sheet_title`` / ``Sheet.sheet_number`` for any sheet
+              that references this document (outer join on the
+              ``Sheet.document_id`` string column — Sheet stores the parent
+              document id as a string, not a FK, so we cast Document.id to
+              string for the join predicate).
+
+        ``DISTINCT`` is applied so a document with multiple matching sheets
+        appears once in the result set.
+        """
         base = select(Document).where(Document.project_id == project_id)
         if category is not None:
             base = base.where(Document.category == category)
         if search is not None:
             pattern = f"%{search}%"
+            # ``metadata_`` is mapped as ``sqlalchemy.JSON`` (NOT JSONB), so
+            # both SQLite (development) and PostgreSQL (production) return
+            # the raw text via the dialect-portable ``[key].as_string()``
+            # accessor. Wrap in ``coalesce`` so a missing key surfaces as
+            # ``''`` rather than NULL — ILIKE-against-NULL is always false.
+            ocr_expr = func.coalesce(
+                cast(Document.metadata_["ocr_text"].as_string(), String),
+                "",
+            )
+            # Sheet.document_id is String(255); Document.id is UUID/String.
+            # Cast Document.id to String so the comparison works on both
+            # SQLite (TEXT) and PostgreSQL (UUID/TEXT) backends.
+            base = base.outerjoin(
+                Sheet,
+                Sheet.document_id == cast(Document.id, String),
+            )
             base = base.where(
                 or_(
                     Document.name.ilike(pattern),
                     Document.description.ilike(pattern),
+                    ocr_expr.ilike(pattern),
+                    Sheet.sheet_title.ilike(pattern),
+                    Sheet.sheet_number.ilike(pattern),
                 )
-            )
+            ).distinct()
 
         count_stmt = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(count_stmt)).scalar_one()

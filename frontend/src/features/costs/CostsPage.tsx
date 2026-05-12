@@ -554,12 +554,13 @@ export function CostsPage() {
   // subsection) so the sidebar mirrors the BOQ "From Database" modal.
   // depth=4 gives the deepest drill-in; the backend's /category-tree/
   // endpoint has a 5-min cache so this is cheap on hot calls.
-  const { data: categoryTree } = useQuery<CategoryTreeNode[]>({
-    queryKey: ['costs', 'category-tree', region],
-    queryFn: () => fetchCategoryTree(region || undefined, 4),
-    retry: false,
-    staleTime: 5 * 60_000,
-  });
+  const { data: categoryTree, isLoading: categoryTreeLoading, isFetching: categoryTreeFetching } =
+    useQuery<CategoryTreeNode[]>({
+      queryKey: ['costs', 'category-tree', region],
+      queryFn: () => fetchCategoryTree(region || undefined, 4),
+      retry: false,
+      staleTime: 5 * 60_000,
+    });
 
   // Debounce search query (300ms)
   useEffect(() => {
@@ -916,6 +917,13 @@ export function CostsPage() {
               }}
               t={t}
               searchInputId="costs-category-tree-search"
+              isLoading={
+                categoryTreeLoading ||
+                // Treat a refetch with no rendered tree yet (region just
+                // changed) as loading too — the cached data for the previous
+                // region is stale and should not show "No categories".
+                (categoryTreeFetching && (categoryTree?.length ?? 0) === 0)
+              }
             />
           </div>
         </Card>

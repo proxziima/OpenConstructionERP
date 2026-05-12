@@ -1,7 +1,7 @@
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import clsx from 'clsx';
 import {
   HelpCircle,
@@ -21,6 +21,8 @@ import {
   AlertTriangle,
   Paperclip,
   ArrowRightLeft,
+  UploadCloud,
+  Check,
 } from 'lucide-react';
 import { Button, Card, Badge, EmptyState, Breadcrumb, ConfirmDialog, SkeletonTable } from '@/shared/ui';
 import { UserSearchInput } from '@/shared/ui/UserSearchInput';
@@ -36,8 +38,10 @@ import {
   createRFI,
   respondToRFI,
   closeRFI,
+  RFI_DISCIPLINES,
   type RFI,
   type RFIStatus,
+  type RFIPriority,
   type CreateRFIPayload,
   type RespondRFIPayload,
 } from './api';
@@ -49,7 +53,7 @@ interface Project {
   name: string;
 }
 
-const STATUS_CONFIG: Record<
+export const STATUS_CONFIG: Record<
   RFIStatus,
   { variant: 'neutral' | 'blue' | 'success' | 'error' | 'warning'; cls: string }
 > = {
@@ -59,6 +63,30 @@ const STATUS_CONFIG: Record<
   closed: { variant: 'neutral', cls: 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300' },
   void: { variant: 'error', cls: '' },
 };
+
+/**
+ * Priority → coloured-dot class. Rendered at the very left of every RFI
+ * row so the operator can scan urgency without reading the status chip.
+ *
+ *   low      → gray
+ *   normal   → blue
+ *   high     → amber
+ *   critical → red
+ */
+export const PRIORITY_DOT: Record<RFIPriority, string> = {
+  low: 'bg-gray-400',
+  normal: 'bg-blue-500',
+  high: 'bg-amber-500',
+  critical: 'bg-red-500',
+};
+
+/** Ordered list — keeps the chip row and the filter dropdown in sync. */
+export const PRIORITY_VALUES: readonly RFIPriority[] = [
+  'low',
+  'normal',
+  'high',
+  'critical',
+] as const;
 
 const inputCls =
   'h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue';
@@ -87,6 +115,14 @@ interface RFIFormData {
   cost_impact_value: string;
   schedule_impact: boolean;
   schedule_impact_days: string;
+  priority: RFIPriority;
+  /** Empty string = unset. Picker offers {@link RFI_DISCIPLINES}. */
+  discipline: string;
+  /**
+   * Document UUIDs the user has either picked from the existing-documents
+   * list-modal or just uploaded via the inline dropzone.
+   */
+  linked_drawing_ids: string[];
 }
 
 const EMPTY_FORM: RFIFormData = {
@@ -101,22 +137,355 @@ const EMPTY_FORM: RFIFormData = {
   cost_impact_value: '',
   schedule_impact: false,
   schedule_impact_days: '',
+  priority: 'normal',
+  discipline: '',
+  linked_drawing_ids: [],
 };
+
+/* ── Document picker types ─────────────────────────────────────────────── */
+
+/**
+ * Minimal shape of a document row we need to render the picker / chips.
+ * Mirrors the relevant subset of the documents module's list response —
+ * kept local so the RFI module does not couple to the documents module's
+ * full API.
+ */
+interface DocumentPickerRow {
+  id: string;
+  filename: string;
+  category: string;
+  size_bytes: number;
+}
+
+interface DocumentsApiRow {
+  id: string;
+  filename?: string;
+  name?: string;
+  category?: string;
+  size_bytes?: number;
+}
+
+function normalizeDocRow(raw: DocumentsApiRow): DocumentPickerRow {
+  return {
+    id: raw.id,
+    filename: raw.filename ?? raw.name ?? '',
+    category: raw.category ?? 'other',
+    size_bytes: typeof raw.size_bytes === 'number' ? raw.size_bytes : 0,
+  };
+}
+
+/* ── Document Picker Modal ─────────────────────────────────────────────── */
+
+function DocumentPickerModal({
+  documents,
+  isLoading,
+  selected,
+  onClose,
+  onApply,
+}: {
+  documents: DocumentPickerRow[];
+  isLoading: boolean;
+  selected: string[];
+  onClose: () => void;
+  onApply: (ids: string[]) => void;
+}) {
+  const { t } = useTranslation();
+  const [query, setQuery] = useState('');
+  const [picked, setPicked] = useState<Set<string>>(() => new Set(selected));
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return documents;
+    return documents.filter(
+      (d) =>
+        d.filename.toLowerCase().includes(q) || d.category.toLowerCase().includes(q),
+    );
+  }, [documents, query]);
+
+  const togglePick = (id: string) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-xl bg-surface-elevated rounded-xl shadow-xl border border-border animate-card-in mx-4 max-h-[80vh] flex flex-col"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('rfi.attach_drawings', { defaultValue: 'Attach drawings' })}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-3 border-b border-border-light">
+          <h3 className="text-sm font-semibold text-content-primary">
+            {t('rfi.attach_drawings', { defaultValue: 'Attach drawings' })}
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={t('common.close', { defaultValue: 'Close' })}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary hover:text-content-primary"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        <div className="px-5 py-3 border-b border-border-light">
+          <div className="relative">
+            <Search
+              size={14}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-content-tertiary"
+            />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t('rfi.doc_search_placeholder', {
+                defaultValue: 'Search drawings & documents...',
+              })}
+              aria-label={t('rfi.doc_search_placeholder', {
+                defaultValue: 'Search drawings & documents...',
+              })}
+              className={`${inputCls} pl-9`}
+              autoFocus
+            />
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-2 py-2">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-10">
+              <Loader2 className="h-5 w-5 animate-spin text-oe-blue" />
+            </div>
+          ) : filtered.length === 0 ? (
+            <p className="px-3 py-6 text-center text-sm text-content-tertiary">
+              {documents.length === 0
+                ? t('rfi.no_docs_yet', {
+                    defaultValue: 'This project has no documents yet.',
+                  })
+                : t('rfi.no_doc_matches', {
+                    defaultValue: 'No documents match your search.',
+                  })}
+            </p>
+          ) : (
+            <ul className="divide-y divide-border-light">
+              {filtered.map((d) => {
+                const isPicked = picked.has(d.id);
+                return (
+                  <li key={d.id}>
+                    <button
+                      type="button"
+                      onClick={() => togglePick(d.id)}
+                      className={clsx(
+                        'flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-surface-secondary transition-colors',
+                        isPicked && 'bg-oe-blue/5',
+                      )}
+                      aria-pressed={isPicked}
+                    >
+                      <span
+                        className={clsx(
+                          'flex h-5 w-5 items-center justify-center rounded border shrink-0',
+                          isPicked
+                            ? 'border-oe-blue bg-oe-blue text-white'
+                            : 'border-border bg-surface-primary',
+                        )}
+                      >
+                        {isPicked && <Check size={12} strokeWidth={3} />}
+                      </span>
+                      <FileText size={14} className="text-content-tertiary shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-content-primary truncate">
+                          {d.filename || '—'}
+                        </p>
+                        <p className="text-xs text-content-tertiary truncate">
+                          {d.category}
+                        </p>
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-3 px-5 py-3 border-t border-border-light">
+          <span className="text-xs text-content-tertiary">
+            {t('rfi.n_selected', {
+              defaultValue: '{{count}} selected',
+              count: picked.size,
+            })}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              {t('common.cancel', { defaultValue: 'Cancel' })}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => onApply(Array.from(picked))}
+            >
+              {t('rfi.apply_selection', { defaultValue: 'Apply' })}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function CreateRFIModal({
   onClose,
   onSubmit,
   isPending,
   projectName,
+  projectId,
 }: {
   onClose: () => void;
   onSubmit: (data: RFIFormData) => void;
   isPending: boolean;
   projectName?: string;
+  projectId: string;
 }) {
   const { t } = useTranslation();
+  const addToast = useToastStore((s) => s.addToast);
   const [form, setForm] = useState<RFIFormData>(EMPTY_FORM);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [showDocPicker, setShowDocPicker] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [uploadInFlight, setUploadInFlight] = useState(0);
+  const dropFileInputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * Document catalogue for the project — used both by the picker modal
+   * and to resolve filename chips for whatever the user has already
+   * attached. Fetched lazily so the create modal does not pay the cost
+   * unless the user opens the dialog.
+   */
+  const { data: documents = [], isLoading: docsLoading } = useQuery({
+    queryKey: ['rfi-doc-picker', projectId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ project_id: projectId, limit: '200' });
+      const rows = await apiGet<DocumentsApiRow[]>(`/v1/documents/?${params.toString()}`);
+      return rows.map(normalizeDocRow);
+    },
+    enabled: Boolean(projectId),
+    staleTime: 60_000,
+  });
+
+  const docById = useMemo(() => {
+    const map = new Map<string, DocumentPickerRow>();
+    for (const d of documents) map.set(d.id, d);
+    return map;
+  }, [documents]);
+
+  /**
+   * POST a single file to the documents upload endpoint and, on success,
+   * append the returned id to ``linked_drawing_ids``. Mirrors the upload
+   * shape used by the file-manager so the backend behaviour is identical.
+   */
+  const uploadFile = useCallback(
+    async (file: File): Promise<void> => {
+      const token = useAuthStore.getState().accessToken;
+      const formData = new FormData();
+      formData.append('file', file);
+      const headers: Record<string, string> = { 'X-DDC-Client': 'OE/1.0' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const res = await fetch(
+        `/api/v1/documents/upload/?project_id=${encodeURIComponent(
+          projectId,
+        )}&category=other`,
+        { method: 'POST', headers, body: formData },
+      );
+      if (!res.ok) {
+        let detail = file.name;
+        try {
+          const body: unknown = await res.json();
+          if (
+            body &&
+            typeof body === 'object' &&
+            'detail' in body &&
+            typeof (body as { detail: unknown }).detail === 'string'
+          ) {
+            detail = (body as { detail: string }).detail;
+          }
+        } catch {
+          /* ignore */
+        }
+        throw new Error(detail);
+      }
+      const created = (await res.json()) as { id?: string };
+      if (!created.id) throw new Error('Upload returned no id');
+      const newId = created.id;
+      setForm((prev) => ({
+        ...prev,
+        linked_drawing_ids: prev.linked_drawing_ids.includes(newId)
+          ? prev.linked_drawing_ids
+          : [...prev.linked_drawing_ids, newId],
+      }));
+    },
+    [projectId],
+  );
+
+  const handleFilesDropped = useCallback(
+    async (files: FileList | File[]): Promise<void> => {
+      const list = Array.from(files);
+      if (list.length === 0) return;
+      if (!projectId) {
+        addToast({
+          type: 'error',
+          title: t('rfi.no_project_error', { defaultValue: 'No project selected' }),
+        });
+        return;
+      }
+      setUploadInFlight((n) => n + list.length);
+      const results = await Promise.allSettled(list.map((f) => uploadFile(f)));
+      const ok = results.filter((r) => r.status === 'fulfilled').length;
+      const fail = results.length - ok;
+      setUploadInFlight((n) => Math.max(0, n - list.length));
+      if (ok > 0) {
+        addToast({
+          type: 'success',
+          title: t('rfi.attachment_uploaded', {
+            defaultValue: '{{count}} attachment(s) uploaded',
+            count: ok,
+          }),
+        });
+      }
+      if (fail > 0) {
+        addToast({
+          type: 'error',
+          title: t('rfi.attachment_failed', {
+            defaultValue: '{{count}} upload(s) failed',
+            count: fail,
+          }),
+        });
+      }
+    },
+    [projectId, uploadFile, addToast, t],
+  );
+
+  const removeDrawing = useCallback((id: string) => {
+    setForm((prev) => ({
+      ...prev,
+      linked_drawing_ids: prev.linked_drawing_ids.filter((d) => d !== id),
+    }));
+  }, []);
 
   const set = <K extends keyof RFIFormData>(key: K, value: RFIFormData[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -236,6 +605,83 @@ function CreateRFIModal({
                 {errors.question}
               </p>
             )}
+          </div>
+
+          {/* Priority + Discipline — two-column row */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <span
+                id="rfi-priority-label"
+                className="block text-sm font-medium text-content-primary mb-1.5"
+              >
+                {t('rfi.field_priority', { defaultValue: 'Priority' })}
+              </span>
+              <div
+                role="radiogroup"
+                aria-labelledby="rfi-priority-label"
+                className="flex flex-wrap gap-1.5"
+              >
+                {PRIORITY_VALUES.map((p) => {
+                  const active = form.priority === p;
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => set('priority', p)}
+                      className={clsx(
+                        'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+                        active
+                          ? 'border-oe-blue bg-oe-blue/10 text-oe-blue'
+                          : 'border-border bg-surface-primary text-content-secondary hover:bg-surface-secondary',
+                      )}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={clsx(
+                          'inline-block h-2 w-2 rounded-full',
+                          PRIORITY_DOT[p],
+                        )}
+                      />
+                      {t(`rfi.priority_${p}`, {
+                        defaultValue: p.charAt(0).toUpperCase() + p.slice(1),
+                      })}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <label
+                htmlFor="rfi-discipline"
+                className="block text-sm font-medium text-content-primary mb-1.5"
+              >
+                {t('rfi.field_discipline', { defaultValue: 'Discipline' })}
+              </label>
+              <div className="relative">
+                <select
+                  id="rfi-discipline"
+                  value={form.discipline}
+                  onChange={(e) => set('discipline', e.target.value)}
+                  className={clsx(inputCls, 'pr-9 appearance-none')}
+                >
+                  <option value="">
+                    {t('rfi.discipline_none', { defaultValue: 'No discipline' })}
+                  </option>
+                  {RFI_DISCIPLINES.map((d) => (
+                    <option key={d} value={d}>
+                      {t(`rfi.discipline_${d}`, {
+                        defaultValue: d.charAt(0).toUpperCase() + d.slice(1),
+                      })}
+                    </option>
+                  ))}
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+                  <ChevronDown size={14} />
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* ── Assignment & Schedule ── */}
@@ -426,13 +872,123 @@ function CreateRFIModal({
             <div className="flex-1 h-px bg-border-light" />
           </div>
 
-          <div className="rounded-lg border border-dashed border-border p-4 text-center">
-            <Paperclip size={18} className="mx-auto text-content-quaternary mb-1" />
-            <p className="text-xs text-content-tertiary">
-              {t('rfi.linked_drawing_ids_hint', { defaultValue: 'Linked drawings and references can be added after creation' })}
-            </p>
+          {/* Existing chips for already-attached documents */}
+          {form.linked_drawing_ids.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {form.linked_drawing_ids.map((id) => {
+                const doc = docById.get(id);
+                const label = doc?.filename || id;
+                return (
+                  <span
+                    key={id}
+                    className="inline-flex items-center gap-1 rounded-full bg-oe-blue/10 text-oe-blue px-2.5 py-1 text-xs font-medium"
+                  >
+                    <FileText size={11} />
+                    <span className="max-w-[180px] truncate" title={label}>
+                      {label}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeDrawing(id)}
+                      aria-label={t('rfi.remove_attachment', {
+                        defaultValue: 'Remove attachment',
+                      })}
+                      className="ml-0.5 rounded-full hover:bg-oe-blue/20 p-0.5"
+                    >
+                      <X size={11} />
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Picker + dropzone — two paths to attach */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setShowDocPicker(true)}
+              disabled={!projectId}
+              className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-surface-primary px-3 py-3 text-sm font-medium text-content-secondary hover:bg-surface-secondary hover:border-oe-blue/60 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Paperclip size={14} />
+              {t('rfi.attach_drawings', { defaultValue: 'Attach drawings' })}
+            </button>
+
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => dropFileInputRef.current?.click()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  dropFileInputRef.current?.click();
+                }
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                if (e.dataTransfer.files.length > 0) {
+                  void handleFilesDropped(e.dataTransfer.files);
+                }
+              }}
+              className={clsx(
+                'flex items-center justify-center gap-2 rounded-lg border-2 border-dashed px-3 py-3 text-sm font-medium cursor-pointer transition-colors',
+                dragOver
+                  ? 'border-oe-blue bg-oe-blue/5 text-oe-blue'
+                  : 'border-border bg-surface-primary text-content-secondary hover:bg-surface-secondary hover:border-oe-blue/60',
+              )}
+              aria-label={t('rfi.upload_attachment', {
+                defaultValue: 'Upload an attachment',
+              })}
+            >
+              {uploadInFlight > 0 ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <UploadCloud size={14} />
+              )}
+              {uploadInFlight > 0
+                ? t('rfi.uploading', { defaultValue: 'Uploading…' })
+                : t('rfi.drop_or_browse', {
+                    defaultValue: 'Drop file or browse',
+                  })}
+            </div>
+            <input
+              ref={dropFileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                  void handleFilesDropped(e.target.files);
+                  e.target.value = '';
+                }
+              }}
+            />
           </div>
         </div>
+
+        {/* Document picker — list-modal lazily mounted */}
+        {showDocPicker && (
+          <DocumentPickerModal
+            documents={documents}
+            isLoading={docsLoading}
+            selected={form.linked_drawing_ids}
+            onClose={() => setShowDocPicker(false)}
+            onApply={(ids) => {
+              setForm((prev) => ({ ...prev, linked_drawing_ids: ids }));
+              setShowDocPicker(false);
+            }}
+          />
+        )}
 
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-border-light sticky bottom-0 z-10 bg-surface-elevated rounded-b-xl">
@@ -562,6 +1118,33 @@ const RFIRow = React.memo(function RFIRow({
         )}
         onClick={() => setExpanded((prev) => !prev)}
       >
+        {/* Priority dot — colour-coded at the very left of the row */}
+        <span
+          className={clsx(
+            'inline-block h-2 w-2 rounded-full shrink-0',
+            rfi.priority ? PRIORITY_DOT[rfi.priority] : 'bg-transparent border border-border',
+          )}
+          aria-label={
+            rfi.priority
+              ? t('rfi.priority_aria', {
+                  defaultValue: 'Priority: {{p}}',
+                  p: t(`rfi.priority_${rfi.priority}`, {
+                    defaultValue:
+                      rfi.priority.charAt(0).toUpperCase() + rfi.priority.slice(1),
+                  }),
+                })
+              : t('rfi.priority_none_aria', { defaultValue: 'No priority' })
+          }
+          title={
+            rfi.priority
+              ? t(`rfi.priority_${rfi.priority}`, {
+                  defaultValue:
+                    rfi.priority.charAt(0).toUpperCase() + rfi.priority.slice(1),
+                })
+              : '—'
+          }
+        />
+
         <ChevronRight
           size={14}
           className={clsx(
@@ -570,10 +1153,14 @@ const RFIRow = React.memo(function RFIRow({
           )}
         />
 
-        {/* RFI # */}
-        <span className="text-sm font-mono font-semibold text-content-secondary w-16 shrink-0">
+        {/* RFI # — links to deep page */}
+        <Link
+          to={`/rfi/${rfi.id}`}
+          onClick={(e) => e.stopPropagation()}
+          className="text-sm font-mono font-semibold text-content-secondary hover:text-oe-blue hover:underline w-16 shrink-0"
+        >
           #{rfi.rfi_number}
-        </span>
+        </Link>
 
         {/* Subject */}
         <span className="text-sm text-content-primary truncate flex-1 min-w-0">
@@ -586,6 +1173,19 @@ const RFIRow = React.memo(function RFIRow({
             defaultValue: rfi.status.charAt(0).toUpperCase() + rfi.status.slice(1),
           })}
         </Badge>
+
+        {/* Discipline chip — hidden when null */}
+        {rfi.discipline && (
+          <span
+            className="hidden lg:inline-flex items-center rounded-full bg-surface-secondary px-2 py-0.5 text-2xs font-medium text-content-secondary border border-border-light shrink-0"
+            title={t('rfi.field_discipline', { defaultValue: 'Discipline' })}
+          >
+            {t(`rfi.discipline_${rfi.discipline}`, {
+              defaultValue:
+                rfi.discipline.charAt(0).toUpperCase() + rfi.discipline.slice(1),
+            })}
+          </span>
+        )}
 
         {/* Ball in Court */}
         <span className="text-xs text-content-tertiary w-28 truncate shrink-0 hidden md:block">
@@ -770,6 +1370,8 @@ export function RFIPage() {
     return () => clearTimeout(handle);
   }, [searchQuery]);
   const [statusFilter, setStatusFilter] = useState<RFIStatus | ''>('');
+  const [priorityFilter, setPriorityFilter] = useState<RFIPriority | ''>('');
+  const [disciplineFilter, setDisciplineFilter] = useState<string>('');
 
   // "n" shortcut → open new RFI form
   useCreateShortcut(
@@ -799,9 +1401,19 @@ export function RFIPage() {
     enabled: !!projectId,
   });
 
-  /* Server already filters by ?search= so `filtered` is now a pass-through.
-     Kept as an alias so the rest of the component does not need touching. */
-  const filtered = rfis;
+  /* Server already filters by ?status= / ?search= but priority + discipline
+     are filtered client-side for now — the column list endpoint does not
+     accept them as query params yet. Keeping the filtering close to the
+     dropdown state means the toolbar reacts instantly when the user picks
+     a chip. */
+  const filtered = useMemo(() => {
+    if (!priorityFilter && !disciplineFilter) return rfis;
+    return rfis.filter((r) => {
+      if (priorityFilter && r.priority !== priorityFilter) return false;
+      if (disciplineFilter && r.discipline !== disciplineFilter) return false;
+      return true;
+    });
+  }, [rfis, priorityFilter, disciplineFilter]);
 
   /* Real stats come from the dedicated /stats/ endpoint, which scans the
      full RFI table for the project — not just the loaded page. The
@@ -946,6 +1558,12 @@ export function RFIPage() {
         schedule_impact_days:
           formData.schedule_impact && Number.isFinite(scheduleDays) && scheduleDays >= 0
             ? scheduleDays
+            : undefined,
+        priority: formData.priority,
+        discipline: formData.discipline || undefined,
+        linked_drawing_ids:
+          formData.linked_drawing_ids.length > 0
+            ? formData.linked_drawing_ids
             : undefined,
       });
     },
@@ -1197,6 +1815,56 @@ export function RFIPage() {
             <ChevronDown size={14} />
           </div>
         </div>
+
+        {/* Priority filter */}
+        <div className="relative">
+          <select
+            value={priorityFilter}
+            onChange={(e) => setPriorityFilter(e.target.value as RFIPriority | '')}
+            aria-label={t('rfi.filter_priority', { defaultValue: 'All priorities' })}
+            className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-40"
+          >
+            <option value="">
+              {t('rfi.filter_priority', { defaultValue: 'All priorities' })}
+            </option>
+            {PRIORITY_VALUES.map((p) => (
+              <option key={p} value={p}>
+                {t(`rfi.priority_${p}`, {
+                  defaultValue: p.charAt(0).toUpperCase() + p.slice(1),
+                })}
+              </option>
+            ))}
+          </select>
+          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+            <ChevronDown size={14} />
+          </div>
+        </div>
+
+        {/* Discipline filter */}
+        <div className="relative">
+          <select
+            value={disciplineFilter}
+            onChange={(e) => setDisciplineFilter(e.target.value)}
+            aria-label={t('rfi.filter_discipline', {
+              defaultValue: 'All disciplines',
+            })}
+            className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-40"
+          >
+            <option value="">
+              {t('rfi.filter_discipline', { defaultValue: 'All disciplines' })}
+            </option>
+            {RFI_DISCIPLINES.map((d) => (
+              <option key={d} value={d}>
+                {t(`rfi.discipline_${d}`, {
+                  defaultValue: d.charAt(0).toUpperCase() + d.slice(1),
+                })}
+              </option>
+            ))}
+          </select>
+          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+            <ChevronDown size={14} />
+          </div>
+        </div>
       </div>
 
       {/* Table */}
@@ -1339,6 +2007,7 @@ export function RFIPage() {
           onSubmit={handleCreateSubmit}
           isPending={createMut.isPending}
           projectName={projectName}
+          projectId={projectId}
         />
       )}
 

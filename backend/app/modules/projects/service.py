@@ -271,6 +271,245 @@ class ProjectService:
         logger.info("Project updated: %s (fields=%s)", project_id, list(fields.keys()))
         return project
 
+    # ── Duplicate (deep clone) ───────────────────────────────────────────
+
+    async def duplicate_project(
+        self,
+        project_id: uuid.UUID,
+        owner_id: uuid.UUID,
+    ) -> Project:
+        """Deep-clone a project including its child collections.
+
+        Inside a single transaction we:
+          1. Fetch the source project + its WBS tree + milestones +
+             MatchProjectSettings.
+          2. Insert a new ``Project`` row with a fresh UUID, a freshly
+             generated ``project_code``, ``name = f"{source.name} (Copy)"``
+             and ``owner_id`` from the caller. Every other column is
+             copied verbatim — including JSON fields (``validation_rule_sets``,
+             ``custom_fields``, ``address``, ``fx_rates``, ``custom_units``,
+             ``metadata_``).
+          3. Re-key each child collection onto the new project id with
+             fresh UUIDs. For ``ProjectWBS`` we do this in two passes so the
+             hierarchical ``parent_id`` links inside the tree are preserved
+             through the new id mapping. Ordinals (``sort_order``), levels
+             and dates are kept verbatim.
+          4. Copy ``MatchProjectSettings`` (one-to-one with the project) so
+             the cloned project keeps catalogue binding, classifier choice,
+             auto-link thresholds, source toggles, etc.
+
+        The whole operation runs in the request's session — the request
+        dependency (``get_session``) commits on success and rolls back on
+        any raise, so a child insert failure cleanly aborts the parent
+        insert too. Returns the new ``Project`` ORM row (caller wraps it
+        in ``ProjectResponse``).
+        """
+        from app.modules.projects.models import (
+            MatchProjectSettings,
+            Project,
+            ProjectMilestone,
+            ProjectWBS,
+        )
+
+        # 1. Load source with its eager-loaded child collections.
+        source = await self.get_project(project_id)
+
+        # 2. Build the new Project row. Every persisted column is enumerated
+        #    explicitly so adding a field later forces a conscious decision
+        #    about whether it should clone — much safer than a sweeping
+        #    ``copy.deepcopy`` that could silently propagate IDs/timestamps.
+        new_project_code = await self._generate_project_code()
+        new_project = Project(
+            name=f"{source.name} (Copy)",
+            description=source.description,
+            region=source.region,
+            classification_standard=source.classification_standard,
+            currency=source.currency,
+            locale=source.locale,
+            validation_rule_sets=list(source.validation_rule_sets or []),
+            status="active",
+            owner_id=owner_id,
+            # Phase 12 expansion fields
+            project_code=new_project_code,
+            project_type=source.project_type,
+            phase=source.phase,
+            client_id=source.client_id,
+            parent_project_id=source.parent_project_id,
+            address=dict(source.address) if source.address else None,
+            contract_value=source.contract_value,
+            planned_start_date=source.planned_start_date,
+            planned_end_date=source.planned_end_date,
+            actual_start_date=source.actual_start_date,
+            actual_end_date=source.actual_end_date,
+            budget_estimate=source.budget_estimate,
+            contingency_pct=source.contingency_pct,
+            custom_fields=(
+                dict(source.custom_fields) if source.custom_fields else None
+            ),
+            work_calendar_id=source.work_calendar_id,
+            # v2.6.0 multi-currency / VAT
+            fx_rates=list(source.fx_rates or []),
+            default_vat_rate=source.default_vat_rate,
+            custom_units=list(source.custom_units or []),
+            metadata_=dict(source.metadata_ or {}),
+            # v2.9.4 per-project storage override
+            storage_path_override=source.storage_path_override,
+            storage_uses_default=source.storage_uses_default,
+        )
+        self.session.add(new_project)
+        await self.session.flush()  # populates new_project.id
+
+        # 3a. Clone WBS tree.
+        #    Pass 1: insert every node with parent_id=NULL, keeping a
+        #    mapping of old id → new ORM row. Pass 2: re-set parent_id
+        #    inside the tree using the mapping. This decouples the inserts
+        #    from the source ordering and avoids FK-not-found races.
+        wbs_id_map: dict[uuid.UUID, uuid.UUID] = {}
+        new_wbs_rows: list[tuple[ProjectWBS, uuid.UUID | None]] = []
+        for src_node in source.wbs_nodes:
+            new_node = ProjectWBS(
+                project_id=new_project.id,
+                parent_id=None,  # rewired in pass 2
+                code=src_node.code,
+                name=src_node.name,
+                name_translations=(
+                    dict(src_node.name_translations)
+                    if src_node.name_translations
+                    else None
+                ),
+                level=src_node.level,
+                sort_order=src_node.sort_order,
+                wbs_type=src_node.wbs_type,
+                planned_cost=src_node.planned_cost,
+                planned_hours=src_node.planned_hours,
+                metadata_=dict(src_node.metadata_ or {}),
+            )
+            self.session.add(new_node)
+            new_wbs_rows.append((new_node, src_node.parent_id))
+        if new_wbs_rows:
+            await self.session.flush()
+            # Pair each newly-flushed row with its source node (same order)
+            # so we can build the id mapping needed to rewire parent_id.
+            for (new_node, _src_parent_id), src_node in zip(
+                new_wbs_rows, source.wbs_nodes, strict=True,
+            ):
+                wbs_id_map[src_node.id] = new_node.id
+            # Pass 2 — rewire parent_id within the new tree.
+            for new_node, src_parent_id in new_wbs_rows:
+                if src_parent_id is not None and src_parent_id in wbs_id_map:
+                    new_node.parent_id = wbs_id_map[src_parent_id]
+            await self.session.flush()
+
+        # 3b. Clone milestones. Flat list, no internal references.
+        for src_ms in source.milestones:
+            self.session.add(
+                ProjectMilestone(
+                    project_id=new_project.id,
+                    name=src_ms.name,
+                    milestone_type=src_ms.milestone_type,
+                    planned_date=src_ms.planned_date,
+                    actual_date=src_ms.actual_date,
+                    status=src_ms.status,
+                    linked_payment_pct=src_ms.linked_payment_pct,
+                    metadata_=dict(src_ms.metadata_ or {}),
+                )
+            )
+
+        # 3c. Clone MatchProjectSettings (one-to-one, no relationship on
+        #     Project — fetched directly via the unique FK).
+        from sqlalchemy import select as _sa_select
+
+        src_match_stmt = _sa_select(MatchProjectSettings).where(
+            MatchProjectSettings.project_id == project_id,
+        )
+        src_match = (
+            await self.session.execute(src_match_stmt)
+        ).scalar_one_or_none()
+        if src_match is not None:
+            self.session.add(
+                MatchProjectSettings(
+                    project_id=new_project.id,
+                    target_language=src_match.target_language,
+                    classifier=src_match.classifier,
+                    auto_link_threshold=src_match.auto_link_threshold,
+                    auto_link_enabled=src_match.auto_link_enabled,
+                    mode=src_match.mode,
+                    sources_enabled=list(src_match.sources_enabled or []),
+                    cost_database_id=src_match.cost_database_id,
+                )
+            )
+
+        await self.session.flush()
+        await self.session.refresh(new_project)
+
+        # 4. Auto-create a default team for the cloned project (mirrors
+        #    ``create_project``). Wrapped in a SAVEPOINT so a missing teams
+        #    table (test environments / minimal installs) doesn't poison
+        #    the outer transaction with the parent + child inserts already
+        #    in flight.
+        try:
+            from app.modules.teams.models import Team, TeamMembership
+
+            async with self.session.begin_nested():
+                default_team = Team(
+                    project_id=new_project.id,
+                    name="Default Team",
+                    is_default=True,
+                )
+                self.session.add(default_team)
+                await self.session.flush()
+                self.session.add(
+                    TeamMembership(
+                        team_id=default_team.id,
+                        user_id=owner_id,
+                        role="lead",
+                    )
+                )
+                await self.session.flush()
+        except Exception:
+            logger.debug(
+                "Auto-create default team skipped on duplicate "
+                "(teams module may not be loaded)",
+            )
+
+        await _safe_publish(
+            "projects.project.created",
+            {
+                "project_id": str(new_project.id),
+                "owner_id": str(owner_id),
+                "name": new_project.name,
+                "duplicated_from": str(project_id),
+            },
+            source_module="oe_projects",
+        )
+
+        await _safe_audit(
+            self.session,
+            action="duplicate",
+            entity_type="project",
+            entity_id=str(new_project.id),
+            user_id=str(owner_id),
+            details={
+                "source_project_id": str(project_id),
+                "name": new_project.name,
+                "project_code": new_project_code,
+                "wbs_count": len(source.wbs_nodes),
+                "milestone_count": len(source.milestones),
+            },
+        )
+
+        logger.info(
+            "Project duplicated: src=%s -> new=%s (owner=%s, code=%s, "
+            "wbs=%d, milestones=%d)",
+            project_id,
+            new_project.id,
+            owner_id,
+            new_project_code,
+            len(source.wbs_nodes),
+            len(source.milestones),
+        )
+        return new_project
+
     # ── Delete (soft) ─────────────────────────────────────────────────────
 
     async def delete_project(self, project_id: uuid.UUID) -> None:

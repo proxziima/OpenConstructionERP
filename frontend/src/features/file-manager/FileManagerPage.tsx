@@ -27,6 +27,7 @@ import { FolderCardGrid } from './components/FolderCardGrid';
 import { UploadDialog } from './components/UploadDialog';
 import { BulkActionsBar } from './components/BulkActionsBar';
 import { primaryModule } from './kindModule';
+import { DashboardBackdrop } from '../dashboard/components/DashboardBackdrop';
 import type { FileFilters, FileKind, FileRow } from './types';
 
 const VIEW_MODE_KEY = 'file-manager:view-mode';
@@ -246,7 +247,8 @@ export function FileManagerPage() {
     : '';
 
   return (
-    <div className="flex flex-col h-full bg-surface-primary">
+    <div className="relative isolate flex flex-col h-full">
+      <DashboardBackdrop />
       <PathBar locations={locations} isLoading={locLoading} selectedKind={selectedKind} />
 
       {/* Page-level breadcrumb + primary upload CTA. Lives outside the

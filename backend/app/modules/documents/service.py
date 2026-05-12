@@ -26,6 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.bim_hub.models import BIMElement
+from app.modules.documents.activity_service import record_activity
 from app.modules.documents.models import Document, DocumentBIMLink, ProjectPhoto, Sheet
 from app.modules.documents.repository import DocumentRepository, PhotoRepository, SheetRepository
 from app.modules.documents.schemas import (
@@ -275,6 +276,24 @@ class DocumentService:
             len(content),
             project_id,
         )
+
+        # Audit log — the timeline UI in /files relies on this row to
+        # explain "where did this document come from?" without joining
+        # event-bus archives. Failures are swallowed inside the helper
+        # so the audit log never blocks the upload itself.
+        await record_activity(
+            self.session,
+            document.id,
+            user_id or None,
+            "uploaded",
+            {
+                "name": safe_name,
+                "category": category,
+                "file_size": len(content),
+                "mime_type": file.content_type or "",
+            },
+        )
+
         return document
 
     # ── Read ───────────────────────────────────────────────────────────────
@@ -325,10 +344,14 @@ class DocumentService:
         self,
         document_id: uuid.UUID,
         data: DocumentUpdate,
+        user_id: str | None = None,
     ) -> Document:
         """Update document metadata fields.
 
         Validates CDE state transitions if cde_state is being changed.
+
+        ``user_id`` is passed through to the activity log so the timeline
+        attributes the rename / CDE-state-change to the right operator.
         """
         document = await self.get_document(document_id)
 
@@ -338,6 +361,11 @@ class DocumentService:
 
         if not fields:
             return document
+
+        # Snapshot the values we may want to audit BEFORE the update so
+        # the meta-blob captures the actual transition (old → new).
+        old_name = document.name
+        old_cde = document.cde_state
 
         # Validate CDE state transition
         if "cde_state" in fields and fields["cde_state"] is not None:
@@ -358,6 +386,26 @@ class DocumentService:
         await self.session.refresh(document)
 
         logger.info("Document updated: %s (fields=%s)", document_id, list(fields.keys()))
+
+        # Activity log — split into distinct actions so the timeline UI
+        # can colour them differently. Rename and CDE state change are
+        # by far the most useful audit events.
+        if "name" in fields and fields["name"] is not None and fields["name"] != old_name:
+            await record_activity(
+                self.session,
+                document_id,
+                user_id,
+                "renamed",
+                {"old": old_name, "new": fields["name"]},
+            )
+        if "cde_state" in fields and fields["cde_state"] != old_cde:
+            await record_activity(
+                self.session,
+                document_id,
+                user_id,
+                "cde_state_changed",
+                {"old": old_cde, "new": fields["cde_state"]},
+            )
 
         # Publish documents.document.updated so the vector indexer and
         # other subscribers can re-embed the row with the fresh metadata.
@@ -382,7 +430,11 @@ class DocumentService:
 
     # ── Delete ─────────────────────────────────────────────────────────────
 
-    async def delete_document(self, document_id: uuid.UUID) -> None:
+    async def delete_document(
+        self,
+        document_id: uuid.UUID,
+        user_id: str | None = None,
+    ) -> None:
         """Delete a document and its file.
 
         DB record is deleted first so a failure there prevents orphan file removal.
@@ -392,6 +444,19 @@ class DocumentService:
         document = await self.get_document(document_id)
         file_path_str = document.file_path
         project_id = document.project_id
+        doc_name = document.name
+
+        # Audit log BEFORE delete — the row is wiped by the FK cascade
+        # together with the document itself, but the event-bus publish
+        # downstream carries the same payload for any external audit
+        # collector that wants to retain "deleted" hits.
+        await record_activity(
+            self.session,
+            document_id,
+            user_id,
+            "deleted",
+            {"name": doc_name},
+        )
 
         # Delete DB record FIRST — this is the authoritative state
         await self.repo.delete(document_id)

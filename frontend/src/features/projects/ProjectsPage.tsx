@@ -12,12 +12,13 @@ import { Button, Card, Badge, EmptyState, SkeletonGrid, Breadcrumb, ProjectMap, 
 import { useWidgetSettingsStore } from '@/stores/useWidgetSettingsStore';
 import { getIntlLocale } from '@/shared/lib/formatters';
 import { projectsApi, type Project } from './api';
-import { apiGet, apiPost, apiPatch, apiDelete } from '@/shared/lib/api';
+import { apiGet, apiPatch, apiDelete } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useLocalStorage } from '@/shared/hooks/useLocalStorage';
 import { CreateProjectModal } from './CreateProjectPage';
 import { BIMConverterStatusBanner } from '../bim/BIMConverterStatusBanner';
+import { DashboardBackdrop } from '../dashboard/components/DashboardBackdrop';
 
 interface ProjectBOQStats {
   projectId: string;
@@ -257,7 +258,8 @@ export function ProjectsPage() {
   ];
 
   return (
-    <div className="w-full animate-fade-in">
+    <div className="relative isolate w-full animate-fade-in">
+      <DashboardBackdrop />
       <Breadcrumb items={[{ label: t('nav.dashboard', 'Dashboard'), to: '/' }, { label: t('nav.projects', 'Projects') }]} className="mb-4" />
       {/* Header */}
       <div className="mb-6 flex items-center justify-between">
@@ -626,41 +628,7 @@ function ProjectCard({
   });
 
   const duplicateMutation = useMutation({
-    mutationFn: async () => {
-      /* Create a copy of the project with as many settings carried over
-         as the create payload supports. There is no server-side deep-clone
-         endpoint yet, so per-project resources that live in other tables
-         (FX rates, custom units, VAT, address) are forwarded explicitly.
-         The newly created row is then PATCHed for fields the create
-         endpoint does not accept (those are no-ops on legacy backends). */
-      const newProject = await apiPost<Project>('/v1/projects/', {
-        name: `${project.name} (Copy)`,
-        description: project.description,
-        region: project.region,
-        classification_standard: project.classification_standard,
-        currency: project.currency,
-        locale: project.locale,
-        address: project.address ?? null,
-      });
-      const patchPayload: Record<string, unknown> = {};
-      if (project.fx_rates && project.fx_rates.length > 0) {
-        patchPayload.fx_rates = project.fx_rates;
-      }
-      if (project.default_vat_rate) {
-        patchPayload.default_vat_rate = project.default_vat_rate;
-      }
-      if (project.custom_units && project.custom_units.length > 0) {
-        patchPayload.custom_units = project.custom_units;
-      }
-      if (Object.keys(patchPayload).length > 0) {
-        try {
-          await apiPatch(`/v1/projects/${newProject.id}`, patchPayload);
-        } catch (err) {
-          if (import.meta.env.DEV) console.warn('Duplicate: post-create patch failed', err);
-        }
-      }
-      return newProject;
-    },
+    mutationFn: () => projectsApi.duplicate(project.id),
     onSuccess: (newProject) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       addToast({ type: 'success', title: t('projects.duplicated', 'Project duplicated successfully') });

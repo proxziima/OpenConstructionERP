@@ -29,6 +29,12 @@ export interface CostCategoryTreeProps {
   t: TFunction;
   /** Optional ID for the search input (a11y label association). */
   searchInputId?: string;
+  /** When true (and tree is still empty), render skeleton rows + a
+   *  "Loading categories…" hint instead of the "No categories available"
+   *  empty-state. The /costs sidebar fires a 5-min cached query that can
+   *  take a moment on cold catalogues; without this flag the empty-state
+   *  flashes for the entire wait, which reads as a real error. */
+  isLoading?: boolean;
 }
 
 /* ── Pure helpers ──────────────────────────────────────────────────────── */
@@ -204,6 +210,7 @@ export function CostCategoryTree({
   onSelect,
   t,
   searchInputId,
+  isLoading = false,
 }: CostCategoryTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [filter, setFilter] = useState('');
@@ -253,8 +260,33 @@ export function CostCategoryTree({
       </div>
 
       {/* Tree */}
-      <div role="tree" className="flex-1 overflow-y-auto px-1 pb-3">
-        {visibleTree.length === 0 ? (
+      <div role="tree" className="flex-1 overflow-y-auto px-1 pb-3" aria-busy={isLoading}>
+        {isLoading && visibleTree.length === 0 ? (
+          <div
+            className="flex flex-col gap-1.5 px-2 pt-1"
+            aria-label={t('boq.cost_tree_loading', { defaultValue: 'Loading categories…' })}
+          >
+            {/* Skeleton rows mimic real category density (varied widths so
+                the placeholder reads as content, not a single block). The
+                shimmer animation comes from Tailwind `animate-pulse`. */}
+            {[88, 72, 95, 60, 80, 70, 92, 55, 78, 65].map((w, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-2 px-2 py-1.5"
+                style={{ paddingLeft: `${(i % 3) * 8 + 8}px` }}
+              >
+                <div className="h-2.5 w-2.5 rounded-sm bg-surface-secondary animate-pulse" />
+                <div
+                  className="h-2.5 rounded bg-surface-secondary animate-pulse"
+                  style={{ width: `${w}%` }}
+                />
+              </div>
+            ))}
+            <p className="mt-3 px-3 text-center text-2xs text-content-quaternary">
+              {t('boq.cost_tree_loading', { defaultValue: 'Loading categories…' })}
+            </p>
+          </div>
+        ) : visibleTree.length === 0 ? (
           <p className="px-3 py-6 text-center text-xs text-content-tertiary">
             {t('boq.cost_tree_no_categories', {
               defaultValue: 'No categories available',

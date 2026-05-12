@@ -742,8 +742,17 @@ function CatalogueAdvisor({
   });
   const installables = useMemo(() => {
     if (!installablesQ.data || !projectLanguage) return [];
+    // Tolerate both shapes the endpoint has shipped: a bare array (current
+    // queryFn) and the wrapped `{catalogues:[...]}` envelope (older cache
+    // rehydration). Without this guard the page crashes on
+    // `installablesQ.data.filter is not a function` whenever react-query
+    // rehydrates a pre-fix cache entry from sessionStorage.
+    const list = Array.isArray(installablesQ.data)
+      ? installablesQ.data
+      : (installablesQ.data as { catalogues?: typeof installablesQ.data })?.catalogues || [];
+    if (!Array.isArray(list)) return [];
     const regionPrefix = (projectRegion || '').slice(0, 2).toUpperCase();
-    return installablesQ.data
+    return list
       .filter(
         (c) =>
           c.install_status === 'available' &&

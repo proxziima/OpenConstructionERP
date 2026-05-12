@@ -271,3 +271,19 @@ class BIMElementBrief(BaseModel):
     name: str | None = None
     storey: str | None = None
     discipline: str | None = None
+
+
+# ── Activity log ─────────────────────────────────────────────────────────
+
+
+class DocumentActivityResponse(BaseModel):
+    """Single audit event from the per-document activity timeline."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    document_id: UUID
+    user_id: str | None = None
+    action: str
+    meta: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime

@@ -288,6 +288,51 @@ async def restore_project(
     return ProjectResponse.model_validate(restored)
 
 
+# ── Duplicate (deep clone) ───────────────────────────────────────────────
+
+
+@router.post(
+    "/{project_id}/duplicate/",
+    response_model=ProjectResponse,
+    status_code=201,
+    summary="Duplicate project (deep clone)",
+    description="Server-side deep-clone of a project including WBS tree, "
+    "milestones, match-settings, custom fields, validation rule sets, "
+    "address, fx_rates, custom_units, VAT and metadata. The whole copy "
+    "runs in a single transaction — any child insert failure rolls back "
+    "the parent insert too. The caller becomes the owner of the clone.",
+)
+async def duplicate_project(
+    project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    service: ProjectService = Depends(_get_service),
+) -> ProjectResponse:
+    """Deep-clone a project. Verifies the caller has access to the source.
+
+    The clone is created with ``name = f"{source.name} (Copy)"``, a fresh
+    UUID + fresh ``project_code``, the calling user as owner, and every
+    other column copied verbatim. Child collections (WBS / milestones /
+    match-settings) are re-keyed onto the new project id with fresh UUIDs.
+    """
+    # Ownership / admin check on the SOURCE project so a viewer cannot
+    # clone someone else's project.
+    await _verify_project_owner(service, project_id, user_id, payload)
+    try:
+        new_project = await service.duplicate_project(
+            project_id, uuid.UUID(user_id),
+        )
+        return ProjectResponse.model_validate(new_project)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to duplicate project %s", project_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to duplicate project",
+        )
+
+
 # ── Project Dashboard (cross-module aggregation) ───────────────────────
 
 
