@@ -170,6 +170,7 @@ internal-notes/audit/
 # (These can contain commit hashes, ports, and architectural detail
 # useful to someone targeting a specific deploy.)
 internal-notes/PRD_MODULES_18.md
+internal-notes/HANDOVER_NEXT_SESSION.md
 internal-notes/backend.md
 internal-notes/frontend.md
 internal-notes/research/
