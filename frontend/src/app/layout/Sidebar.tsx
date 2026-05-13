@@ -52,6 +52,22 @@ import {
   Github,
   HardDrive,
   Link2,
+  // 18-Modules Wave icons
+  Wrench,
+  Truck,
+  BookOpen,
+  Globe,
+  FileSignature,
+  Briefcase,
+  Scale,
+  GitBranch,
+  Building2,
+  ShoppingCart,
+  BadgeCheck,
+  Shield,
+  Leaf,
+  BarChart3,
+  LineChart,
   type LucideIcon,
 } from 'lucide-react';
 import { useModuleStore } from '@/stores/useModuleStore';
@@ -147,10 +163,29 @@ const navGroups: NavGroup[] = [
     hideInSimple: true,
     items: [
       { labelKey: 'schedule.title', to: '/schedule', icon: CalendarDays, moduleKey: 'schedule' },
+      { labelKey: 'nav.schedule_advanced', to: '/schedule-advanced', icon: LineChart, advancedOnly: true },
       { labelKey: 'tasks.title', to: '/tasks', icon: ClipboardList },
       { labelKey: 'nav.5d_cost_model', to: '/5d', icon: TrendingUp, moduleKey: '5d', advancedOnly: true },
       // Requirements merged into /bim/rules — sidebar entry removed
       { labelKey: 'nav.risk_register', to: '/risks', icon: ShieldAlert, advancedOnly: true },
+    ],
+  },
+  // ── FIELD OPERATIONS (18-Modules Wave) ─────────────────────────────
+  // Day-to-day site operations: service tickets, equipment, daily diary,
+  // subcontractor portal, resource/crew assignment. Most useful to PMs,
+  // site engineers, and field supervisors.
+  {
+    id: 'operations',
+    labelKey: 'nav.group_operations',
+    descriptionKey: 'nav.group_operations_desc',
+    defaultOpen: false,
+    hideInSimple: true,
+    items: [
+      { labelKey: 'nav.daily_diary', to: '/daily-diary', icon: BookOpen },
+      { labelKey: 'nav.equipment', to: '/equipment', icon: Truck },
+      { labelKey: 'nav.resources', to: '/resources', icon: Users },
+      { labelKey: 'nav.service', to: '/service', icon: Wrench },
+      { labelKey: 'nav.portal', to: '/portal', icon: Globe },
     ],
   },
   {
@@ -163,6 +198,26 @@ const navGroups: NavGroup[] = [
       { labelKey: 'procurement.title', to: '/procurement', icon: Package, advancedOnly: true },
       { labelKey: 'tendering.title', to: '/tendering', icon: FileText, moduleKey: 'tendering', advancedOnly: true },
       { labelKey: 'nav.change_orders', to: '/changeorders', icon: FileEdit, advancedOnly: true },
+    ],
+  },
+  // ── COMMERCIAL (18-Modules Wave) ───────────────────────────────────
+  // Commercial pipeline — from CRM lead to contract award to variations,
+  // including subcontractor management, bid management, supplier
+  // catalogs, and property/asset development tracking.
+  {
+    id: 'commercial',
+    labelKey: 'nav.group_commercial',
+    descriptionKey: 'nav.group_commercial_desc',
+    defaultOpen: false,
+    hideInSimple: true,
+    items: [
+      { labelKey: 'nav.crm', to: '/crm', icon: Briefcase },
+      { labelKey: 'nav.contracts', to: '/contracts', icon: FileSignature },
+      { labelKey: 'nav.subcontractors', to: '/subcontractors', icon: HardHat },
+      { labelKey: 'nav.bid_management', to: '/bid-management', icon: Scale },
+      { labelKey: 'nav.variations', to: '/variations', icon: GitBranch },
+      { labelKey: 'nav.supplier_catalogs', to: '/supplier-catalogs', icon: ShoppingCart },
+      { labelKey: 'nav.property_dev', to: '/property-dev', icon: Building2 },
     ],
   },
   // ── COMMUNICATION ──────────────────────────────────────────────────
@@ -210,7 +265,25 @@ const navGroups: NavGroup[] = [
       { labelKey: 'ncr.title', to: '/ncr', icon: AlertOctagon },
       { labelKey: 'safety.title', to: '/safety', icon: HardHat },
       { labelKey: 'nav.punchlist', to: '/punchlist', icon: ListChecks },
+      // 18-Modules Wave additions
+      { labelKey: 'nav.qms', to: '/qms', icon: BadgeCheck, advancedOnly: true },
+      { labelKey: 'nav.hse_advanced', to: '/hse-advanced', icon: Shield, advancedOnly: true },
+      { labelKey: 'nav.carbon', to: '/carbon', icon: Leaf, advancedOnly: true },
       // sustainability + cost-benchmark injected dynamically from module registry
+    ],
+  },
+  // ── ANALYTICS (18-Modules Wave) ────────────────────────────────────
+  // BI-style dashboards built on the warehouse projections — separate
+  // from the operational /dashboards snapshot view because these run
+  // against the OLAP path (pg_duckdb / projections), not the OLTP path.
+  {
+    id: 'bi',
+    labelKey: 'nav.group_bi',
+    descriptionKey: 'nav.group_bi_desc',
+    defaultOpen: false,
+    hideInSimple: true,
+    items: [
+      { labelKey: 'nav.bi_dashboards', to: '/bi-dashboards', icon: BarChart3, advancedOnly: true },
     ],
   },
   {

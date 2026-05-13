@@ -1,0 +1,29 @@
+"""HSE Advanced module permission definitions."""
+
+from app.core.permissions import Role, permission_registry
+
+
+def register_hse_advanced_permissions() -> None:
+    """Register permissions for the hse_advanced module."""
+    permission_registry.register_module_permissions(
+        "hse_advanced",
+        {
+            "hse_advanced.read": Role.VIEWER,
+            "hse_advanced.create": Role.EDITOR,
+            "hse_advanced.update": Role.EDITOR,
+            "hse_advanced.delete": Role.MANAGER,
+            "hse_advanced.approve_jsa": Role.MANAGER,
+            "hse_advanced.approve_permit": Role.MANAGER,
+            "hse_advanced.close_permit": Role.EDITOR,
+            "hse_advanced.conduct_audit": Role.EDITOR,
+            "hse_advanced.close_capa": Role.EDITOR,
+            "hse_advanced.escalate_capa": Role.MANAGER,
+            "hse_advanced.issue_ppe": Role.EDITOR,
+            "hse_advanced.jsa_template.read": Role.VIEWER,
+            "hse_advanced.jsa_template.write": Role.MANAGER,
+            "hse_advanced.jsa_template.delete": Role.MANAGER,
+            "hse_advanced.activate_permit": Role.EDITOR,
+            "hse_advanced.update_prereqs": Role.EDITOR,
+            "hse_advanced.verify_effectiveness": Role.MANAGER,
+        },
+    )

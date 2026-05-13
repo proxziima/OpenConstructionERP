@@ -1,0 +1,1106 @@
+import { useState, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import clsx from 'clsx';
+import {
+  HardHat,
+  Plus,
+  Search,
+  X,
+  Loader2,
+  Star,
+  FileText,
+  Award,
+  DollarSign,
+  ClipboardList,
+} from 'lucide-react';
+import {
+  Button,
+  Card,
+  Badge,
+  EmptyState,
+  Breadcrumb,
+  SkeletonTable,
+} from '@/shared/ui';
+import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
+import { DateDisplay } from '@/shared/ui/DateDisplay';
+import { useToastStore } from '@/stores/useToastStore';
+import { getErrorMessage } from '@/shared/lib/api';
+import {
+  listSubcontractors,
+  createSubcontractor,
+  listAgreements,
+  listWorkPackages,
+  listPaymentApplications,
+  listRetentionLedger,
+  listRatings,
+  listCertificates,
+  type Subcontractor,
+  type PrequalStatus,
+  type Agreement,
+  type AgreementStatus,
+  type PaymentApplication,
+  type PaymentApplicationStatus,
+} from './api';
+
+type DrawerTab = 'scope' | 'payments' | 'ratings' | 'retention';
+
+const PREQUAL_VARIANT: Record<PrequalStatus, 'neutral' | 'blue' | 'success' | 'warning' | 'error'> = {
+  pending: 'warning',
+  approved: 'success',
+  suspended: 'warning',
+  rejected: 'error',
+};
+
+const AGREEMENT_VARIANT: Record<
+  AgreementStatus,
+  'neutral' | 'blue' | 'success' | 'warning' | 'error'
+> = {
+  draft: 'neutral',
+  active: 'success',
+  completed: 'blue',
+  terminated: 'error',
+};
+
+const PAYMENT_VARIANT: Record<
+  PaymentApplicationStatus,
+  'neutral' | 'blue' | 'success' | 'warning' | 'error'
+> = {
+  submitted: 'blue',
+  foreman_approved: 'warning',
+  finance_approved: 'warning',
+  paid: 'success',
+  rejected: 'error',
+};
+
+const inputCls =
+  'h-9 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue';
+
+const labelCls = 'block text-xs font-medium text-content-secondary mb-1';
+
+function toNum(n: number | string | null | undefined): number {
+  if (n === null || n === undefined) return 0;
+  return typeof n === 'number' ? n : Number(n) || 0;
+}
+
+function RatingStars({ score }: { score: number | string }) {
+  const num = toNum(score);
+  // rating_score is 0..100; convert to 0..5
+  const stars = Math.round((num / 100) * 5);
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      {[1, 2, 3, 4, 5].map((i) => (
+        <Star
+          key={i}
+          size={12}
+          className={clsx(
+            i <= stars ? 'fill-oe-blue text-oe-blue' : 'text-content-tertiary',
+          )}
+        />
+      ))}
+      <span className="ml-1.5 text-xs text-content-secondary tabular-nums">
+        {num.toFixed(0)}
+      </span>
+    </span>
+  );
+}
+
+export function SubcontractorsPage() {
+  const { t } = useTranslation();
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+
+  const subsQ = useQuery({
+    queryKey: ['subcontractors', 'list'],
+    queryFn: () => listSubcontractors({ limit: 200 }),
+  });
+
+  const filtered = useMemo(() => {
+    const items = subsQ.data ?? [];
+    const s = search.toLowerCase();
+    return items.filter((it) => {
+      if (statusFilter && it.prequalification_status !== statusFilter) return false;
+      if (!s) return true;
+      return (
+        it.legal_name.toLowerCase().includes(s) ||
+        (it.trade_name || '').toLowerCase().includes(s) ||
+        (it.tax_id || '').toLowerCase().includes(s) ||
+        it.trade_categories.some((c) => c.toLowerCase().includes(s))
+      );
+    });
+  }, [subsQ.data, search, statusFilter]);
+
+  // For the "latest payment app" column we need a hint, but it would
+  // require N+1 queries. We skip it in the row and surface it inside
+  // the drawer instead.
+
+  return (
+    <div className="space-y-5">
+      <Breadcrumb
+        items={[
+          { label: t('subcontractors.title', { defaultValue: 'Subcontractors' }) },
+        ]}
+      />
+
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold text-content-primary">
+            {t('subcontractors.title', { defaultValue: 'Subcontractors' })}
+          </h1>
+          <p className="mt-1 text-sm text-content-secondary">
+            {t('subcontractors.subtitle', {
+              defaultValue:
+                'Manage subcontractor prequalifications, scopes, payments and ratings.',
+            })}
+          </p>
+        </div>
+        <Button
+          variant="primary"
+          icon={<Plus size={14} />}
+          onClick={() => setCreateOpen(true)}
+        >
+          {t('subcontractors.new', { defaultValue: 'New Subcontractor' })}
+        </Button>
+      </div>
+
+      {/* Tabs (single tab — left for layout parity with ServicePage) */}
+      <div className="border-b border-border-light">
+        <nav className="flex gap-1 -mb-px">
+          <button
+            type="button"
+            className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 border-oe-blue text-oe-blue"
+          >
+            <HardHat size={14} />
+            {t('subcontractors.tab_list', { defaultValue: 'Subcontractors' })}
+          </button>
+        </nav>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[200px] max-w-md">
+          <Search
+            size={14}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-content-tertiary"
+          />
+          <input
+            type="text"
+            placeholder={t('common.search', { defaultValue: 'Search…' })}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className={clsx(inputCls, 'pl-8')}
+          />
+        </div>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className={clsx(inputCls, 'max-w-[200px]')}
+        >
+          <option value="">
+            {t('common.all_statuses', { defaultValue: 'All statuses' })}
+          </option>
+          {(['pending', 'approved', 'suspended', 'rejected'] as PrequalStatus[]).map(
+            (s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ),
+          )}
+        </select>
+      </div>
+
+      {/* Body */}
+      <Card padding="none">
+        {subsQ.isLoading ? (
+          <div className="p-4">
+            <SkeletonTable rows={8} columns={5} />
+          </div>
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={<HardHat size={22} />}
+            title={t('subcontractors.empty', {
+              defaultValue: 'No subcontractors yet',
+            })}
+            description={t('subcontractors.empty_desc', {
+              defaultValue:
+                'Add subcontractors to track prequalification, scope, payments and performance.',
+            })}
+            action={{
+              label: t('subcontractors.new', { defaultValue: 'New Subcontractor' }),
+              onClick: () => setCreateOpen(true),
+            }}
+          />
+        ) : (
+          <SubcontractorTable rows={filtered} onSelect={setSelectedId} />
+        )}
+      </Card>
+
+      {selectedId && (
+        <DetailDrawer id={selectedId} onClose={() => setSelectedId(null)} />
+      )}
+
+      {createOpen && <CreateModal onClose={() => setCreateOpen(false)} />}
+    </div>
+  );
+}
+
+/* ─── Table ─── */
+
+function SubcontractorTable({
+  rows,
+  onSelect,
+}: {
+  rows: Subcontractor[];
+  onSelect: (id: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-secondary text-content-tertiary text-xs uppercase tracking-wide">
+          <tr>
+            <th className="px-4 py-2.5 text-left">
+              {t('subcontractors.col_name', { defaultValue: 'Name' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('subcontractors.col_trades', { defaultValue: 'Trades' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('subcontractors.col_status', { defaultValue: 'Status' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('subcontractors.col_rating', { defaultValue: 'Rating' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('subcontractors.col_country', { defaultValue: 'Country' })}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr
+              key={r.id}
+              onClick={() => onSelect(r.id)}
+              className="border-t border-border-light hover:bg-surface-secondary cursor-pointer"
+            >
+              <td className="px-4 py-2">
+                <div className="font-medium text-content-primary truncate max-w-[280px]">
+                  {r.legal_name}
+                </div>
+                {r.trade_name && (
+                  <div className="text-xs text-content-tertiary truncate max-w-[280px]">
+                    {r.trade_name}
+                  </div>
+                )}
+              </td>
+              <td className="px-4 py-2 text-xs text-content-secondary">
+                <div className="flex flex-wrap gap-1">
+                  {r.trade_categories.slice(0, 3).map((c) => (
+                    <span
+                      key={c}
+                      className="rounded bg-surface-secondary px-1.5 py-0.5"
+                    >
+                      {c}
+                    </span>
+                  ))}
+                  {r.trade_categories.length > 3 && (
+                    <span className="text-content-tertiary">
+                      +{r.trade_categories.length - 3}
+                    </span>
+                  )}
+                </div>
+              </td>
+              <td className="px-4 py-2">
+                <Badge variant={PREQUAL_VARIANT[r.prequalification_status]} dot>
+                  {r.prequalification_status}
+                </Badge>
+              </td>
+              <td className="px-4 py-2">
+                <RatingStars score={r.rating_score} />
+              </td>
+              <td className="px-4 py-2 text-content-secondary text-xs">
+                {r.country || '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ─── Detail Drawer ─── */
+
+function DetailDrawer({ id, onClose }: { id: string; onClose: () => void }) {
+  const { t } = useTranslation();
+  const [tab, setTab] = useState<DrawerTab>('scope');
+
+  const subQ = useQuery({
+    queryKey: ['subcontractors', 'detail', id],
+    queryFn: () =>
+      listSubcontractors({ limit: 200 }).then(
+        (rows) => rows.find((r) => r.id === id) ?? null,
+      ),
+  });
+  const sub = subQ.data;
+
+  const agreementsQ = useQuery({
+    queryKey: ['subcontractors', 'agreements', id],
+    queryFn: () => listAgreements({ subcontractor_id: id }),
+    enabled: !!id,
+  });
+
+  const ratingsQ = useQuery({
+    queryKey: ['subcontractors', 'ratings', id],
+    queryFn: () => listRatings(id),
+    enabled: !!id && tab === 'ratings',
+  });
+
+  const certsQ = useQuery({
+    queryKey: ['subcontractors', 'certificates', id],
+    queryFn: () => listCertificates(id),
+    enabled: !!id,
+  });
+
+  const agreements = agreementsQ.data ?? [];
+  const firstAgreement = agreements[0];
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/30" />
+      <div
+        className="relative h-full w-full max-w-2xl overflow-y-auto bg-surface-elevated shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-light bg-surface-elevated px-5 py-3">
+          <div>
+            <h2 className="text-base font-semibold">
+              {sub?.legal_name || t('common.loading', { defaultValue: 'Loading…' })}
+            </h2>
+            {sub?.trade_name && (
+              <p className="text-xs text-content-tertiary">{sub.trade_name}</p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 hover:bg-surface-secondary"
+            aria-label={t('common.close', { defaultValue: 'Close' })}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {sub && (
+          <>
+            <div className="grid grid-cols-2 gap-3 p-5 text-sm border-b border-border-light sm:grid-cols-4">
+              <KV
+                label={t('subcontractors.col_status', { defaultValue: 'Status' })}
+                value={
+                  <Badge variant={PREQUAL_VARIANT[sub.prequalification_status]} dot>
+                    {sub.prequalification_status}
+                  </Badge>
+                }
+              />
+              <KV
+                label={t('subcontractors.col_rating', { defaultValue: 'Rating' })}
+                value={<RatingStars score={sub.rating_score} />}
+              />
+              <KV
+                label={t('subcontractors.col_country', { defaultValue: 'Country' })}
+                value={sub.country || '—'}
+              />
+              <KV
+                label={t('subcontractors.tax_id', { defaultValue: 'Tax ID' })}
+                value={sub.tax_id || '—'}
+              />
+            </div>
+
+            <div className="border-b border-border-light px-5">
+              <nav className="flex gap-1 -mb-px">
+                {(
+                  [
+                    {
+                      id: 'scope',
+                      label: t('subcontractors.tab_scope', { defaultValue: 'Scope' }),
+                      icon: ClipboardList,
+                    },
+                    {
+                      id: 'payments',
+                      label: t('subcontractors.tab_payments', {
+                        defaultValue: 'Payments',
+                      }),
+                      icon: DollarSign,
+                    },
+                    {
+                      id: 'ratings',
+                      label: t('subcontractors.tab_ratings', {
+                        defaultValue: 'Ratings',
+                      }),
+                      icon: Star,
+                    },
+                    {
+                      id: 'retention',
+                      label: t('subcontractors.tab_retention', {
+                        defaultValue: 'Retention',
+                      }),
+                      icon: Award,
+                    },
+                  ] as { id: DrawerTab; label: string; icon: React.ElementType }[]
+                ).map((ti) => {
+                  const Icon = ti.icon;
+                  return (
+                    <button
+                      key={ti.id}
+                      type="button"
+                      onClick={() => setTab(ti.id)}
+                      className={clsx(
+                        'flex items-center gap-2 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors',
+                        tab === ti.id
+                          ? 'border-oe-blue text-oe-blue'
+                          : 'border-transparent text-content-secondary hover:text-content-primary',
+                      )}
+                    >
+                      <Icon size={12} />
+                      {ti.label}
+                    </button>
+                  );
+                })}
+              </nav>
+            </div>
+
+            <div className="p-5 space-y-3">
+              {tab === 'scope' && (
+                <ScopeTab agreements={agreements} loading={agreementsQ.isLoading} />
+              )}
+              {tab === 'payments' && (
+                <PaymentsTab
+                  agreement={firstAgreement}
+                  agreements={agreements}
+                />
+              )}
+              {tab === 'ratings' && (
+                <RatingsTab
+                  data={ratingsQ.data ?? []}
+                  loading={ratingsQ.isLoading}
+                />
+              )}
+              {tab === 'retention' && (
+                <RetentionTab
+                  agreement={firstAgreement}
+                  agreements={agreements}
+                />
+              )}
+            </div>
+
+            {/* Certificates summary always visible at the bottom */}
+            {(certsQ.data?.length ?? 0) > 0 && (
+              <div className="border-t border-border-light px-5 py-4">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-content-secondary">
+                  {t('subcontractors.certificates', {
+                    defaultValue: 'Certificates',
+                  })}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {(certsQ.data ?? []).map((c) => (
+                    <Badge
+                      key={c.id}
+                      variant={
+                        c.revoked
+                          ? 'error'
+                          : c.valid_until && c.valid_until < new Date().toISOString().slice(0, 10)
+                            ? 'warning'
+                            : 'success'
+                      }
+                    >
+                      {c.cert_type}
+                      {c.valid_until ? ` · ${c.valid_until}` : ''}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScopeTab({
+  agreements,
+  loading,
+}: {
+  agreements: Agreement[];
+  loading: boolean;
+}) {
+  const { t } = useTranslation();
+  if (loading) return <SkeletonTable rows={3} columns={4} />;
+  if (agreements.length === 0) {
+    return (
+      <EmptyState
+        icon={<FileText size={20} />}
+        title={t('subcontractors.no_agreements', {
+          defaultValue: 'No agreements yet',
+        })}
+        description={t('subcontractors.no_agreements_desc', {
+          defaultValue: 'Subcontract agreements link this vendor to specific projects.',
+        })}
+      />
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {agreements.map((a) => (
+        <AgreementRow key={a.id} agreement={a} />
+      ))}
+    </div>
+  );
+}
+
+function AgreementRow({ agreement }: { agreement: Agreement }) {
+  const { t } = useTranslation();
+  const wpQ = useQuery({
+    queryKey: ['subcontractors', 'workPackages', agreement.id],
+    queryFn: () => listWorkPackages(agreement.id),
+  });
+  const packages = wpQ.data ?? [];
+
+  return (
+    <Card padding="sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-content-primary truncate">{agreement.title}</p>
+          <p className="mt-0.5 text-xs text-content-tertiary">
+            {agreement.start_date || '—'} → {agreement.end_date || '—'}
+          </p>
+        </div>
+        <Badge variant={AGREEMENT_VARIANT[agreement.status]} dot>
+          {agreement.status}
+        </Badge>
+      </div>
+      <div className="mt-2 flex items-center justify-between text-xs text-content-secondary">
+        <span>
+          {t('subcontractors.retention', { defaultValue: 'Retention' })}:{' '}
+          {toNum(agreement.retention_percent).toFixed(1)}%
+        </span>
+        <span className="font-medium text-content-primary">
+          <MoneyDisplay
+            amount={toNum(agreement.total_value)}
+            currency={agreement.currency || 'EUR'}
+          />
+        </span>
+      </div>
+      {packages.length > 0 && (
+        <div className="mt-3 border-t border-border-light pt-3 space-y-1.5">
+          {packages.map((wp) => (
+            <div
+              key={wp.id}
+              className="flex items-center justify-between text-xs text-content-secondary"
+            >
+              <span className="truncate">{wp.name}</span>
+              <span className="ml-2 tabular-nums">
+                {toNum(wp.completion_percent).toFixed(0)}%
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function PaymentsTab({
+  agreement,
+  agreements,
+}: {
+  agreement: Agreement | undefined;
+  agreements: Agreement[];
+}) {
+  const { t } = useTranslation();
+  const [agreementId, setAgreementId] = useState(agreement?.id ?? '');
+  const effectiveId = agreementId || agreement?.id || '';
+
+  const paymentsQ = useQuery({
+    queryKey: ['subcontractors', 'payments', effectiveId],
+    queryFn: () => listPaymentApplications({ agreement_id: effectiveId }),
+    enabled: !!effectiveId,
+  });
+
+  if (agreements.length === 0) {
+    return (
+      <EmptyState
+        icon={<DollarSign size={20} />}
+        title={t('subcontractors.no_payments', { defaultValue: 'No payments yet' })}
+        description={t('subcontractors.no_payments_desc', {
+          defaultValue: 'Create an agreement first to track payment applications.',
+        })}
+      />
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <select
+        value={effectiveId}
+        onChange={(e) => setAgreementId(e.target.value)}
+        className={inputCls}
+      >
+        {agreements.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.title}
+          </option>
+        ))}
+      </select>
+      {paymentsQ.isLoading && <SkeletonTable rows={3} columns={3} />}
+      {paymentsQ.data && paymentsQ.data.length === 0 && (
+        <p className="text-sm text-content-tertiary">
+          {t('subcontractors.no_payment_apps', {
+            defaultValue: 'No payment applications under this agreement.',
+          })}
+        </p>
+      )}
+      {paymentsQ.data && paymentsQ.data.length > 0 && (
+        <PaymentList rows={paymentsQ.data} />
+      )}
+    </div>
+  );
+}
+
+function PaymentList({ rows }: { rows: PaymentApplication[] }) {
+  const { t } = useTranslation();
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border-light">
+      <table className="w-full text-xs">
+        <thead className="bg-surface-secondary text-content-tertiary uppercase tracking-wide">
+          <tr>
+            <th className="px-3 py-2 text-left">
+              {t('subcontractors.payment_no', { defaultValue: 'App #' })}
+            </th>
+            <th className="px-3 py-2 text-left">
+              {t('subcontractors.period', { defaultValue: 'Period' })}
+            </th>
+            <th className="px-3 py-2 text-right">
+              {t('subcontractors.gross', { defaultValue: 'Gross' })}
+            </th>
+            <th className="px-3 py-2 text-right">
+              {t('subcontractors.net', { defaultValue: 'Net' })}
+            </th>
+            <th className="px-3 py-2 text-left">
+              {t('subcontractors.col_status', { defaultValue: 'Status' })}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((p) => (
+            <tr key={p.id} className="border-t border-border-light">
+              <td className="px-3 py-2 font-mono">{p.application_number}</td>
+              <td className="px-3 py-2 text-content-secondary">
+                {p.period_start || '—'} → {p.period_end || '—'}
+              </td>
+              <td className="px-3 py-2 text-right">
+                <MoneyDisplay
+                  amount={toNum(p.gross_amount)}
+                  currency={p.currency || 'EUR'}
+                />
+              </td>
+              <td className="px-3 py-2 text-right font-medium">
+                <MoneyDisplay
+                  amount={toNum(p.net_amount)}
+                  currency={p.currency || 'EUR'}
+                />
+              </td>
+              <td className="px-3 py-2">
+                <Badge variant={PAYMENT_VARIANT[p.status]} dot>
+                  {p.status}
+                </Badge>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RatingsTab({
+  data,
+  loading,
+}: {
+  data: { id: string; period: string; overall_score: number | string; quality_score: number | string; hse_score: number | string; schedule_score: number | string; cost_score: number | string }[];
+  loading: boolean;
+}) {
+  const { t } = useTranslation();
+  if (loading) return <SkeletonTable rows={4} columns={5} />;
+  if (data.length === 0) {
+    return (
+      <EmptyState
+        icon={<Star size={20} />}
+        title={t('subcontractors.no_ratings', { defaultValue: 'No ratings yet' })}
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border-light">
+      <table className="w-full text-xs">
+        <thead className="bg-surface-secondary text-content-tertiary uppercase tracking-wide">
+          <tr>
+            <th className="px-3 py-2 text-left">
+              {t('subcontractors.period', { defaultValue: 'Period' })}
+            </th>
+            <th className="px-3 py-2 text-right">
+              {t('subcontractors.quality', { defaultValue: 'Quality' })}
+            </th>
+            <th className="px-3 py-2 text-right">
+              {t('subcontractors.hse', { defaultValue: 'HSE' })}
+            </th>
+            <th className="px-3 py-2 text-right">
+              {t('subcontractors.schedule', { defaultValue: 'Schedule' })}
+            </th>
+            <th className="px-3 py-2 text-right">
+              {t('subcontractors.cost', { defaultValue: 'Cost' })}
+            </th>
+            <th className="px-3 py-2 text-right">
+              {t('subcontractors.overall', { defaultValue: 'Overall' })}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((r) => (
+            <tr key={r.id} className="border-t border-border-light">
+              <td className="px-3 py-2 font-mono">{r.period}</td>
+              <td className="px-3 py-2 text-right tabular-nums">
+                {toNum(r.quality_score).toFixed(0)}
+              </td>
+              <td className="px-3 py-2 text-right tabular-nums">
+                {toNum(r.hse_score).toFixed(0)}
+              </td>
+              <td className="px-3 py-2 text-right tabular-nums">
+                {toNum(r.schedule_score).toFixed(0)}
+              </td>
+              <td className="px-3 py-2 text-right tabular-nums">
+                {toNum(r.cost_score).toFixed(0)}
+              </td>
+              <td className="px-3 py-2 text-right font-semibold tabular-nums">
+                {toNum(r.overall_score).toFixed(0)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RetentionTab({
+  agreement,
+  agreements,
+}: {
+  agreement: Agreement | undefined;
+  agreements: Agreement[];
+}) {
+  const { t } = useTranslation();
+  const [agreementId, setAgreementId] = useState(agreement?.id ?? '');
+  const effectiveId = agreementId || agreement?.id || '';
+
+  const ledgerQ = useQuery({
+    queryKey: ['subcontractors', 'retention', effectiveId],
+    queryFn: () => listRetentionLedger(effectiveId),
+    enabled: !!effectiveId,
+  });
+
+  if (agreements.length === 0) {
+    return (
+      <EmptyState
+        icon={<Award size={20} />}
+        title={t('subcontractors.no_retention', {
+          defaultValue: 'No retention ledger',
+        })}
+      />
+    );
+  }
+
+  const entries = ledgerQ.data ?? [];
+  const accrued = entries.reduce((s, e) => s + toNum(e.accrued_amount), 0);
+  const released = entries.reduce((s, e) => s + toNum(e.released_amount), 0);
+  const balance = accrued - released;
+  const currency = agreements.find((a) => a.id === effectiveId)?.currency || 'EUR';
+
+  return (
+    <div className="space-y-3">
+      <select
+        value={effectiveId}
+        onChange={(e) => setAgreementId(e.target.value)}
+        className={inputCls}
+      >
+        {agreements.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.title}
+          </option>
+        ))}
+      </select>
+      <div className="grid grid-cols-3 gap-2">
+        <Card padding="sm">
+          <p className="text-xs text-content-tertiary">
+            {t('subcontractors.accrued', { defaultValue: 'Accrued' })}
+          </p>
+          <p className="mt-1 text-sm font-semibold">
+            <MoneyDisplay amount={accrued} currency={currency} />
+          </p>
+        </Card>
+        <Card padding="sm">
+          <p className="text-xs text-content-tertiary">
+            {t('subcontractors.released', { defaultValue: 'Released' })}
+          </p>
+          <p className="mt-1 text-sm font-semibold">
+            <MoneyDisplay amount={released} currency={currency} />
+          </p>
+        </Card>
+        <Card padding="sm">
+          <p className="text-xs text-content-tertiary">
+            {t('subcontractors.balance', { defaultValue: 'Balance' })}
+          </p>
+          <p className="mt-1 text-sm font-semibold">
+            <MoneyDisplay amount={balance} currency={currency} />
+          </p>
+        </Card>
+      </div>
+      {ledgerQ.isLoading && <SkeletonTable rows={3} columns={3} />}
+      {entries.length === 0 && !ledgerQ.isLoading && (
+        <p className="text-xs text-content-tertiary">
+          {t('subcontractors.no_retention_entries', {
+            defaultValue: 'No retention ledger entries yet.',
+          })}
+        </p>
+      )}
+      {entries.length > 0 && (
+        <div className="overflow-x-auto rounded-lg border border-border-light">
+          <table className="w-full text-xs">
+            <thead className="bg-surface-secondary text-content-tertiary uppercase tracking-wide">
+              <tr>
+                <th className="px-3 py-2 text-left">
+                  {t('subcontractors.released_at', { defaultValue: 'Released at' })}
+                </th>
+                <th className="px-3 py-2 text-right">
+                  {t('subcontractors.accrued', { defaultValue: 'Accrued' })}
+                </th>
+                <th className="px-3 py-2 text-right">
+                  {t('subcontractors.released', { defaultValue: 'Released' })}
+                </th>
+                <th className="px-3 py-2 text-left">
+                  {t('subcontractors.reason', { defaultValue: 'Reason' })}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((e) => (
+                <tr key={e.id} className="border-t border-border-light">
+                  <td className="px-3 py-2 text-content-secondary">
+                    {e.released_at ? <DateDisplay value={e.released_at} /> : '—'}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    <MoneyDisplay
+                      amount={toNum(e.accrued_amount)}
+                      currency={currency}
+                    />
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    <MoneyDisplay
+                      amount={toNum(e.released_amount)}
+                      currency={currency}
+                    />
+                  </td>
+                  <td className="px-3 py-2 text-content-secondary">
+                    {e.release_reason || '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KV({ label, value }: { label: React.ReactNode; value: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wide text-content-tertiary">
+        {label}
+      </p>
+      <p className="mt-0.5 text-sm text-content-primary">{value}</p>
+    </div>
+  );
+}
+
+/* ─── Create modal ─── */
+
+function CreateModal({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
+  const [busy, setBusy] = useState(false);
+
+  const [form, setForm] = useState({
+    legal_name: '',
+    trade_name: '',
+    tax_id: '',
+    trade_categories: '',
+    country: '',
+    notes: '',
+  });
+
+  const submit = async () => {
+    if (!form.legal_name.trim()) {
+      addToast({
+        type: 'error',
+        title: t('subcontractors.legal_name_required', {
+          defaultValue: 'Legal name is required',
+        }),
+      });
+      return;
+    }
+    setBusy(true);
+    try {
+      await createSubcontractor({
+        legal_name: form.legal_name.trim(),
+        trade_name: form.trade_name.trim() || undefined,
+        tax_id: form.tax_id.trim() || undefined,
+        country: form.country.trim() || undefined,
+        notes: form.notes.trim() || undefined,
+        trade_categories: form.trade_categories
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      });
+      addToast({
+        type: 'success',
+        title: t('subcontractors.created', {
+          defaultValue: 'Subcontractor created',
+        }),
+      });
+      qc.invalidateQueries({ queryKey: ['subcontractors'] });
+      onClose();
+    } catch (err) {
+      addToast({ type: 'error', title: getErrorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-black/40" />
+      <div
+        className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl bg-surface-elevated p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold">
+            {t('subcontractors.new', { defaultValue: 'New Subcontractor' })}
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 hover:bg-surface-secondary"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className={labelCls}>
+              {t('subcontractors.legal_name', { defaultValue: 'Legal name' })} *
+            </label>
+            <input
+              value={form.legal_name}
+              onChange={(e) => setForm({ ...form, legal_name: e.target.value })}
+              className={inputCls}
+            />
+          </div>
+          <div>
+            <label className={labelCls}>
+              {t('subcontractors.trade_name', { defaultValue: 'Trade name' })}
+            </label>
+            <input
+              value={form.trade_name}
+              onChange={(e) => setForm({ ...form, trade_name: e.target.value })}
+              className={inputCls}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>
+                {t('subcontractors.tax_id', { defaultValue: 'Tax ID' })}
+              </label>
+              <input
+                value={form.tax_id}
+                onChange={(e) => setForm({ ...form, tax_id: e.target.value })}
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label className={labelCls}>
+                {t('subcontractors.country_iso', {
+                  defaultValue: 'Country (ISO-2)',
+                })}
+              </label>
+              <input
+                value={form.country}
+                onChange={(e) => setForm({ ...form, country: e.target.value })}
+                className={inputCls}
+                maxLength={2}
+              />
+            </div>
+          </div>
+          <div>
+            <label className={labelCls}>
+              {t('subcontractors.trade_categories', {
+                defaultValue: 'Trade categories (comma-separated)',
+              })}
+            </label>
+            <input
+              value={form.trade_categories}
+              onChange={(e) =>
+                setForm({ ...form, trade_categories: e.target.value })
+              }
+              className={inputCls}
+              placeholder="concrete, steel, mep"
+            />
+          </div>
+          <div>
+            <label className={labelCls}>
+              {t('subcontractors.notes', { defaultValue: 'Notes' })}
+            </label>
+            <textarea
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              rows={3}
+              className={clsx(inputCls, 'h-auto py-2')}
+            />
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5">
+          <Button variant="ghost" onClick={onClose}>
+            {t('common.cancel', { defaultValue: 'Cancel' })}
+          </Button>
+          <Button
+            variant="primary"
+            onClick={submit}
+            loading={busy}
+            icon={busy ? <Loader2 size={14} /> : <Plus size={14} />}
+          >
+            {t('common.create', { defaultValue: 'Create' })}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}

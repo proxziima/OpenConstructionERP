@@ -5,6 +5,36 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] — 2026-05-13 · 18-Modules Wave + deep stability
+
+### Added — 17 new business modules (88 total)
+
+**Field Operations** — Service & Maintenance · Equipment & Fleet · Daily Diary · Subcontractor Portal · Resources & Crew
+**Commercial** — CRM · Contracts (FIDIC / JCT / NEC4 / AIA) · Subcontractor Management · Bid Management · Variations (VO register) · Supplier Catalogs · Property Development
+**Schedule & Quality** — Advanced Schedule (Last Planner / CPM Kahn topo-sort) · Quality Management (ISO 9001:2015) · HSE Management (ISO 45001 / OSHA 1904.39 / RIDDOR / DGUV) · Carbon & ESG (EN 15978 LCA · GHG Protocol Scope 1/2/3) · BI Dashboards (warehouse-projected)
+
+### Stability — India scenario findings actioned
+
+- **DWG / DXF**: ezdxf 1.4.x layer-visibility regression fixed (every fresh-install layer was being marked invisible due to bound-method truthiness)
+- **PDF takeoff**: Devanagari / Tamil / Telugu / Arabic / Chinese / French / German / Spanish OCR by default; lakh-crore (`1,00,000`) numeral parser; scanned-PDF fallback
+- **CRS auto-detect**: India UTM 42-46N + 16 other region groups worldwide (Germany Gauss-Krüger + UTM 32/33, UK BNG, France Lambert-93, Switzerland LV95, Austria MGI, Netherlands RD, US State Plane + UTM 10-19N, UAE/KSA UTM 38-40N, Japan JGD2011, Brazil SIRGAS, China CGCS2000)
+- **File-size limits removed across all uploads** (env override remains for tenant policy); streaming upload + background-job migration
+- **Qdrant without Docker**: native binary auto-install from official GitHub Releases, supervised by `qdrant_supervisor.py` with one-click install card on `/match-elements`
+
+### Security
+
+- `Settings` model now refuses to start in non-development environments when `JWT_SECRET` is still the bundled `openestimate-local-dev-key` default — fail-fast at boot with a clear remediation message (set `OE_JWT_SECRET` to `secrets.token_urlsafe(32)`)
+- 230 IDOR endpoints hardened across service / subcontractors / contracts / bid_management / schedule_advanced / bi_dashboards via `verify_project_access`
+
+### Cross-module integration
+
+- 37 cross-module event subscribers (`_wave5_cross_module_subscribers.py`) wire QMS NCRs to procurement supplier rating, HSE incidents to contract risk register, carbon entries to BI projections, daily diary to schedule actuals, etc.
+- 14 alembic migrations (v3010 → v3031) with parallel-wave merge head (v3032)
+
+### Internationalisation
+
+- 18 new nav keys translated across 25 non-EN locales (industry terminology preserved — Last Planner kept as proper noun, BI/ESG acronyms unchanged)
+
 ## [3.0.0] — 2026-05-12 · v3 milestone
 
 Consolidates the entire v2.x line (100+ patch releases between 2026-04-20 and 2026-05-12) into a stable v3.0.0 milestone. Same codebase as v2.9.42 — new version label, refreshed metadata, framed as the v3 release.

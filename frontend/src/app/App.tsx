@@ -181,6 +181,60 @@ const StylesLabPage = lazy(() =>
   import('@/features/styles-lab/StylesLabPage').then((m) => ({ default: m.StylesLabPage }))
 );
 
+// 18-Modules Wave — Field Operations / Commercial / Schedule & Quality.
+// Each module is its own lazy chunk so the boot bundle stays small.
+const ServicePage = lazy(() =>
+  import('@/features/service').then((m) => ({ default: m.ServicePage }))
+);
+const SubcontractorsPage = lazy(() =>
+  import('@/features/subcontractors').then((m) => ({ default: m.SubcontractorsPage }))
+);
+const EquipmentPage = lazy(() =>
+  import('@/features/equipment').then((m) => ({ default: m.EquipmentPage }))
+);
+const PortalPage = lazy(() =>
+  import('@/features/portal').then((m) => ({ default: m.PortalPage }))
+);
+const ResourcesPage = lazy(() =>
+  import('@/features/resources').then((m) => ({ default: m.ResourcesPage }))
+);
+const ContractsPage = lazy(() =>
+  import('@/features/contracts').then((m) => ({ default: m.ContractsPage }))
+);
+const CRMPage = lazy(() =>
+  import('@/features/crm').then((m) => ({ default: m.CRMPage }))
+);
+const CarbonPage = lazy(() =>
+  import('@/features/carbon').then((m) => ({ default: m.CarbonPage }))
+);
+const PropertyDevPage = lazy(() =>
+  import('@/features/property-dev').then((m) => ({ default: m.PropertyDevPage }))
+);
+const BidManagementPage = lazy(() =>
+  import('@/features/bid-management').then((m) => ({ default: m.BidManagementPage }))
+);
+const VariationsPage = lazy(() =>
+  import('@/features/variations').then((m) => ({ default: m.VariationsPage }))
+);
+const ScheduleAdvancedPage = lazy(() =>
+  import('@/features/schedule-advanced').then((m) => ({ default: m.ScheduleAdvancedPage }))
+);
+const HSEAdvancedPage = lazy(() =>
+  import('@/features/hse-advanced').then((m) => ({ default: m.HSEAdvancedPage }))
+);
+const DailyDiaryPage = lazy(() =>
+  import('@/features/daily-diary').then((m) => ({ default: m.DailyDiaryPage }))
+);
+const QMSPage = lazy(() =>
+  import('@/features/qms').then((m) => ({ default: m.QMSPage }))
+);
+const SupplierCatalogsPage = lazy(() =>
+  import('@/features/supplier-catalogs').then((m) => ({ default: m.SupplierCatalogsPage }))
+);
+const BIDashboardsPage = lazy(() =>
+  import('@/features/bi-dashboards').then((m) => ({ default: m.BIDashboardsPage }))
+);
+
 function LoadingScreen() {
   return (
     <div className="flex h-screen items-center justify-center bg-surface-secondary">
@@ -520,11 +574,50 @@ export default function App() {
         {/* Styles Lab — design exploration, internal */}
         <Route path="/styles-lab" element={<P title="Styles Lab"><StylesLabPage /></P>} />
 
+        {/* 18-Modules Wave — Field Operations */}
+        <Route path="/service" element={<P title="Service & Maintenance"><ServicePage /></P>} />
+        <Route path="/projects/:projectId/service" element={<P title="Service & Maintenance"><ServicePage /></P>} />
+        <Route path="/equipment" element={<P title="Equipment & Fleet"><EquipmentPage /></P>} />
+        <Route path="/projects/:projectId/equipment" element={<P title="Equipment & Fleet"><EquipmentPage /></P>} />
+        <Route path="/daily-diary" element={<P title="Daily Diary"><DailyDiaryPage /></P>} />
+        <Route path="/projects/:projectId/daily-diary" element={<P title="Daily Diary"><DailyDiaryPage /></P>} />
+        <Route path="/portal" element={<P title="Subcontractor Portal"><PortalPage /></P>} />
+        <Route path="/projects/:projectId/portal" element={<P title="Subcontractor Portal"><PortalPage /></P>} />
+        <Route path="/resources" element={<P title="Resources & Crew"><ResourcesPage /></P>} />
+        <Route path="/projects/:projectId/resources" element={<P title="Resources & Crew"><ResourcesPage /></P>} />
+
+        {/* 18-Modules Wave — Commercial */}
+        <Route path="/contracts" element={<P title="Contracts"><ContractsPage /></P>} />
+        <Route path="/projects/:projectId/contracts" element={<P title="Contracts"><ContractsPage /></P>} />
+        <Route path="/subcontractors" element={<P title="Subcontractors"><SubcontractorsPage /></P>} />
+        <Route path="/projects/:projectId/subcontractors" element={<P title="Subcontractors"><SubcontractorsPage /></P>} />
+        <Route path="/bid-management" element={<P title="Bid Management"><BidManagementPage /></P>} />
+        <Route path="/projects/:projectId/bid-management" element={<P title="Bid Management"><BidManagementPage /></P>} />
+        <Route path="/crm" element={<P title="CRM"><CRMPage /></P>} />
+        <Route path="/property-dev" element={<P title="Property Development"><PropertyDevPage /></P>} />
+        <Route path="/supplier-catalogs" element={<P title="Supplier Catalogs"><SupplierCatalogsPage /></P>} />
+
+        {/* 18-Modules Wave — Schedule & Quality */}
+        <Route path="/schedule-advanced" element={<P title="Advanced Schedule"><ScheduleAdvancedPage /></P>} />
+        <Route path="/projects/:projectId/schedule-advanced" element={<P title="Advanced Schedule"><ScheduleAdvancedPage /></P>} />
+        <Route path="/qms" element={<P title="Quality Management"><QMSPage /></P>} />
+        <Route path="/projects/:projectId/qms" element={<P title="Quality Management"><QMSPage /></P>} />
+        <Route path="/hse-advanced" element={<P title="HSE Management"><HSEAdvancedPage /></P>} />
+        <Route path="/projects/:projectId/hse-advanced" element={<P title="HSE Management"><HSEAdvancedPage /></P>} />
+        <Route path="/carbon" element={<P title="Carbon & ESG"><CarbonPage /></P>} />
+        <Route path="/projects/:projectId/carbon" element={<P title="Carbon & ESG"><CarbonPage /></P>} />
+        <Route path="/bi-dashboards" element={<P title="BI Dashboards"><BIDashboardsPage /></P>} />
+        <Route path="/projects/:projectId/bi-dashboards" element={<P title="BI Dashboards"><BIDashboardsPage /></P>} />
+
         {/* Convenience route aliases — redirect to canonical paths */}
         <Route path="/dashboard" element={<Navigate to="/" replace />} />
         <Route path="/change-orders" element={<Navigate to="/changeorders" replace />} />
         <Route path="/punch-list" element={<Navigate to="/punchlist" replace />} />
-        <Route path="/variations" element={<Navigate to="/changeorders" replace />} />
+        {/* Variations (FIDIC/JCT VOs) — distinct from generic change-orders;
+            its own register tracks contractual variation instructions with
+            day-works, instructions, time-impact analysis. */}
+        <Route path="/variations" element={<P title="Variations"><VariationsPage /></P>} />
+        <Route path="/projects/:projectId/variations" element={<P title="Variations"><VariationsPage /></P>} />
         <Route path="/estimates" element={<Navigate to="/boq" replace />} />
         <Route path="/profile" element={<Navigate to="/settings" replace />} />
         <Route path="/notifications" element={<P title="Notifications"><NotificationsPage /></P>} />

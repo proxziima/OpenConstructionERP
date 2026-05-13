@@ -1,0 +1,716 @@
+# DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
+"""FastAPI router for the BI Dashboards module.
+
+Mounted by the module loader at ``/api/v1/bi-dashboards/``.
+
+Security model (v3.0.x IDOR sweep):
+
+* **KPI endpoints** (compute / history / drill-down): if a ``project_id``
+  is supplied in the body or query, the caller must own that project
+  (``verify_project_access``). Project-less calls are tenant-wide and
+  remain gated only by ``RequirePermission``.
+* **Dashboards / Widgets / Reports / Schedules / Saved Filters**: these
+  are *not* project-scoped — they belong to a single user
+  (``owner_user_id``). We enforce ownership inline: load the object,
+  compare ``owner_user_id`` to the current user, raise 404 on mismatch
+  (404 not 403 to avoid leaking existence). Widgets and schedules
+  inherit ownership from their parent (dashboard / report).
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
+
+from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
+from app.modules.bi_dashboards.models import (
+    Dashboard,
+    DashboardWidget,
+    ReportDefinition,
+    ReportSchedule,
+)
+from app.modules.bi_dashboards.schemas import (
+    AlertRuleCreate,
+    AlertRuleRead,
+    AlertRuleUpdate,
+    DashboardCreate,
+    DashboardRead,
+    DashboardRenderResponse,
+    DashboardUpdate,
+    DrillDownRequest,
+    DrillDownResponse,
+    KPIComputeRequest,
+    KPIComputeResponse,
+    KPIDefinitionRead,
+    KPIHistoryResponse,
+    ReportDefinitionCreate,
+    ReportDefinitionRead,
+    ReportDefinitionUpdate,
+    ReportRunResponse,
+    ReportScheduleCreate,
+    ReportScheduleRead,
+    ReportScheduleUpdate,
+    SavedFilterCreate,
+    SavedFilterRead,
+    SavedFilterShareRequest,
+    WidgetCreate,
+    WidgetRead,
+    WidgetUpdate,
+)
+from app.modules.bi_dashboards.service import BIDashboardsService
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+def _service(session: SessionDep) -> BIDashboardsService:
+    return BIDashboardsService(session)
+
+
+def _user_uuid(user_id: str) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(user_id))
+    except Exception:
+        return None
+
+
+def _not_found(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+
+# ── Ownership helpers ─────────────────────────────────────────────────
+
+
+async def _is_admin(user_id: str, session: SessionDep) -> bool:
+    """Return True if the supplied user is an active admin.
+
+    Mirrors :func:`app.dependencies.verify_project_access`'s admin
+    bypass logic so admins keep their cross-tenant superpowers for
+    BI assets too.
+    """
+    try:
+        from app.modules.users.repository import UserRepository
+
+        repo = UserRepository(session)
+        user = await repo.get_by_id(uuid.UUID(str(user_id)))
+        return bool(user is not None and getattr(user, "role", "") == "admin")
+    except Exception:
+        logger.exception("admin lookup failed in bi_dashboards ownership check")
+        return False
+
+
+async def _ensure_dashboard_owner(
+    dashboard_id: uuid.UUID,
+    user_id: str,
+    session: SessionDep,
+) -> Dashboard:
+    """Load a dashboard and require the caller is its owner (or admin).
+
+    Returns the dashboard for downstream use. Raises 404 on miss or
+    ownership mismatch to avoid leaking dashboard UUIDs across tenants.
+    Global/role-scoped dashboards (``scope in ('global', 'role')``) are
+    treated as public-read but still ownership-gated for mutations —
+    enforcement of read-vs-write semantics lives at the handler level.
+    """
+    dashboard = await session.get(Dashboard, dashboard_id)
+    if dashboard is None:
+        raise _not_found("Dashboard not found")
+    caller = _user_uuid(user_id)
+    if dashboard.owner_user_id is not None and dashboard.owner_user_id == caller:
+        return dashboard
+    if await _is_admin(user_id, session):
+        return dashboard
+    raise _not_found("Dashboard not found")
+
+
+async def _ensure_widget_owner(
+    widget_id: uuid.UUID,
+    user_id: str,
+    session: SessionDep,
+) -> DashboardWidget:
+    """Load a widget and verify the caller owns its parent dashboard."""
+    widget = await session.get(DashboardWidget, widget_id)
+    if widget is None:
+        raise _not_found("Widget not found")
+    await _ensure_dashboard_owner(widget.dashboard_id, user_id, session)
+    return widget
+
+
+async def _ensure_report_owner(
+    report_id: uuid.UUID,
+    user_id: str,
+    session: SessionDep,
+) -> ReportDefinition:
+    """Load a report definition and require ownership (or admin)."""
+    report = await session.get(ReportDefinition, report_id)
+    if report is None:
+        raise _not_found("Report not found")
+    caller = _user_uuid(user_id)
+    if report.owner_user_id is not None and report.owner_user_id == caller:
+        return report
+    if await _is_admin(user_id, session):
+        return report
+    raise _not_found("Report not found")
+
+
+async def _ensure_schedule_owner(
+    schedule_id: uuid.UUID,
+    user_id: str,
+    session: SessionDep,
+) -> ReportSchedule:
+    """Load a schedule and verify the caller owns the parent report."""
+    schedule = await session.get(ReportSchedule, schedule_id)
+    if schedule is None:
+        raise _not_found("Schedule not found")
+    await _ensure_report_owner(schedule.report_definition_id, user_id, session)
+    return schedule
+
+
+# ── KPI ────────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/kpis",
+    response_model=list[KPIDefinitionRead],
+    dependencies=[Depends(RequirePermission("bi.kpi.read"))],
+)
+async def list_kpis(
+    user_id: CurrentUserId,  # noqa: ARG001 — auth-only
+    service: BIDashboardsService = Depends(_service),
+    category: str | None = Query(default=None),
+) -> list[KPIDefinitionRead]:
+    rows = await service.list_kpi_definitions(category=category)
+    return [KPIDefinitionRead.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/kpis/{code}/compute",
+    response_model=KPIComputeResponse,
+    dependencies=[Depends(RequirePermission("bi.kpi.compute"))],
+)
+async def compute_kpi(
+    code: str,
+    payload: KPIComputeRequest,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> KPIComputeResponse:
+    # IDOR guard — if the caller asks for a project-scoped computation,
+    # verify they own that project. Project-less calls remain tenant-wide.
+    if payload.project_id is not None:
+        await verify_project_access(payload.project_id, user_id, session)
+    return await service.compute_kpi(
+        code,
+        project_id=payload.project_id,
+        period_start=payload.period_start,
+        period_end=payload.period_end,
+        filters=payload.filters,
+        persist=payload.persist,
+    )
+
+
+@router.get(
+    "/kpis/{code}/history",
+    response_model=KPIHistoryResponse,
+    dependencies=[Depends(RequirePermission("bi.kpi.read"))],
+)
+async def kpi_history(
+    code: str,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+    project_id: uuid.UUID | None = Query(default=None),
+    limit: int = Query(default=12, ge=1, le=120),
+) -> KPIHistoryResponse:
+    if project_id is not None:
+        await verify_project_access(project_id, user_id, session)
+    points = await service.kpi_history(
+        code, project_id=project_id, limit=limit,
+    )
+    return KPIHistoryResponse(kpi_code=code, history=points)
+
+
+@router.post(
+    "/kpis/{code}/drill-down",
+    response_model=DrillDownResponse,
+    dependencies=[Depends(RequirePermission("bi.kpi.read"))],
+)
+async def drill_down(
+    code: str,
+    payload: DrillDownRequest,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> DrillDownResponse:
+    if payload.project_id is not None:
+        await verify_project_access(payload.project_id, user_id, session)
+    result = await service.drill_down(
+        code,
+        project_id=payload.project_id,
+        depth=payload.depth,
+        limit=payload.limit,
+    )
+    return DrillDownResponse(
+        kpi_code=result["kpi_code"],
+        records=result["records"],
+        record_count=result["record_count"],
+        aggregate_value=result.get("aggregate_value"),
+        aggregate_unit=result.get("aggregate_unit"),
+    )
+
+
+# ── Dashboards ─────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/dashboards",
+    response_model=list[DashboardRead],
+    dependencies=[Depends(RequirePermission("bi.dashboard.read"))],
+)
+async def list_dashboards(
+    user_id: CurrentUserId,
+    service: BIDashboardsService = Depends(_service),
+) -> list[DashboardRead]:
+    rows = await service.list_dashboards(owner_user_id=_user_uuid(user_id))
+    return [DashboardRead.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/dashboards",
+    response_model=DashboardRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequirePermission("bi.dashboard.write"))],
+)
+async def create_dashboard(
+    payload: DashboardCreate,
+    user_id: CurrentUserId,
+    service: BIDashboardsService = Depends(_service),
+) -> DashboardRead:
+    row = await service.create_dashboard(
+        payload, owner_user_id=_user_uuid(user_id),
+    )
+    return DashboardRead.model_validate(row)
+
+
+@router.patch(
+    "/dashboards/{dashboard_id}",
+    response_model=DashboardRead,
+    dependencies=[Depends(RequirePermission("bi.dashboard.write"))],
+)
+async def update_dashboard(
+    dashboard_id: uuid.UUID,
+    payload: DashboardUpdate,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> DashboardRead:
+    await _ensure_dashboard_owner(dashboard_id, user_id, session)
+    row = await service.update_dashboard(dashboard_id, payload)
+    if row is None:
+        raise _not_found("Dashboard not found")
+    return DashboardRead.model_validate(row)
+
+
+@router.delete(
+    "/dashboards/{dashboard_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(RequirePermission("bi.dashboard.delete"))],
+)
+async def delete_dashboard(
+    dashboard_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> None:
+    await _ensure_dashboard_owner(dashboard_id, user_id, session)
+    ok = await service.delete_dashboard(dashboard_id)
+    if not ok:
+        raise _not_found("Dashboard not found")
+
+
+@router.get(
+    "/dashboards/{dashboard_id}/render",
+    response_model=DashboardRenderResponse,
+    dependencies=[Depends(RequirePermission("bi.dashboard.read"))],
+)
+async def render_dashboard(
+    dashboard_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> DashboardRenderResponse:
+    await _ensure_dashboard_owner(dashboard_id, user_id, session)
+    result = await service.render_dashboard(dashboard_id)
+    if result is None:
+        raise _not_found("Dashboard not found")
+    return result
+
+
+# ── Widgets ───────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/widgets",
+    response_model=WidgetRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequirePermission("bi.dashboard.write"))],
+)
+async def create_widget(
+    payload: WidgetCreate,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> WidgetRead:
+    await _ensure_dashboard_owner(payload.dashboard_id, user_id, session)
+    row = await service.create_widget(payload)
+    if row is None:
+        raise _not_found("Dashboard not found")
+    return WidgetRead.model_validate(row)
+
+
+@router.patch(
+    "/widgets/{widget_id}",
+    response_model=WidgetRead,
+    dependencies=[Depends(RequirePermission("bi.dashboard.write"))],
+)
+async def update_widget(
+    widget_id: uuid.UUID,
+    payload: WidgetUpdate,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> WidgetRead:
+    await _ensure_widget_owner(widget_id, user_id, session)
+    row = await service.update_widget(widget_id, payload)
+    if row is None:
+        raise _not_found("Widget not found")
+    return WidgetRead.model_validate(row)
+
+
+@router.delete(
+    "/widgets/{widget_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(RequirePermission("bi.dashboard.write"))],
+)
+async def delete_widget(
+    widget_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> None:
+    await _ensure_widget_owner(widget_id, user_id, session)
+    ok = await service.delete_widget(widget_id)
+    if not ok:
+        raise _not_found("Widget not found")
+
+
+# ── Reports ───────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/reports",
+    response_model=list[ReportDefinitionRead],
+    dependencies=[Depends(RequirePermission("bi.report.read"))],
+)
+async def list_reports(
+    user_id: CurrentUserId,
+    service: BIDashboardsService = Depends(_service),
+) -> list[ReportDefinitionRead]:
+    rows = await service.list_reports(owner_user_id=_user_uuid(user_id))
+    return [ReportDefinitionRead.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/reports",
+    response_model=ReportDefinitionRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequirePermission("bi.report.write"))],
+)
+async def create_report(
+    payload: ReportDefinitionCreate,
+    user_id: CurrentUserId,
+    service: BIDashboardsService = Depends(_service),
+) -> ReportDefinitionRead:
+    row = await service.create_report(
+        payload, owner_user_id=_user_uuid(user_id),
+    )
+    return ReportDefinitionRead.model_validate(row)
+
+
+@router.post(
+    "/reports/{report_id}/run",
+    response_model=ReportRunResponse,
+    dependencies=[Depends(RequirePermission("bi.report.run"))],
+)
+async def run_report(
+    report_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> ReportRunResponse:
+    await _ensure_report_owner(report_id, user_id, session)
+    result = await service.run_report(report_id)
+    if result is None:
+        raise _not_found("Report not found")
+    return result
+
+
+# ── Schedules ─────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/report-schedules",
+    response_model=ReportScheduleRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequirePermission("bi.report.schedule"))],
+)
+async def create_schedule(
+    payload: ReportScheduleCreate,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> ReportScheduleRead:
+    await _ensure_report_owner(payload.report_definition_id, user_id, session)
+    row = await service.create_schedule(payload)
+    if row is None:
+        raise _not_found("Report definition not found")
+    return ReportScheduleRead.model_validate(row)
+
+
+@router.patch(
+    "/report-schedules/{schedule_id}",
+    response_model=ReportScheduleRead,
+    dependencies=[Depends(RequirePermission("bi.report.schedule"))],
+)
+async def update_schedule(
+    schedule_id: uuid.UUID,
+    payload: ReportScheduleUpdate,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> ReportScheduleRead:
+    await _ensure_schedule_owner(schedule_id, user_id, session)
+    row = await service.update_schedule(schedule_id, payload)
+    if row is None:
+        raise _not_found("Schedule not found")
+    return ReportScheduleRead.model_validate(row)
+
+
+@router.post(
+    "/report-schedules/{schedule_id}/run-now",
+    response_model=ReportRunResponse,
+    dependencies=[Depends(RequirePermission("bi.report.run"))],
+)
+async def run_schedule_now(
+    schedule_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> ReportRunResponse:
+    await _ensure_schedule_owner(schedule_id, user_id, session)
+    result = await service.run_scheduled_report(schedule_id)
+    if result is None:
+        raise _not_found("Schedule not found")
+    return result
+
+
+# ── Alerts ────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/alerts",
+    response_model=list[AlertRuleRead],
+    dependencies=[Depends(RequirePermission("bi.alert.read"))],
+)
+async def list_alerts(
+    user_id: CurrentUserId,  # noqa: ARG001
+    service: BIDashboardsService = Depends(_service),
+) -> list[AlertRuleRead]:
+    rows = await service.repo.list_alerts()
+    return [AlertRuleRead.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/alerts",
+    response_model=AlertRuleRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequirePermission("bi.alert.write"))],
+)
+async def create_alert(
+    payload: AlertRuleCreate,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+) -> AlertRuleRead:
+    # AlertRule may carry a scope_project_id — if so, gate against it.
+    scope_pid = getattr(payload, "scope_project_id", None)
+    if scope_pid is not None:
+        await verify_project_access(scope_pid, user_id, session)
+    row = await service.create_alert(payload)
+    return AlertRuleRead.model_validate(row)
+
+
+@router.patch(
+    "/alerts/{alert_id}/toggle",
+    response_model=AlertRuleRead,
+    dependencies=[Depends(RequirePermission("bi.alert.write"))],
+)
+async def toggle_alert(
+    alert_id: uuid.UUID,
+    user_id: CurrentUserId,  # noqa: ARG001
+    enabled: bool = Query(...),
+    service: BIDashboardsService = Depends(_service),
+) -> AlertRuleRead:
+    row = await service.toggle_alert(alert_id, enabled=enabled)
+    if row is None:
+        raise _not_found("Alert not found")
+    return AlertRuleRead.model_validate(row)
+
+
+@router.post(
+    "/alerts/evaluate-now",
+    dependencies=[Depends(RequirePermission("bi.alert.write"))],
+)
+async def evaluate_alerts_now(
+    user_id: CurrentUserId,  # noqa: ARG001
+    service: BIDashboardsService = Depends(_service),
+) -> dict[str, Any]:
+    fired = await service.evaluate_alerts()
+    return {"fired": fired}
+
+
+# ── Saved Filters ─────────────────────────────────────────────────────
+
+
+@router.get(
+    "/saved-filters",
+    response_model=list[SavedFilterRead],
+    dependencies=[Depends(RequirePermission("bi.filter.read"))],
+)
+async def list_filters(
+    user_id: CurrentUserId,
+    service: BIDashboardsService = Depends(_service),
+    module: str | None = Query(default=None),
+) -> list[SavedFilterRead]:
+    rows = await service.list_filters(
+        owner_user_id=_user_uuid(user_id), module=module,
+    )
+    return [SavedFilterRead.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/saved-filters",
+    response_model=SavedFilterRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequirePermission("bi.filter.write"))],
+)
+async def create_filter(
+    payload: SavedFilterCreate,
+    user_id: CurrentUserId,
+    service: BIDashboardsService = Depends(_service),
+) -> SavedFilterRead:
+    row = await service.create_filter(
+        payload, owner_user_id=_user_uuid(user_id),
+    )
+    return SavedFilterRead.model_validate(row)
+
+
+@router.post(
+    "/saved-filters/{filter_id}/share",
+    response_model=SavedFilterRead,
+    dependencies=[Depends(RequirePermission("bi.filter.write"))],
+)
+async def share_filter(
+    filter_id: uuid.UUID,
+    payload: SavedFilterShareRequest,
+    user_id: CurrentUserId,
+    service: BIDashboardsService = Depends(_service),
+) -> SavedFilterRead:
+    """Share a saved filter with one or more users.
+
+    The caller must own the filter (404 leaked instead of 403 to avoid
+    information disclosure across tenants).
+    """
+    row = await service.share_filter(
+        filter_id,
+        owner_user_id=_user_uuid(user_id),
+        user_ids=payload.user_ids,
+    )
+    return SavedFilterRead.model_validate(row)
+
+
+# ── Report runs (file download) ─────────────────────────────────────────
+
+
+@router.get(
+    "/report-runs/{run_id}/file",
+    dependencies=[Depends(RequirePermission("bi.report.read"))],
+)
+async def download_report_file(
+    run_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: BIDashboardsService = Depends(_service),
+):
+    """Stream the rendered report file for a :class:`ReportRun`.
+
+    Ownership is checked against the parent ReportDefinition.
+    """
+    run = await service.get_report_run(run_id)
+    if run is None or not run.file_path:
+        raise _not_found("Report file not found")
+    # Ownership check via report
+    await _ensure_report_owner(run.report_definition_id, user_id, session)
+    import os
+
+    if not os.path.exists(run.file_path):
+        raise _not_found("Report file missing on disk")
+    media_type = {
+        "pdf": "application/pdf",
+        "xlsx": (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        "csv": "text/csv",
+    }.get(run.output_format, "application/octet-stream")
+    return FileResponse(
+        run.file_path,
+        media_type=media_type,
+        filename=os.path.basename(run.file_path),
+    )
+
+
+# ── Widget export ───────────────────────────────────────────────────────
+
+
+@router.get(
+    "/widgets/{widget_id}/export",
+    dependencies=[Depends(RequirePermission("bi.dashboard.read"))],
+)
+async def export_widget(
+    widget_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    format: str = Query(default="csv", description="csv | svg"),
+    service: BIDashboardsService = Depends(_service),
+):
+    """Export a widget's value + history as CSV or SVG chart."""
+    await _ensure_widget_owner(widget_id, user_id, session)
+    out = await service.export_widget(widget_id, format=format)
+    if out is None:
+        raise _not_found("Widget not found")
+    path, _size = out
+    import os
+
+    media_type = "image/svg+xml" if format.lower() == "svg" else "text/csv"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=os.path.basename(path),
+    )
+
+
+__all__ = ["router"]

@@ -1,0 +1,18 @@
+"""Resources module manifest."""
+
+from app.core.module_loader import ModuleManifest
+
+manifest = ModuleManifest(
+    name="oe_resources",
+    version="0.1.0",
+    display_name="Resource Planning",
+    description=(
+        "Resources (people/crews/equipment/subs) with skills, certifications, "
+        "availability, assignments, conflict detection, skill-based matching"
+    ),
+    author="OpenConstructionERP Core Team",
+    category="business",
+    depends=["oe_users", "oe_projects"],
+    auto_install=True,
+    enabled=True,
+)

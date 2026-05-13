@@ -574,6 +574,10 @@ def register_notification_subscribers() -> None:
     the EventBus deduplicates on identity.  Called from the module
     ``on_startup`` hook so it runs once after the module loader has
     finished mounting routers.
+
+    Also activates the wave-N subscription bundles introduced by the
+    18-Modules Wave — each bundle owns its own list of upstream events
+    and lives in its own file to keep PR-sized diffs reviewable.
     """
     for event_name, handler in _SUBSCRIPTIONS:
         event_bus.subscribe(event_name, handler)
@@ -581,3 +585,22 @@ def register_notification_subscribers() -> None:
         "Notifications: subscribed to %d cross-module event(s)",
         len(_SUBSCRIPTIONS),
     )
+
+    # Wave bundles — defer-import so unit tests that exercise only the
+    # core list don't pay the cost of every module's event registration.
+    from app.modules.notifications._wave1_subscribers import (
+        register_wave1_notification_subscribers,
+    )
+    from app.modules.notifications._wave23_subscribers import (
+        register_wave23_notification_subscribers,
+    )
+    from app.modules.notifications._wave4_subscribers import (
+        register_wave4_notification_subscribers,
+    )
+    from app.modules.notifications._wave5_cross_module_subscribers import (
+        register_wave5_notification_subscribers,
+    )
+    register_wave1_notification_subscribers()
+    register_wave23_notification_subscribers()
+    register_wave4_notification_subscribers()
+    register_wave5_notification_subscribers()

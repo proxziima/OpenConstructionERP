@@ -737,3 +737,27 @@ export interface MatchAnalyticsResponse {
   by_ifc_class: AnalyticsBreakdown[];
   alerts: AnalyticsAlert[];
 }
+
+// ── Qdrant supervisor (native binary, no Docker) ─────────────────────
+// Shape locked to backend dataclass
+// ``app.modules.match_elements.qdrant_supervisor.QdrantHealth``.
+
+export interface QdrantHealth {
+  reachable: boolean;
+  url: string | null;
+  installed: boolean;
+  binary_path: string | null;
+  storage_dir: string;
+  spawn_attempted: boolean;
+  message: string;
+  install_hint: string;
+  download_url: string | null;
+}
+
+export async function fetchQdrantHealth(): Promise<QdrantHealth> {
+  return call<QdrantHealth>('/qdrant/health', { method: 'GET' });
+}
+
+export async function installQdrantNative(): Promise<QdrantHealth> {
+  return call<QdrantHealth>('/qdrant/install', { method: 'POST' });
+}

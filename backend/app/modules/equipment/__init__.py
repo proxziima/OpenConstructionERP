@@ -1,0 +1,13 @@
+"""Equipment & Fleet Management module.
+
+Owned/rented/leased equipment fleet with telemetry, maintenance scheduling,
+inspections, internal rental billing, fuel tracking, parts management,
+and damage reports.
+"""
+
+
+async def on_startup() -> None:
+    """Module startup hook — register permissions."""
+    from app.modules.equipment.permissions import register_equipment_permissions
+
+    register_equipment_permissions()

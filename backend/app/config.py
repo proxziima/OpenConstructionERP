@@ -11,7 +11,7 @@ from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, computed_field, field_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -347,6 +347,31 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",")]
+
+    @model_validator(mode="after")
+    def _refuse_default_jwt_in_non_dev(self) -> "Settings":
+        """Refuse to start in staging/production with the bundled dev JWT secret.
+
+        The repo ships ``jwt_secret = "openestimate-local-dev-key"`` so a fresh
+        ``docker compose up`` works without any .env. That same default has been
+        republished publicly many times in tests / docs / QA reports — anyone
+        who reads the open-source repo can forge admin tokens against any
+        deployment that forgot to override it. This guard ensures any non-dev
+        environment fails fast at boot with a clear message instead of silently
+        running with a compromised secret.
+
+        To override for self-hosters: set ``OE_JWT_SECRET`` (or ``JWT_SECRET``)
+        to a fresh value, e.g. ``python -c "import secrets;print(secrets.token_urlsafe(32))"``.
+        """
+        if self.app_env != "development" and self.jwt_secret == "openestimate-local-dev-key":
+            raise RuntimeError(
+                "Refusing to start: JWT_SECRET is still the bundled development default "
+                "but APP_ENV is %r. The default secret is published in the public "
+                "repository — using it in non-development environments is admin-forgeable "
+                "by anyone. Set OE_JWT_SECRET to a fresh random value, e.g.\n"
+                '  python -c "import secrets;print(secrets.token_urlsafe(32))"' % self.app_env
+            )
+        return self
 
     @computed_field  # type: ignore[prop-decorator]
     @property

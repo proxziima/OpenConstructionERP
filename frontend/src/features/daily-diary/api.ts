@@ -1,0 +1,311 @@
+/**
+ * API helpers for the Daily Site Diary module.
+ *
+ * Backed by /api/v1/daily-diary/ — see backend/app/modules/daily_diary/router.py
+ */
+
+import { apiGet, apiPost, apiPatch, apiDelete } from '@/shared/lib/api';
+
+/* ── Types ─────────────────────────────────────────────────────────────── */
+
+export type DiaryStatus = 'open' | 'closed' | 'signed' | 'archived';
+export type EntryType =
+  | 'visitor'
+  | 'event'
+  | 'delivery'
+  | 'completion'
+  | 'incident_summary'
+  | 'inspection_summary'
+  | 'photo_note'
+  | 'general';
+export type WeatherSource = 'open_meteo' | 'manual' | 'sensor';
+export type CaptureType = 'laser_scan' | 'photogrammetry' | 'mobile_scan';
+export type SignerRole = 'owner' | 'supervisor' | 'inspector' | 'client';
+
+export interface DailyDiary {
+  id: string;
+  project_id: string;
+  diary_date: string;
+  site_supervisor_id?: string | null;
+  weather_summary: Record<string, unknown>;
+  labour_count: number;
+  equipment_count: number;
+  status: DiaryStatus;
+  notes?: string | null;
+  closed_at?: string | null;
+  closed_by?: string | null;
+  owner_signature_ref?: string | null;
+  supervisor_signature_ref?: string | null;
+  pdf_export_ref?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WeatherRecord {
+  id: string;
+  project_id: string;
+  captured_at: string;
+  source: WeatherSource;
+  temperature_c?: string | number | null;
+  humidity_pct?: string | number | null;
+  wind_speed_kmh?: string | number | null;
+  precipitation_mm?: string | number | null;
+  conditions_code?: string | null;
+  conditions_text?: string | null;
+  sunrise?: string | null;
+  sunset?: string | null;
+  location_lat?: number | null;
+  location_lng?: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DiaryEntry {
+  id: string;
+  diary_id: string;
+  entry_type: EntryType;
+  entry_time: string;
+  title: string;
+  description?: string | null;
+  source_module?: string | null;
+  source_ref?: string | null;
+  author_id?: string | null;
+  photo_ids: string[];
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DiaryPhoto {
+  id: string;
+  diary_id?: string | null;
+  project_id: string;
+  taken_at: string;
+  photographer_id?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  location_label?: string | null;
+  file_url: string;
+  thumbnail_url?: string | null;
+  mime_type: string;
+  file_size_bytes: number;
+  description?: string | null;
+  tags: string[];
+  is_360: boolean;
+  is_drone: boolean;
+  is_archived: boolean;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DroneSurvey {
+  id: string;
+  project_id: string;
+  flown_at: string;
+  pilot_name?: string | null;
+  drone_model?: string | null;
+  area_m2?: string | number | null;
+  ortho_file_url?: string | null;
+  dsm_file_url?: string | null;
+  point_cloud_url?: string | null;
+  elevation_min_m?: string | number | null;
+  elevation_max_m?: string | number | null;
+  notes?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RealityCapture {
+  id: string;
+  project_id: string;
+  captured_at: string;
+  capture_type: CaptureType;
+  file_url: string;
+  point_count_estimate?: number | null;
+  bbox_min?: Record<string, number> | null;
+  bbox_max?: Record<string, number> | null;
+  accuracy_mm?: string | number | null;
+  notes?: string | null;
+  linked_bim_model_ref?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DiaryArchiveSignature {
+  id: string;
+  diary_id: string;
+  content_sha256: string;
+  signed_at: string;
+  signed_by?: string | null;
+  signature_payload: Record<string, unknown>;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DiaryDashboard {
+  total_diaries: number;
+  open_count: number;
+  closed_count: number;
+  signed_count: number;
+  archived_count: number;
+  photos_total: number;
+  drone_surveys_total: number;
+  reality_captures_total: number;
+  diaries_by_date: Record<string, number>;
+}
+
+/* ── Diaries ───────────────────────────────────────────────────────────── */
+
+export function listDiaries(params: {
+  project_id: string;
+  date_from?: string;
+  date_to?: string;
+  status?: string;
+  limit?: number;
+}): Promise<DailyDiary[]> {
+  const qs = new URLSearchParams();
+  qs.set('project_id', params.project_id);
+  if (params.date_from) qs.set('date_from', params.date_from);
+  if (params.date_to) qs.set('date_to', params.date_to);
+  if (params.status) qs.set('status', params.status);
+  if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  return apiGet<DailyDiary[]>(`/v1/daily-diary/diaries/?${qs.toString()}`);
+}
+
+export function createDiary(data: {
+  project_id: string;
+  diary_date: string;
+  notes?: string;
+  labour_count?: number;
+  equipment_count?: number;
+}): Promise<DailyDiary> {
+  return apiPost<DailyDiary>('/v1/daily-diary/diaries/', data);
+}
+
+export function getDiary(id: string): Promise<DailyDiary> {
+  return apiGet<DailyDiary>(`/v1/daily-diary/diaries/${id}`);
+}
+
+export function updateDiary(
+  id: string,
+  data: { notes?: string; labour_count?: number; equipment_count?: number },
+): Promise<DailyDiary> {
+  return apiPatch<DailyDiary>(`/v1/daily-diary/diaries/${id}`, data);
+}
+
+export function closeDiary(id: string): Promise<DailyDiary> {
+  return apiPost<DailyDiary>(`/v1/daily-diary/diaries/${id}/close`, {});
+}
+
+export function signDiary(
+  id: string,
+  data: { signer_role: SignerRole; signer_name?: string },
+): Promise<DiaryArchiveSignature> {
+  return apiPost<DiaryArchiveSignature>(
+    `/v1/daily-diary/diaries/${id}/sign`,
+    data,
+  );
+}
+
+export function archiveDiary(id: string): Promise<DailyDiary> {
+  return apiPost<DailyDiary>(`/v1/daily-diary/diaries/${id}/archive`, {});
+}
+
+export function diaryDashboard(projectId: string): Promise<DiaryDashboard> {
+  return apiGet<DiaryDashboard>(
+    `/v1/daily-diary/dashboard?project_id=${encodeURIComponent(projectId)}`,
+  );
+}
+
+/* ── Weather ───────────────────────────────────────────────────────────── */
+
+export function weatherToday(projectId: string): Promise<WeatherRecord[]> {
+  return apiGet<WeatherRecord[]>(
+    `/v1/daily-diary/weather/today?project_id=${encodeURIComponent(projectId)}`,
+  );
+}
+
+export function createWeather(data: {
+  project_id: string;
+  captured_at: string;
+  source?: WeatherSource;
+  temperature_c?: string;
+  humidity_pct?: string;
+  wind_speed_kmh?: string;
+  precipitation_mm?: string;
+  conditions_text?: string;
+}): Promise<WeatherRecord> {
+  return apiPost<WeatherRecord>('/v1/daily-diary/weather-records/', data);
+}
+
+/* ── Entries ───────────────────────────────────────────────────────────── */
+
+export function createEntry(data: {
+  diary_id: string;
+  entry_type: EntryType;
+  entry_time: string;
+  title?: string;
+  description?: string;
+}): Promise<DiaryEntry> {
+  return apiPost<DiaryEntry>('/v1/daily-diary/diary-entries/', data);
+}
+
+export function deleteEntry(id: string): Promise<void> {
+  return apiDelete(`/v1/daily-diary/diary-entries/${id}`);
+}
+
+/* ── Photos ────────────────────────────────────────────────────────────── */
+
+export function listPhotos(params: {
+  project_id: string;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+}): Promise<DiaryPhoto[]> {
+  const qs = new URLSearchParams();
+  qs.set('project_id', params.project_id);
+  if (params.date_from) qs.set('date_from', params.date_from);
+  if (params.date_to) qs.set('date_to', params.date_to);
+  if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  return apiGet<DiaryPhoto[]>(`/v1/daily-diary/photos/?${qs.toString()}`);
+}
+
+/* ── Drone surveys ─────────────────────────────────────────────────────── */
+
+export function listDroneSurveys(projectId: string): Promise<DroneSurvey[]> {
+  return apiGet<DroneSurvey[]>(
+    `/v1/daily-diary/drone-surveys/?project_id=${encodeURIComponent(
+      projectId,
+    )}`,
+  );
+}
+
+/* ── Reality captures ──────────────────────────────────────────────────── */
+
+export function listRealityCaptures(
+  projectId: string,
+): Promise<RealityCapture[]> {
+  return apiGet<RealityCapture[]>(
+    `/v1/daily-diary/reality-captures/?project_id=${encodeURIComponent(
+      projectId,
+    )}`,
+  );
+}
+
+/* ── Archive signatures ────────────────────────────────────────────────── */
+
+export function listArchiveSignatures(
+  diaryId: string,
+): Promise<DiaryArchiveSignature[]> {
+  return apiGet<DiaryArchiveSignature[]>(
+    `/v1/daily-diary/archive-signatures/?diary_id=${encodeURIComponent(
+      diaryId,
+    )}`,
+  );
+}

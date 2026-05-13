@@ -605,3 +605,67 @@ async def get_match_analytics(
         project_id=project_id,
         catalog_id=catalog_id,
     )
+
+
+# ── Qdrant supervisor (native binary, no Docker) ─────────────────────────
+
+
+def _qdrant_health_to_dict(health: object) -> dict[str, object]:
+    """Render a ``QdrantHealth`` dataclass as a JSON-safe dict.
+
+    Frontend ``QdrantHealthCard`` consumes these fields verbatim; the
+    shape is locked to the dataclass in ``qdrant_supervisor.py``.
+    """
+    return {
+        "reachable": getattr(health, "reachable", False),
+        "url": getattr(health, "url", None),
+        "installed": getattr(health, "installed", False),
+        "binary_path": getattr(health, "binary_path", None),
+        "storage_dir": getattr(health, "storage_dir", ""),
+        "spawn_attempted": getattr(health, "spawn_attempted", False),
+        "message": getattr(health, "message", ""),
+        "install_hint": getattr(health, "install_hint", ""),
+        "download_url": getattr(health, "download_url", None),
+    }
+
+
+@router.get("/qdrant/health")
+async def qdrant_health(_current_user_id: CurrentUserId) -> dict[str, object]:
+    """Probe Qdrant and (if a local binary exists) auto-spawn it.
+
+    Used by ``QdrantHealthCard`` on /match-elements to detect when the
+    vector DB is down and surface a one-click install / refresh flow.
+    Authentication is required so anonymous probes can't enumerate
+    binary paths on disk.
+    """
+    from app.config import get_settings
+    from app.modules.match_elements.qdrant_supervisor import ensure_qdrant_running
+
+    settings = get_settings()
+    health = ensure_qdrant_running(settings.qdrant_url, spawn_if_installed=True)
+    return _qdrant_health_to_dict(health)
+
+
+@router.post("/qdrant/install")
+async def qdrant_install(_current_user_id: CurrentUserId) -> dict[str, object]:
+    """Download the native Qdrant binary from GitHub Releases, then start it.
+
+    Mirrors the converter-install pattern used by /takeoff and /bim:
+    one-click, no Docker. The download is signed by Qdrant and stored
+    under ``~/.openestimator/qdrant``. After install we re-probe so the
+    response reflects the live binding state — front-end can branch on
+    ``reachable`` to flip the card immediately.
+    """
+    from app.config import get_settings
+    from app.modules.match_elements.qdrant_supervisor import (
+        ensure_qdrant_running,
+        install_qdrant_native,
+    )
+
+    settings = get_settings()
+    try:
+        install_qdrant_native(force=False)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    health = ensure_qdrant_running(settings.qdrant_url, spawn_if_installed=True)
+    return _qdrant_health_to_dict(health)

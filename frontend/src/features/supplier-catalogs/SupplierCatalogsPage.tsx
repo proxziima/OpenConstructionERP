@@ -1,0 +1,1106 @@
+import { useState, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import clsx from 'clsx';
+import {
+  ShoppingCart,
+  Boxes,
+  ClipboardList,
+  FileCheck,
+  Warehouse as WarehouseIcon,
+  Search,
+  Plus,
+  X,
+  Loader2,
+  Star,
+  AlertOctagon,
+  Truck,
+} from 'lucide-react';
+import {
+  Button,
+  Card,
+  Badge,
+  EmptyState,
+  Breadcrumb,
+  SkeletonTable,
+} from '@/shared/ui';
+import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
+import { DateDisplay } from '@/shared/ui/DateDisplay';
+import { getErrorMessage } from '@/shared/lib/api';
+import { useToastStore } from '@/stores/useToastStore';
+import {
+  listVendors,
+  listCatalogItems,
+  listWarehouses,
+  listWarehouseBalances,
+  comparePrices,
+  createVendor,
+  createCatalogItem,
+  createWarehouse,
+  createPR,
+  createPO,
+  type Vendor,
+  type CatalogItem,
+  type Warehouse,
+  type StockBalance,
+  type PriceComparisonRow,
+  type VendorStatus,
+} from './api';
+
+type Tab = 'vendors' | 'catalog' | 'prs' | 'pos' | 'match' | 'warehouses';
+
+const VENDOR_VARIANT: Record<VendorStatus, 'neutral' | 'blue' | 'success' | 'warning' | 'error'> = {
+  active: 'success',
+  suspended: 'warning',
+  blacklisted: 'error',
+  pending: 'neutral',
+};
+
+const inputCls =
+  'h-9 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue';
+const labelCls = 'block text-xs font-medium text-content-secondary mb-1';
+
+export function SupplierCatalogsPage() {
+  const { t } = useTranslation();
+  const [tab, setTab] = useState<Tab>('vendors');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [priceItem, setPriceItem] = useState<CatalogItem | null>(null);
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>('');
+
+  const vendorsQ = useQuery({
+    queryKey: ['sc', 'vendors', statusFilter],
+    queryFn: () => listVendors({ status: statusFilter || undefined, limit: 200 }),
+    enabled: tab === 'vendors' || tab === 'catalog' || tab === 'prs' || tab === 'pos' || tab === 'match',
+  });
+  const itemsQ = useQuery({
+    queryKey: ['sc', 'items', search],
+    queryFn: () => listCatalogItems({ search: search || undefined, limit: 200 }),
+    enabled: tab === 'catalog',
+  });
+  const warehousesQ = useQuery({
+    queryKey: ['sc', 'warehouses'],
+    queryFn: () => listWarehouses(),
+    enabled: tab === 'warehouses',
+  });
+  const balancesQ = useQuery({
+    queryKey: ['sc', 'balances', selectedWarehouseId],
+    queryFn: () => listWarehouseBalances(selectedWarehouseId),
+    enabled: tab === 'warehouses' && !!selectedWarehouseId,
+  });
+
+  // PRs / POs / invoices: backend lacks list endpoints today.  We compute
+  // synthetic empty lists and show an EmptyState.  The create-flow still
+  // works.  This keeps the surface honest about what the API supports.
+  const filteredVendors = useMemo(
+    () => filterByText(vendorsQ.data ?? [], search, (v) => `${v.code} ${v.name} ${v.country_code ?? ''}`),
+    [vendorsQ.data, search],
+  );
+  const filteredItems = itemsQ.data ?? [];
+
+  const isLoading =
+    (tab === 'vendors' && vendorsQ.isLoading) ||
+    (tab === 'catalog' && itemsQ.isLoading) ||
+    (tab === 'warehouses' && (warehousesQ.isLoading || balancesQ.isLoading));
+
+  return (
+    <div className="space-y-5">
+      <Breadcrumb items={[{ label: t('supplier_catalogs.title', { defaultValue: 'Supplier Catalogs' }) }]} />
+
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold text-content-primary">
+            {t('supplier_catalogs.title', { defaultValue: 'Supplier Catalogs' })}
+          </h1>
+          <p className="mt-1 text-sm text-content-secondary">
+            {t('supplier_catalogs.subtitle', {
+              defaultValue: 'Vendors, item catalogs, price comparison, requisitions, POs and warehouses.',
+            })}
+          </p>
+        </div>
+        <Button variant="primary" icon={<Plus size={14} />} onClick={() => setCreateOpen(true)}>
+          {createLabel(tab, t)}
+        </Button>
+      </div>
+
+      <div className="border-b border-border-light">
+        <nav className="flex gap-1 -mb-px overflow-x-auto">
+          {tabsDef(t).map((it) => {
+            const Icon = it.icon;
+            return (
+              <button
+                key={it.id}
+                type="button"
+                onClick={() => {
+                  setTab(it.id);
+                  setStatusFilter('');
+                  setSearch('');
+                }}
+                className={clsx(
+                  'flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap',
+                  tab === it.id
+                    ? 'border-oe-blue text-oe-blue'
+                    : 'border-transparent text-content-secondary hover:text-content-primary',
+                )}
+              >
+                <Icon size={14} />
+                {it.label}
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[200px] max-w-md">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-content-tertiary" />
+          <input
+            type="text"
+            placeholder={t('common.search', { defaultValue: 'Search…' })}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className={clsx(inputCls, 'pl-8')}
+          />
+        </div>
+        {tab === 'vendors' && (
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className={clsx(inputCls, 'max-w-[180px]')}
+          >
+            <option value="">{t('common.all_statuses', { defaultValue: 'All statuses' })}</option>
+            {(['active', 'suspended', 'blacklisted', 'pending'] as VendorStatus[]).map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        )}
+        {tab === 'warehouses' && (warehousesQ.data ?? []).length > 0 && (
+          <select
+            value={selectedWarehouseId || (warehousesQ.data ?? [])[0]?.id || ''}
+            onChange={(e) => setSelectedWarehouseId(e.target.value)}
+            className={clsx(inputCls, 'max-w-[280px]')}
+          >
+            {(warehousesQ.data ?? []).map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.code} — {w.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      <Card padding="none">
+        {isLoading ? (
+          <div className="p-4">
+            <SkeletonTable rows={8} columns={5} />
+          </div>
+        ) : tab === 'vendors' ? (
+          <VendorTable rows={filteredVendors} onAction={() => setCreateOpen(true)} />
+        ) : tab === 'catalog' ? (
+          <CatalogTable rows={filteredItems} onSelectPrice={(it) => setPriceItem(it)} onAction={() => setCreateOpen(true)} />
+        ) : tab === 'prs' ? (
+          <PREmptyOrTable onAction={() => setCreateOpen(true)} />
+        ) : tab === 'pos' ? (
+          <POEmptyOrTable onAction={() => setCreateOpen(true)} />
+        ) : tab === 'match' ? (
+          <MatchEmptyState />
+        ) : (
+          <WarehousePanel
+            warehouses={warehousesQ.data ?? []}
+            selectedId={selectedWarehouseId || (warehousesQ.data ?? [])[0]?.id || ''}
+            balances={balancesQ.data ?? []}
+            onAction={() => setCreateOpen(true)}
+          />
+        )}
+      </Card>
+
+      {createOpen && (
+        <CreateModal kind={tab} vendors={vendorsQ.data ?? []} onClose={() => setCreateOpen(false)} />
+      )}
+      {priceItem && (
+        <PriceComparisonModal
+          item={priceItem}
+          vendors={vendorsQ.data ?? []}
+          onClose={() => setPriceItem(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function tabsDef(t: (k: string, opts?: Record<string, unknown>) => string) {
+  return [
+    { id: 'vendors' as const, label: t('supplier_catalogs.tab_vendors', { defaultValue: 'Vendors' }), icon: Truck },
+    { id: 'catalog' as const, label: t('supplier_catalogs.tab_catalog', { defaultValue: 'Catalog' }), icon: Boxes },
+    { id: 'prs' as const, label: t('supplier_catalogs.tab_prs', { defaultValue: 'PRs' }), icon: ClipboardList },
+    { id: 'pos' as const, label: t('supplier_catalogs.tab_pos', { defaultValue: 'POs' }), icon: ShoppingCart },
+    { id: 'match' as const, label: t('supplier_catalogs.tab_match', { defaultValue: '3-Way Match' }), icon: FileCheck },
+    { id: 'warehouses' as const, label: t('supplier_catalogs.tab_warehouses', { defaultValue: 'Warehouses' }), icon: WarehouseIcon },
+  ];
+}
+
+function createLabel(tab: Tab, t: (k: string, opts?: Record<string, unknown>) => string): string {
+  switch (tab) {
+    case 'vendors':
+      return t('supplier_catalogs.new_vendor', { defaultValue: 'New Vendor' });
+    case 'catalog':
+      return t('supplier_catalogs.new_item', { defaultValue: 'New Item' });
+    case 'prs':
+      return t('supplier_catalogs.new_pr', { defaultValue: 'New Requisition' });
+    case 'pos':
+      return t('supplier_catalogs.new_po', { defaultValue: 'New PO' });
+    case 'match':
+      return t('supplier_catalogs.match_invoice', { defaultValue: 'Match Invoice' });
+    case 'warehouses':
+      return t('supplier_catalogs.new_warehouse', { defaultValue: 'New Warehouse' });
+  }
+}
+
+function filterByText<T>(rows: T[], search: string, getter: (r: T) => string): T[] {
+  if (!search.trim()) return rows;
+  const q = search.toLowerCase();
+  return rows.filter((r) => getter(r).toLowerCase().includes(q));
+}
+
+/* ── Stars ─────────────────────────────────────────────────────────────── */
+
+function StarRating({ rating }: { rating: number | null }) {
+  const value = rating ?? 0;
+  return (
+    <div className="inline-flex items-center gap-0.5">
+      {[1, 2, 3, 4, 5].map((i) => (
+        <Star
+          key={i}
+          size={12}
+          className={
+            i <= value
+              ? 'fill-[#f59e0b] text-[#f59e0b]'
+              : 'fill-transparent text-content-quaternary'
+          }
+        />
+      ))}
+      <span className="ml-1 text-2xs text-content-tertiary tabular-nums">{value}/5</span>
+    </div>
+  );
+}
+
+/* ── Tables ────────────────────────────────────────────────────────────── */
+
+function VendorTable({ rows, onAction }: { rows: Vendor[]; onAction: () => void }) {
+  const { t } = useTranslation();
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        icon={<Truck size={22} />}
+        title={t('supplier_catalogs.empty_vendors', { defaultValue: 'No vendors yet' })}
+        description={t('supplier_catalogs.empty_vendors_desc', {
+          defaultValue: 'Register suppliers with payment terms and category coverage to buy from.',
+        })}
+        action={{ label: t('supplier_catalogs.new_vendor', { defaultValue: 'New Vendor' }), onClick: onAction }}
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-secondary text-content-tertiary text-xs uppercase tracking-wide">
+          <tr>
+            <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.code', { defaultValue: 'Code' })}</th>
+            <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.name', { defaultValue: 'Name' })}</th>
+            <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.country', { defaultValue: 'Country' })}</th>
+            <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.rating', { defaultValue: 'Rating' })}</th>
+            <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.payment_terms', { defaultValue: 'Terms' })}</th>
+            <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.status', { defaultValue: 'Status' })}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id} className="border-t border-border-light hover:bg-surface-secondary">
+              <td className="px-4 py-2 font-mono text-xs text-content-secondary">{r.code}</td>
+              <td className="px-4 py-2 font-medium text-content-primary truncate max-w-[320px]">{r.name}</td>
+              <td className="px-4 py-2 text-content-secondary text-xs">{r.country_code || '—'}</td>
+              <td className="px-4 py-2">
+                <StarRating rating={r.rating} />
+              </td>
+              <td className="px-4 py-2 text-content-secondary text-xs tabular-nums">
+                {r.payment_terms_days}d · {r.currency}
+              </td>
+              <td className="px-4 py-2">
+                <Badge variant={VENDOR_VARIANT[r.status] || 'neutral'} dot>
+                  {r.status}
+                </Badge>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CatalogTable({
+  rows,
+  onSelectPrice,
+  onAction,
+}: {
+  rows: CatalogItem[];
+  onSelectPrice: (item: CatalogItem) => void;
+  onAction: () => void;
+}) {
+  const { t } = useTranslation();
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        icon={<Boxes size={22} />}
+        title={t('supplier_catalogs.empty_catalog', { defaultValue: 'No catalog items yet' })}
+        description={t('supplier_catalogs.empty_catalog_desc', {
+          defaultValue: 'SKUs you order — pipe, fittings, materials. Tie to multiple vendors for price comparison.',
+        })}
+        action={{ label: t('supplier_catalogs.new_item', { defaultValue: 'New Item' }), onClick: onAction }}
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-secondary text-content-tertiary text-xs uppercase tracking-wide">
+          <tr>
+            <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.sku', { defaultValue: 'SKU' })}</th>
+            <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.name', { defaultValue: 'Name' })}</th>
+            <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.uom', { defaultValue: 'UoM' })}</th>
+            <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.manufacturer', { defaultValue: 'Manufacturer' })}</th>
+            <th className="px-4 py-2.5 text-right">{t('supplier_catalogs.reorder', { defaultValue: 'Reorder' })}</th>
+            <th className="px-4 py-2.5 text-right">{t('supplier_catalogs.actions', { defaultValue: 'Actions' })}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id} className="border-t border-border-light hover:bg-surface-secondary">
+              <td className="px-4 py-2 font-mono text-xs text-content-secondary">{r.sku}</td>
+              <td className="px-4 py-2 font-medium text-content-primary truncate max-w-[320px]">{r.name}</td>
+              <td className="px-4 py-2 text-content-secondary text-xs">{r.unit_of_measure}</td>
+              <td className="px-4 py-2 text-content-secondary text-xs">{r.manufacturer || '—'}</td>
+              <td className="px-4 py-2 text-right text-xs tabular-nums">{String(r.reorder_point)}</td>
+              <td className="px-4 py-2 text-right">
+                <Button variant="ghost" size="sm" onClick={() => onSelectPrice(r)}>
+                  {t('supplier_catalogs.compare_prices', { defaultValue: 'Compare prices' })}
+                </Button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PREmptyOrTable({ onAction }: { onAction: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <EmptyState
+      icon={<ClipboardList size={22} />}
+      title={t('supplier_catalogs.prs_empty', { defaultValue: 'No requisitions visible' })}
+      description={t('supplier_catalogs.prs_empty_desc', {
+        defaultValue:
+          'Create a PR with line items and an approval chain. Once approved, it converts to a PO.',
+      })}
+      action={{ label: t('supplier_catalogs.new_pr', { defaultValue: 'New Requisition' }), onClick: onAction }}
+    />
+  );
+}
+
+function POEmptyOrTable({ onAction }: { onAction: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <EmptyState
+      icon={<ShoppingCart size={22} />}
+      title={t('supplier_catalogs.pos_empty', { defaultValue: 'No purchase orders visible' })}
+      description={t('supplier_catalogs.pos_empty_desc', {
+        defaultValue: 'POs flow through draft → sent → acknowledged → received → closed.',
+      })}
+      action={{ label: t('supplier_catalogs.new_po', { defaultValue: 'New PO' }), onClick: onAction }}
+    />
+  );
+}
+
+function MatchEmptyState() {
+  const { t } = useTranslation();
+  return (
+    <EmptyState
+      icon={<AlertOctagon size={22} />}
+      title={t('supplier_catalogs.match_empty', { defaultValue: 'No match exceptions' })}
+      description={t('supplier_catalogs.match_empty_desc', {
+        defaultValue:
+          'Invoices that fail PO/GR/quantity tolerance checks land here for review. Auto-matched invoices are hidden.',
+      })}
+    />
+  );
+}
+
+function WarehousePanel({
+  warehouses,
+  selectedId,
+  balances,
+  onAction,
+}: {
+  warehouses: Warehouse[];
+  selectedId: string;
+  balances: StockBalance[];
+  onAction: () => void;
+}) {
+  const { t } = useTranslation();
+  if (warehouses.length === 0) {
+    return (
+      <EmptyState
+        icon={<WarehouseIcon size={22} />}
+        title={t('supplier_catalogs.empty_warehouses', { defaultValue: 'No warehouses yet' })}
+        description={t('supplier_catalogs.empty_warehouses_desc', {
+          defaultValue: 'Register storage locations to track stock on hand, reservations and movements.',
+        })}
+        action={{
+          label: t('supplier_catalogs.new_warehouse', { defaultValue: 'New Warehouse' }),
+          onClick: onAction,
+        }}
+      />
+    );
+  }
+  const selected = warehouses.find((w) => w.id === selectedId) || warehouses[0];
+  return (
+    <div>
+      <div className="px-5 py-3 border-b border-border-light flex items-center gap-3 flex-wrap">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-content-tertiary">
+            {t('supplier_catalogs.warehouse', { defaultValue: 'Warehouse' })}
+          </p>
+          <p className="text-sm font-semibold text-content-primary">
+            {selected?.code} — {selected?.name}
+          </p>
+        </div>
+        {selected?.address && (
+          <div>
+            <p className="text-xs uppercase tracking-wide text-content-tertiary">
+              {t('supplier_catalogs.address', { defaultValue: 'Address' })}
+            </p>
+            <p className="text-xs text-content-secondary truncate max-w-[320px]">{selected.address}</p>
+          </div>
+        )}
+      </div>
+      {balances.length === 0 ? (
+        <div className="p-6 text-center text-sm text-content-tertiary">
+          {t('supplier_catalogs.no_stock', { defaultValue: 'No stock balances recorded.' })}
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-surface-secondary text-content-tertiary text-xs uppercase tracking-wide">
+              <tr>
+                <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.item', { defaultValue: 'Item' })}</th>
+                <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.batch', { defaultValue: 'Batch' })}</th>
+                <th className="px-4 py-2.5 text-right">{t('supplier_catalogs.on_hand', { defaultValue: 'On hand' })}</th>
+                <th className="px-4 py-2.5 text-right">{t('supplier_catalogs.reserved', { defaultValue: 'Reserved' })}</th>
+                <th className="px-4 py-2.5 text-right">{t('supplier_catalogs.unit_cost_avg', { defaultValue: 'Avg cost' })}</th>
+                <th className="px-4 py-2.5 text-left">{t('supplier_catalogs.last_moved', { defaultValue: 'Last moved' })}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {balances.map((b) => (
+                <tr key={b.id} className="border-t border-border-light hover:bg-surface-secondary">
+                  <td className="px-4 py-2 font-mono text-xs text-content-secondary truncate max-w-[280px]">
+                    {b.catalog_item_id.slice(0, 8)}
+                  </td>
+                  <td className="px-4 py-2 text-content-secondary text-xs">{b.batch_lot || '—'}</td>
+                  <td className="px-4 py-2 text-right text-xs tabular-nums">{String(b.quantity_on_hand)}</td>
+                  <td className="px-4 py-2 text-right text-xs tabular-nums">{String(b.quantity_reserved)}</td>
+                  <td className="px-4 py-2 text-right text-xs tabular-nums">
+                    <MoneyDisplay amount={Number(b.unit_cost_avg) || 0} />
+                  </td>
+                  <td className="px-4 py-2 text-xs text-content-secondary">
+                    {b.last_movement_at ? <DateDisplay value={b.last_movement_at} /> : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Price comparison modal ────────────────────────────────────────────── */
+
+function PriceComparisonModal({
+  item,
+  vendors,
+  onClose,
+}: {
+  item: CatalogItem;
+  vendors: Vendor[];
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const q = useQuery({
+    queryKey: ['sc', 'price-compare', item.id],
+    queryFn: () => comparePrices(item.id),
+  });
+  const rows = q.data ?? [];
+  const cheapest = useMemo(() => {
+    if (rows.length === 0) return null;
+    return rows.reduce<PriceComparisonRow | null>((best, r) => {
+      if (!best) return r;
+      return Number(r.unit_price) < Number(best.unit_price) ? r : best;
+    }, null);
+  }, [rows]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40" />
+      <div
+        className="relative w-full max-w-5xl max-h-[90vh] overflow-y-auto rounded-xl bg-surface-elevated p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-1">
+          <div>
+            <h2 className="text-lg font-semibold">
+              {t('supplier_catalogs.price_comparison', { defaultValue: 'Price Comparison' })}
+            </h2>
+            <p className="mt-0.5 text-xs text-content-secondary">
+              <span className="font-mono">{item.sku}</span> · {item.name} · {item.unit_of_measure}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded p-1 hover:bg-surface-secondary">
+            <X size={16} />
+          </button>
+        </div>
+
+        {q.isLoading ? (
+          <div className="py-8 text-center text-sm text-content-tertiary">
+            <Loader2 className="inline animate-spin mr-2" size={14} />
+            {t('common.loading', { defaultValue: 'Loading…' })}
+          </div>
+        ) : rows.length === 0 ? (
+          <EmptyState
+            icon={<Boxes size={20} />}
+            title={t('supplier_catalogs.no_prices', { defaultValue: 'No vendor prices for this item' })}
+            description={t('supplier_catalogs.no_prices_desc', {
+              defaultValue: 'Import a price list against a vendor or add a catalog entry.',
+            })}
+          />
+        ) : (
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {rows.map((r) => {
+              const vendor = vendors.find((v) => v.id === r.vendor_id);
+              const isCheapest = cheapest && cheapest.vendor_id === r.vendor_id && rows.length > 1;
+              return (
+                <div
+                  key={r.vendor_id + r.price_list_id}
+                  className={clsx(
+                    'rounded-xl border bg-surface-primary p-4 transition-all',
+                    isCheapest ? 'border-semantic-success ring-2 ring-semantic-success/30' : 'border-border-light',
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-mono text-content-tertiary">{r.vendor_code}</p>
+                      <p className="font-semibold text-content-primary truncate">{r.vendor_name}</p>
+                    </div>
+                    {isCheapest && (
+                      <Badge variant="success">
+                        {t('supplier_catalogs.cheapest', { defaultValue: 'Cheapest' })}
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-content-tertiary">
+                        {t('supplier_catalogs.unit_price', { defaultValue: 'Unit price' })}
+                      </p>
+                      <p className="text-xl font-bold text-content-primary">
+                        <MoneyDisplay amount={Number(r.unit_price)} currency={r.currency} />
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <p className="uppercase tracking-wide text-content-tertiary">
+                          {t('supplier_catalogs.lead_time', { defaultValue: 'Lead time' })}
+                        </p>
+                        <p className="text-content-primary tabular-nums">{r.lead_time_days}d</p>
+                      </div>
+                      <div>
+                        <p className="uppercase tracking-wide text-content-tertiary">
+                          {t('supplier_catalogs.moq', { defaultValue: 'MOQ' })}
+                        </p>
+                        <p className="text-content-primary tabular-nums">{String(r.min_order_qty)}</p>
+                      </div>
+                    </div>
+                    <div className="pt-1 border-t border-border-light">
+                      <p className="text-xs uppercase tracking-wide text-content-tertiary">
+                        {t('supplier_catalogs.rating', { defaultValue: 'Rating' })}
+                      </p>
+                      <StarRating rating={r.rating ?? vendor?.rating ?? null} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Create modal ──────────────────────────────────────────────────────── */
+
+function CreateModal({
+  kind,
+  vendors,
+  onClose,
+}: {
+  kind: Tab;
+  vendors: Vendor[];
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
+  const [busy, setBusy] = useState(false);
+
+  const [vendorForm, setVendorForm] = useState({
+    code: '',
+    name: '',
+    legal_name: '',
+    currency: 'EUR',
+    payment_terms_days: '30',
+    country_code: '',
+  });
+  const [itemForm, setItemForm] = useState({
+    sku: '',
+    name: '',
+    description: '',
+    unit_of_measure: 'pcs',
+    manufacturer: '',
+  });
+  const [prForm, setPrForm] = useState({
+    project_id: '',
+    currency: 'EUR',
+    needed_by: '',
+    lineDesc: '',
+    lineQty: '1',
+    linePrice: '0',
+  });
+  const [poForm, setPoForm] = useState({
+    vendor_id: vendors[0]?.id || '',
+    project_id: '',
+    currency: 'EUR',
+    expected_delivery: '',
+    lineDesc: '',
+    lineQty: '1',
+    linePrice: '0',
+  });
+  const [warehouseForm, setWarehouseForm] = useState({ code: '', name: '', address: '' });
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      if (kind === 'vendors') {
+        if (!vendorForm.code.trim() || !vendorForm.name.trim()) throw new Error('Code and name required');
+        await createVendor({
+          code: vendorForm.code,
+          name: vendorForm.name,
+          legal_name: vendorForm.legal_name || undefined,
+          currency: vendorForm.currency || undefined,
+          payment_terms_days: Number(vendorForm.payment_terms_days) || 30,
+          country_code: vendorForm.country_code || undefined,
+        });
+        addToast({ type: 'success', title: t('supplier_catalogs.vendor_created', { defaultValue: 'Vendor created' }) });
+        qc.invalidateQueries({ queryKey: ['sc', 'vendors'] });
+      } else if (kind === 'catalog') {
+        if (!itemForm.sku.trim() || !itemForm.name.trim()) throw new Error('SKU and name required');
+        await createCatalogItem({
+          sku: itemForm.sku,
+          name: itemForm.name,
+          description: itemForm.description || undefined,
+          unit_of_measure: itemForm.unit_of_measure || 'pcs',
+          manufacturer: itemForm.manufacturer || undefined,
+        });
+        addToast({ type: 'success', title: t('supplier_catalogs.item_created', { defaultValue: 'Item created' }) });
+        qc.invalidateQueries({ queryKey: ['sc', 'items'] });
+      } else if (kind === 'prs') {
+        if (!prForm.project_id.trim()) throw new Error('Project ID required');
+        if (!prForm.lineDesc.trim()) throw new Error('At least one line required');
+        await createPR({
+          project_id: prForm.project_id,
+          currency: prForm.currency,
+          needed_by: prForm.needed_by || undefined,
+          lines: [
+            {
+              description: prForm.lineDesc,
+              quantity: Number(prForm.lineQty) || 1,
+              estimated_unit_price: Number(prForm.linePrice) || 0,
+            },
+          ],
+        });
+        addToast({ type: 'success', title: t('supplier_catalogs.pr_created', { defaultValue: 'Requisition created' }) });
+      } else if (kind === 'pos') {
+        if (!poForm.vendor_id || !poForm.project_id.trim()) throw new Error('Vendor and project required');
+        if (!poForm.lineDesc.trim()) throw new Error('At least one line required');
+        await createPO({
+          vendor_id: poForm.vendor_id,
+          project_id: poForm.project_id,
+          currency: poForm.currency,
+          expected_delivery: poForm.expected_delivery || undefined,
+          lines: [
+            {
+              description: poForm.lineDesc,
+              ordered_qty: Number(poForm.lineQty) || 1,
+              unit_price: Number(poForm.linePrice) || 0,
+            },
+          ],
+        });
+        addToast({ type: 'success', title: t('supplier_catalogs.po_created', { defaultValue: 'PO created' }) });
+      } else if (kind === 'warehouses') {
+        if (!warehouseForm.code.trim() || !warehouseForm.name.trim()) throw new Error('Code and name required');
+        await createWarehouse({
+          code: warehouseForm.code,
+          name: warehouseForm.name,
+          address: warehouseForm.address || undefined,
+        });
+        addToast({ type: 'success', title: t('supplier_catalogs.warehouse_created', { defaultValue: 'Warehouse created' }) });
+        qc.invalidateQueries({ queryKey: ['sc', 'warehouses'] });
+      }
+      onClose();
+    } catch (err) {
+      addToast({ type: 'error', title: getErrorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40" />
+      <div
+        className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl bg-surface-elevated p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold">{createLabel(kind, t)}</h2>
+          <button type="button" onClick={onClose} className="rounded p-1 hover:bg-surface-secondary">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          {kind === 'vendors' && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>{t('supplier_catalogs.code', { defaultValue: 'Code' })} *</label>
+                  <input
+                    value={vendorForm.code}
+                    onChange={(e) => setVendorForm({ ...vendorForm, code: e.target.value })}
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>{t('supplier_catalogs.country', { defaultValue: 'Country' })}</label>
+                  <input
+                    value={vendorForm.country_code}
+                    onChange={(e) => setVendorForm({ ...vendorForm, country_code: e.target.value })}
+                    className={inputCls}
+                    maxLength={3}
+                    placeholder="DE / FR / US"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className={labelCls}>{t('supplier_catalogs.name', { defaultValue: 'Name' })} *</label>
+                <input
+                  value={vendorForm.name}
+                  onChange={(e) => setVendorForm({ ...vendorForm, name: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className={labelCls}>{t('supplier_catalogs.legal_name', { defaultValue: 'Legal name' })}</label>
+                <input
+                  value={vendorForm.legal_name}
+                  onChange={(e) => setVendorForm({ ...vendorForm, legal_name: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>{t('common.currency', { defaultValue: 'Currency' })}</label>
+                  <input
+                    value={vendorForm.currency}
+                    onChange={(e) => setVendorForm({ ...vendorForm, currency: e.target.value })}
+                    className={inputCls}
+                    maxLength={3}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>{t('supplier_catalogs.payment_terms', { defaultValue: 'Payment terms (days)' })}</label>
+                  <input
+                    type="number"
+                    value={vendorForm.payment_terms_days}
+                    onChange={(e) => setVendorForm({ ...vendorForm, payment_terms_days: e.target.value })}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {kind === 'catalog' && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>{t('supplier_catalogs.sku', { defaultValue: 'SKU' })} *</label>
+                  <input
+                    value={itemForm.sku}
+                    onChange={(e) => setItemForm({ ...itemForm, sku: e.target.value })}
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>{t('supplier_catalogs.uom', { defaultValue: 'UoM' })}</label>
+                  <input
+                    value={itemForm.unit_of_measure}
+                    onChange={(e) => setItemForm({ ...itemForm, unit_of_measure: e.target.value })}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className={labelCls}>{t('supplier_catalogs.name', { defaultValue: 'Name' })} *</label>
+                <input
+                  value={itemForm.name}
+                  onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className={labelCls}>
+                  {t('supplier_catalogs.description_field', { defaultValue: 'Description' })}
+                </label>
+                <textarea
+                  value={itemForm.description}
+                  onChange={(e) => setItemForm({ ...itemForm, description: e.target.value })}
+                  rows={2}
+                  className={clsx(inputCls, 'h-auto py-2')}
+                />
+              </div>
+              <div>
+                <label className={labelCls}>{t('supplier_catalogs.manufacturer', { defaultValue: 'Manufacturer' })}</label>
+                <input
+                  value={itemForm.manufacturer}
+                  onChange={(e) => setItemForm({ ...itemForm, manufacturer: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+            </>
+          )}
+
+          {kind === 'prs' && (
+            <>
+              <div>
+                <label className={labelCls}>{t('supplier_catalogs.project_id', { defaultValue: 'Project ID' })} *</label>
+                <input
+                  value={prForm.project_id}
+                  onChange={(e) => setPrForm({ ...prForm, project_id: e.target.value })}
+                  className={inputCls}
+                  placeholder="00000000-0000-0000-0000-000000000000"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>{t('common.currency', { defaultValue: 'Currency' })}</label>
+                  <input
+                    value={prForm.currency}
+                    onChange={(e) => setPrForm({ ...prForm, currency: e.target.value })}
+                    className={inputCls}
+                    maxLength={3}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>{t('supplier_catalogs.needed_by', { defaultValue: 'Needed by' })}</label>
+                  <input
+                    type="date"
+                    value={prForm.needed_by}
+                    onChange={(e) => setPrForm({ ...prForm, needed_by: e.target.value })}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+              <div className="p-3 rounded-lg bg-surface-secondary space-y-2">
+                <p className="text-xs font-medium uppercase tracking-wide text-content-tertiary">
+                  {t('supplier_catalogs.first_line', { defaultValue: 'First line item' })}
+                </p>
+                <input
+                  value={prForm.lineDesc}
+                  onChange={(e) => setPrForm({ ...prForm, lineDesc: e.target.value })}
+                  placeholder={t('supplier_catalogs.line_description', { defaultValue: 'Description' })}
+                  className={inputCls}
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <input
+                    type="number"
+                    value={prForm.lineQty}
+                    onChange={(e) => setPrForm({ ...prForm, lineQty: e.target.value })}
+                    placeholder={t('supplier_catalogs.qty', { defaultValue: 'Quantity' })}
+                    className={inputCls}
+                  />
+                  <input
+                    type="number"
+                    value={prForm.linePrice}
+                    onChange={(e) => setPrForm({ ...prForm, linePrice: e.target.value })}
+                    placeholder={t('supplier_catalogs.est_price', { defaultValue: 'Est. price' })}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {kind === 'pos' && (
+            <>
+              <div>
+                <label className={labelCls}>{t('supplier_catalogs.vendor', { defaultValue: 'Vendor' })} *</label>
+                <select
+                  value={poForm.vendor_id}
+                  onChange={(e) => setPoForm({ ...poForm, vendor_id: e.target.value })}
+                  className={inputCls}
+                >
+                  <option value="">—</option>
+                  {vendors.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.code} — {v.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>{t('supplier_catalogs.project_id', { defaultValue: 'Project ID' })} *</label>
+                <input
+                  value={poForm.project_id}
+                  onChange={(e) => setPoForm({ ...poForm, project_id: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>{t('common.currency', { defaultValue: 'Currency' })}</label>
+                  <input
+                    value={poForm.currency}
+                    onChange={(e) => setPoForm({ ...poForm, currency: e.target.value })}
+                    className={inputCls}
+                    maxLength={3}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>{t('supplier_catalogs.expected_delivery', { defaultValue: 'Expected' })}</label>
+                  <input
+                    type="date"
+                    value={poForm.expected_delivery}
+                    onChange={(e) => setPoForm({ ...poForm, expected_delivery: e.target.value })}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+              <div className="p-3 rounded-lg bg-surface-secondary space-y-2">
+                <p className="text-xs font-medium uppercase tracking-wide text-content-tertiary">
+                  {t('supplier_catalogs.first_line', { defaultValue: 'First line item' })}
+                </p>
+                <input
+                  value={poForm.lineDesc}
+                  onChange={(e) => setPoForm({ ...poForm, lineDesc: e.target.value })}
+                  placeholder={t('supplier_catalogs.line_description', { defaultValue: 'Description' })}
+                  className={inputCls}
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <input
+                    type="number"
+                    value={poForm.lineQty}
+                    onChange={(e) => setPoForm({ ...poForm, lineQty: e.target.value })}
+                    placeholder={t('supplier_catalogs.qty', { defaultValue: 'Quantity' })}
+                    className={inputCls}
+                  />
+                  <input
+                    type="number"
+                    value={poForm.linePrice}
+                    onChange={(e) => setPoForm({ ...poForm, linePrice: e.target.value })}
+                    placeholder={t('supplier_catalogs.unit_price', { defaultValue: 'Unit price' })}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {kind === 'warehouses' && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>{t('supplier_catalogs.code', { defaultValue: 'Code' })} *</label>
+                  <input
+                    value={warehouseForm.code}
+                    onChange={(e) => setWarehouseForm({ ...warehouseForm, code: e.target.value })}
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>{t('supplier_catalogs.name', { defaultValue: 'Name' })} *</label>
+                  <input
+                    value={warehouseForm.name}
+                    onChange={(e) => setWarehouseForm({ ...warehouseForm, name: e.target.value })}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className={labelCls}>{t('supplier_catalogs.address', { defaultValue: 'Address' })}</label>
+                <textarea
+                  value={warehouseForm.address}
+                  onChange={(e) => setWarehouseForm({ ...warehouseForm, address: e.target.value })}
+                  rows={2}
+                  className={clsx(inputCls, 'h-auto py-2')}
+                />
+              </div>
+            </>
+          )}
+
+          {kind === 'match' && (
+            <div className="text-sm text-content-secondary">
+              {t('supplier_catalogs.match_create_hint', {
+                defaultValue:
+                  'Three-way match runs automatically when a vendor invoice is posted against a PO and GR.',
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5">
+          <Button variant="ghost" onClick={onClose}>
+            {t('common.cancel', { defaultValue: 'Cancel' })}
+          </Button>
+          {kind !== 'match' && (
+            <Button
+              variant="primary"
+              onClick={submit}
+              loading={busy}
+              icon={busy ? <Loader2 size={14} /> : <Plus size={14} />}
+            >
+              {t('common.create', { defaultValue: 'Create' })}
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+

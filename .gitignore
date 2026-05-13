@@ -147,6 +147,8 @@ desktop/src-tauri/binaries/
 # Backup files
 *.backup.*
 backend/data/dwg_uploads/
+backend/data/dwg_entities/
+backend/data/dwg_thumbnails/
 
 # Local-only working state (not for commit)
 tmp/

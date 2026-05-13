@@ -1,0 +1,2199 @@
+import { useState, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import clsx from 'clsx';
+import {
+  Bell,
+  FileText,
+  FileCheck2,
+  Hammer,
+  Clock,
+  Plus,
+  Search,
+  X,
+  Send,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  ChevronRight,
+  ArrowRight,
+} from 'lucide-react';
+import {
+  Button,
+  Card,
+  Badge,
+  EmptyState,
+  Breadcrumb,
+  SkeletonTable,
+} from '@/shared/ui';
+import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
+import { DateDisplay } from '@/shared/ui/DateDisplay';
+import { apiGet, getErrorMessage } from '@/shared/lib/api';
+import { useToastStore } from '@/stores/useToastStore';
+import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import {
+  listNotices,
+  listVariationRequests,
+  listVariationOrders,
+  listDaywork,
+  listEoTClaims,
+  createNotice,
+  createVR,
+  createVO,
+  createDaywork,
+  createEoT,
+  submitVR,
+  approveVR,
+  rejectVR,
+  convertVRToVO,
+  acknowledgeNotice,
+  respondNotice,
+  closeNotice,
+  startVO,
+  completeVO,
+  voidVO,
+  signDaywork,
+  billDaywork,
+  submitEoT,
+  grantEoT,
+  rejectEoT,
+  type Notice,
+  type NoticeStatus,
+  type VariationRequest,
+  type VRStatus,
+  type VariationOrder,
+  type VOStatus,
+  type DayworkSheet,
+  type DayworkStatus,
+  type ExtensionOfTimeClaim,
+  type EotStatus,
+} from './api';
+
+type Tab = 'notices' | 'requests' | 'orders' | 'daywork' | 'eot';
+
+const NOTICE_VARIANT: Record<NoticeStatus, 'neutral' | 'blue' | 'success' | 'warning' | 'error'> = {
+  issued: 'blue',
+  acknowledged: 'warning',
+  responded: 'success',
+  closed: 'neutral',
+};
+
+const VR_VARIANT: Record<VRStatus, 'neutral' | 'blue' | 'success' | 'warning' | 'error'> = {
+  draft: 'neutral',
+  submitted: 'blue',
+  under_review: 'warning',
+  approved: 'success',
+  rejected: 'error',
+  converted_to_vo: 'success',
+};
+
+const VO_VARIANT: Record<VOStatus, 'neutral' | 'blue' | 'success' | 'warning' | 'error'> = {
+  issued: 'blue',
+  in_progress: 'warning',
+  completed: 'success',
+  voided: 'error',
+};
+
+const DAYWORK_VARIANT: Record<DayworkStatus, 'neutral' | 'blue' | 'success' | 'warning' | 'error'> = {
+  draft: 'neutral',
+  signed: 'success',
+  disputed: 'error',
+  billed: 'blue',
+};
+
+const EOT_VARIANT: Record<EotStatus, 'neutral' | 'blue' | 'success' | 'warning' | 'error'> = {
+  draft: 'neutral',
+  submitted: 'blue',
+  under_review: 'warning',
+  granted: 'success',
+  rejected: 'error',
+};
+
+const inputCls =
+  'h-9 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue';
+
+const labelCls = 'block text-xs font-medium text-content-secondary mb-1';
+
+interface ProjectStub {
+  id: string;
+  name: string;
+  currency?: string;
+}
+
+function listProjectsLite(): Promise<ProjectStub[]> {
+  return apiGet<ProjectStub[]>('/v1/projects/?limit=200').catch(() => [] as ProjectStub[]);
+}
+
+export function VariationsPage() {
+  const { t } = useTranslation();
+  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const setActiveProject = useProjectContextStore((s) => s.setActiveProject);
+
+  const projectsQ = useQuery({
+    queryKey: ['variations', 'projects'],
+    queryFn: listProjectsLite,
+    staleTime: 60_000,
+  });
+  const projects = projectsQ.data ?? [];
+  const projectId = activeProjectId || projects[0]?.id || '';
+  const currentProject = useMemo(
+    () => projects.find((p) => p.id === projectId),
+    [projects, projectId],
+  );
+  const currency = currentProject?.currency || 'EUR';
+
+  const [tab, setTab] = useState<Tab>('notices');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('');
+  const [selected, setSelected] = useState<
+    | { kind: 'notices'; id: string }
+    | { kind: 'requests'; id: string }
+    | { kind: 'orders'; id: string }
+    | { kind: 'daywork'; id: string }
+    | { kind: 'eot'; id: string }
+    | null
+  >(null);
+  const [createOpen, setCreateOpen] = useState(false);
+
+  const noticesQ = useQuery({
+    queryKey: ['variations', 'notices', projectId, statusFilter],
+    queryFn: () =>
+      listNotices({ project_id: projectId, status: statusFilter || undefined, limit: 200 }),
+    enabled: !!projectId && tab === 'notices',
+  });
+  const requestsQ = useQuery({
+    queryKey: ['variations', 'requests', projectId, statusFilter],
+    queryFn: () =>
+      listVariationRequests({
+        project_id: projectId,
+        status: statusFilter || undefined,
+        limit: 200,
+      }),
+    enabled: !!projectId && (tab === 'requests' || tab === 'notices'),
+  });
+  const ordersQ = useQuery({
+    queryKey: ['variations', 'orders', projectId, statusFilter],
+    queryFn: () =>
+      listVariationOrders({
+        project_id: projectId,
+        status: statusFilter || undefined,
+        limit: 200,
+      }),
+    enabled: !!projectId && (tab === 'orders' || tab === 'requests'),
+  });
+  const dayworkQ = useQuery({
+    queryKey: ['variations', 'daywork', projectId, statusFilter],
+    queryFn: () =>
+      listDaywork({
+        project_id: projectId,
+        status: statusFilter || undefined,
+        limit: 200,
+      }),
+    enabled: !!projectId && tab === 'daywork',
+  });
+  const eotQ = useQuery({
+    queryKey: ['variations', 'eot', projectId, statusFilter],
+    queryFn: () =>
+      listEoTClaims({
+        project_id: projectId,
+        status: statusFilter || undefined,
+        limit: 200,
+      }),
+    enabled: !!projectId && tab === 'eot',
+  });
+
+  const filteredNotices = useMemo(() => {
+    const items = noticesQ.data ?? [];
+    if (!search.trim()) return items;
+    const s = search.toLowerCase();
+    return items.filter(
+      (n) =>
+        n.code.toLowerCase().includes(s) ||
+        (n.title || '').toLowerCase().includes(s) ||
+        (n.description || '').toLowerCase().includes(s),
+    );
+  }, [noticesQ.data, search]);
+
+  const filteredRequests = useMemo(() => {
+    const items = requestsQ.data ?? [];
+    if (!search.trim()) return items;
+    const s = search.toLowerCase();
+    return items.filter(
+      (r) =>
+        r.code.toLowerCase().includes(s) ||
+        (r.title || '').toLowerCase().includes(s) ||
+        (r.description || '').toLowerCase().includes(s),
+    );
+  }, [requestsQ.data, search]);
+
+  const filteredOrders = useMemo(() => {
+    const items = ordersQ.data ?? [];
+    if (!search.trim()) return items;
+    const s = search.toLowerCase();
+    return items.filter(
+      (o) =>
+        o.code.toLowerCase().includes(s) || (o.title || '').toLowerCase().includes(s),
+    );
+  }, [ordersQ.data, search]);
+
+  const filteredDaywork = useMemo(() => {
+    const items = dayworkQ.data ?? [];
+    if (!search.trim()) return items;
+    const s = search.toLowerCase();
+    return items.filter(
+      (d) =>
+        d.sheet_number.toLowerCase().includes(s) ||
+        (d.description || '').toLowerCase().includes(s),
+    );
+  }, [dayworkQ.data, search]);
+
+  const filteredEot = useMemo(() => {
+    const items = eotQ.data ?? [];
+    if (!search.trim()) return items;
+    const s = search.toLowerCase();
+    return items.filter((e) => (e.description || '').toLowerCase().includes(s));
+  }, [eotQ.data, search]);
+
+  if (!projectId) {
+    return (
+      <div className="space-y-5">
+        <Breadcrumb items={[{ label: t('variations.title', { defaultValue: 'Variations' }) }]} />
+        <EmptyState
+          icon={<FileText size={22} />}
+          title={t('variations.no_project', {
+            defaultValue: 'Select a project to manage variations',
+          })}
+          description={t('variations.no_project_desc', {
+            defaultValue:
+              'Variations are project-scoped — create or open a project, then return here.',
+          })}
+        />
+      </div>
+    );
+  }
+
+  const isLoading =
+    (tab === 'notices' && noticesQ.isLoading) ||
+    (tab === 'requests' && requestsQ.isLoading) ||
+    (tab === 'orders' && ordersQ.isLoading) ||
+    (tab === 'daywork' && dayworkQ.isLoading) ||
+    (tab === 'eot' && eotQ.isLoading);
+
+  const statusOptions: Record<Tab, string[]> = {
+    notices: ['issued', 'acknowledged', 'responded', 'closed'],
+    requests: ['draft', 'submitted', 'under_review', 'approved', 'rejected', 'converted_to_vo'],
+    orders: ['issued', 'in_progress', 'completed', 'voided'],
+    daywork: ['draft', 'signed', 'disputed', 'billed'],
+    eot: ['draft', 'submitted', 'under_review', 'granted', 'rejected'],
+  };
+
+  return (
+    <div className="space-y-5">
+      <Breadcrumb items={[{ label: t('variations.title', { defaultValue: 'Variations' }) }]} />
+
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold text-content-primary">
+            {t('variations.title', { defaultValue: 'Variations' })}
+          </h1>
+          <p className="mt-1 text-sm text-content-secondary">
+            {t('variations.subtitle', {
+              defaultValue:
+                'Track variation notices, requests, orders, daywork and EoT claims through to final account.',
+            })}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {projects.length > 1 && (
+            <select
+              value={projectId}
+              onChange={(e) => {
+                const p = projects.find((x) => x.id === e.target.value);
+                if (p) setActiveProject(p.id, p.name);
+              }}
+              className={clsx(inputCls, 'max-w-[260px]')}
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <Button variant="primary" icon={<Plus size={14} />} onClick={() => setCreateOpen(true)}>
+            {tab === 'notices'
+              ? t('variations.new_notice', { defaultValue: 'New Notice' })
+              : tab === 'requests'
+                ? t('variations.new_request', { defaultValue: 'New Request' })
+                : tab === 'orders'
+                  ? t('variations.new_order', { defaultValue: 'New Order' })
+                  : tab === 'daywork'
+                    ? t('variations.new_daywork', { defaultValue: 'New Daywork' })
+                    : t('variations.new_eot', { defaultValue: 'New EoT Claim' })}
+          </Button>
+        </div>
+      </div>
+
+      <div className="border-b border-border-light">
+        <nav className="flex gap-1 -mb-px" role="tablist">
+          {(
+            [
+              {
+                id: 'notices',
+                label: t('variations.tab_notices', { defaultValue: 'Notices' }),
+                icon: Bell,
+              },
+              {
+                id: 'requests',
+                label: t('variations.tab_requests', { defaultValue: 'Requests' }),
+                icon: FileText,
+              },
+              {
+                id: 'orders',
+                label: t('variations.tab_orders', { defaultValue: 'Orders' }),
+                icon: FileCheck2,
+              },
+              {
+                id: 'daywork',
+                label: t('variations.tab_daywork', { defaultValue: 'Daywork' }),
+                icon: Hammer,
+              },
+              {
+                id: 'eot',
+                label: t('variations.tab_eot', { defaultValue: 'EoT Claims' }),
+                icon: Clock,
+              },
+            ] as { id: Tab; label: string; icon: React.ElementType }[]
+          ).map((tabItem) => {
+            const Icon = tabItem.icon;
+            return (
+              <button
+                key={tabItem.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === tabItem.id}
+                onClick={() => {
+                  setTab(tabItem.id);
+                  setStatusFilter('');
+                  setSearch('');
+                }}
+                className={clsx(
+                  'flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors',
+                  tab === tabItem.id
+                    ? 'border-oe-blue text-oe-blue'
+                    : 'border-transparent text-content-secondary hover:text-content-primary',
+                )}
+              >
+                <Icon size={14} />
+                {tabItem.label}
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[200px] max-w-md">
+          <Search
+            size={14}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-content-tertiary"
+          />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t('common.search', { defaultValue: 'Search…' })}
+            className={clsx(inputCls, 'pl-8')}
+          />
+        </div>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className={clsx(inputCls, 'max-w-[220px]')}
+        >
+          <option value="">{t('common.all_statuses', { defaultValue: 'All statuses' })}</option>
+          {statusOptions[tab].map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <Card padding="none">
+        {isLoading ? (
+          <div className="p-4">
+            <SkeletonTable rows={8} columns={5} />
+          </div>
+        ) : tab === 'notices' ? (
+          <NoticeTable
+            rows={filteredNotices}
+            onSelect={(id) => setSelected({ kind: 'notices', id })}
+            emptyAction={() => setCreateOpen(true)}
+          />
+        ) : tab === 'requests' ? (
+          <RequestTable
+            rows={filteredRequests}
+            currency={currency}
+            onSelect={(id) => setSelected({ kind: 'requests', id })}
+            emptyAction={() => setCreateOpen(true)}
+          />
+        ) : tab === 'orders' ? (
+          <OrderTable
+            rows={filteredOrders}
+            currency={currency}
+            onSelect={(id) => setSelected({ kind: 'orders', id })}
+            emptyAction={() => setCreateOpen(true)}
+          />
+        ) : tab === 'daywork' ? (
+          <DayworkTable
+            rows={filteredDaywork}
+            currency={currency}
+            onSelect={(id) => setSelected({ kind: 'daywork', id })}
+            emptyAction={() => setCreateOpen(true)}
+          />
+        ) : (
+          <EoTTable
+            rows={filteredEot}
+            onSelect={(id) => setSelected({ kind: 'eot', id })}
+            emptyAction={() => setCreateOpen(true)}
+          />
+        )}
+      </Card>
+
+      {selected && (
+        <DetailDrawer
+          selected={selected}
+          notices={noticesQ.data ?? []}
+          requests={requestsQ.data ?? []}
+          orders={ordersQ.data ?? []}
+          daywork={dayworkQ.data ?? []}
+          eot={eotQ.data ?? []}
+          currency={currency}
+          onClose={() => setSelected(null)}
+        />
+      )}
+
+      {createOpen && (
+        <CreateModal
+          kind={tab}
+          projectId={projectId}
+          currency={currency}
+          notices={noticesQ.data ?? []}
+          requests={requestsQ.data ?? []}
+          onClose={() => setCreateOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ─── Tables ─── */
+
+function NoticeTable({
+  rows,
+  onSelect,
+  emptyAction,
+}: {
+  rows: Notice[];
+  onSelect: (id: string) => void;
+  emptyAction: () => void;
+}) {
+  const { t } = useTranslation();
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        icon={<Bell size={22} />}
+        title={t('variations.empty_notices', { defaultValue: 'No notices yet' })}
+        description={t('variations.empty_notices_desc', {
+          defaultValue: 'Issue a variation notice when a contractual event occurs.',
+        })}
+        action={{
+          label: t('variations.new_notice', { defaultValue: 'New Notice' }),
+          onClick: emptyAction,
+        }}
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-secondary text-content-tertiary text-xs uppercase tracking-wide">
+          <tr>
+            <th className="px-4 py-2.5 text-left">{t('variations.code', { defaultValue: 'Code' })}</th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.title_col', { defaultValue: 'Title' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.recipient', { defaultValue: 'Recipient' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.target_response', { defaultValue: 'Response by' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.status', { defaultValue: 'Status' })}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr
+              key={r.id}
+              onClick={() => onSelect(r.id)}
+              className="border-t border-border-light hover:bg-surface-secondary cursor-pointer"
+            >
+              <td className="px-4 py-2 font-mono text-xs text-content-secondary">{r.code}</td>
+              <td className="px-4 py-2 font-medium truncate max-w-[420px]">{r.title || '—'}</td>
+              <td className="px-4 py-2 text-content-secondary text-xs">
+                {r.recipient_name || r.recipient_type}
+              </td>
+              <td className="px-4 py-2 text-xs text-content-secondary">
+                {r.target_response_date ? <DateDisplay value={r.target_response_date} /> : '—'}
+              </td>
+              <td className="px-4 py-2">
+                <Badge variant={NOTICE_VARIANT[r.status]} dot>
+                  {r.status}
+                </Badge>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RequestTable({
+  rows,
+  currency,
+  onSelect,
+  emptyAction,
+}: {
+  rows: VariationRequest[];
+  currency: string;
+  onSelect: (id: string) => void;
+  emptyAction: () => void;
+}) {
+  const { t } = useTranslation();
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        icon={<FileText size={22} />}
+        title={t('variations.empty_requests', { defaultValue: 'No variation requests yet' })}
+        description={t('variations.empty_requests_desc', {
+          defaultValue: 'Raise a variation request to estimate cost and schedule impacts.',
+        })}
+        action={{
+          label: t('variations.new_request', { defaultValue: 'New Request' }),
+          onClick: emptyAction,
+        }}
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-secondary text-content-tertiary text-xs uppercase tracking-wide">
+          <tr>
+            <th className="px-4 py-2.5 text-left">{t('variations.code', { defaultValue: 'Code' })}</th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.title_col', { defaultValue: 'Title' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.classification', { defaultValue: 'Type' })}
+            </th>
+            <th className="px-4 py-2.5 text-right">
+              {t('variations.cost_impact', { defaultValue: 'Cost' })}
+            </th>
+            <th className="px-4 py-2.5 text-right">
+              {t('variations.days', { defaultValue: 'Days' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.status', { defaultValue: 'Status' })}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr
+              key={r.id}
+              onClick={() => onSelect(r.id)}
+              className="border-t border-border-light hover:bg-surface-secondary cursor-pointer"
+            >
+              <td className="px-4 py-2 font-mono text-xs text-content-secondary">{r.code}</td>
+              <td className="px-4 py-2 font-medium truncate max-w-[360px]">{r.title || '—'}</td>
+              <td className="px-4 py-2 text-xs text-content-secondary">{r.classification}</td>
+              <td className="px-4 py-2 text-right tabular-nums">
+                <MoneyDisplay
+                  amount={Number(r.estimated_cost_impact) || 0}
+                  currency={r.currency || currency}
+                />
+              </td>
+              <td className="px-4 py-2 text-right tabular-nums">{r.estimated_schedule_days}</td>
+              <td className="px-4 py-2">
+                <Badge variant={VR_VARIANT[r.status]} dot>
+                  {r.status}
+                </Badge>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OrderTable({
+  rows,
+  currency,
+  onSelect,
+  emptyAction,
+}: {
+  rows: VariationOrder[];
+  currency: string;
+  onSelect: (id: string) => void;
+  emptyAction: () => void;
+}) {
+  const { t } = useTranslation();
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        icon={<FileCheck2 size={22} />}
+        title={t('variations.empty_orders', { defaultValue: 'No variation orders yet' })}
+        description={t('variations.empty_orders_desc', {
+          defaultValue: 'Variation orders are issued once a request is approved and agreed.',
+        })}
+        action={{
+          label: t('variations.new_order', { defaultValue: 'New Order' }),
+          onClick: emptyAction,
+        }}
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-secondary text-content-tertiary text-xs uppercase tracking-wide">
+          <tr>
+            <th className="px-4 py-2.5 text-left">{t('variations.code', { defaultValue: 'Code' })}</th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.title_col', { defaultValue: 'Title' })}
+            </th>
+            <th className="px-4 py-2.5 text-right">
+              {t('variations.cost_impact', { defaultValue: 'Cost' })}
+            </th>
+            <th className="px-4 py-2.5 text-right">
+              {t('variations.days', { defaultValue: 'Days' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.agreed_at', { defaultValue: 'Agreed' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.status', { defaultValue: 'Status' })}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr
+              key={r.id}
+              onClick={() => onSelect(r.id)}
+              className="border-t border-border-light hover:bg-surface-secondary cursor-pointer"
+            >
+              <td className="px-4 py-2 font-mono text-xs text-content-secondary">{r.code}</td>
+              <td className="px-4 py-2 font-medium truncate max-w-[360px]">{r.title || '—'}</td>
+              <td className="px-4 py-2 text-right tabular-nums">
+                <MoneyDisplay
+                  amount={Number(r.final_cost_impact) || 0}
+                  currency={r.currency || currency}
+                />
+              </td>
+              <td className="px-4 py-2 text-right tabular-nums">{r.final_schedule_days}</td>
+              <td className="px-4 py-2 text-xs text-content-secondary">
+                {r.agreed_at ? <DateDisplay value={r.agreed_at} /> : '—'}
+              </td>
+              <td className="px-4 py-2">
+                <Badge variant={VO_VARIANT[r.status]} dot>
+                  {r.status}
+                </Badge>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DayworkTable({
+  rows,
+  currency,
+  onSelect,
+  emptyAction,
+}: {
+  rows: DayworkSheet[];
+  currency: string;
+  onSelect: (id: string) => void;
+  emptyAction: () => void;
+}) {
+  const { t } = useTranslation();
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        icon={<Hammer size={22} />}
+        title={t('variations.empty_daywork', { defaultValue: 'No daywork sheets yet' })}
+        description={t('variations.empty_daywork_desc', {
+          defaultValue: 'Log daily labour, material and equipment for owner sign-off.',
+        })}
+        action={{
+          label: t('variations.new_daywork', { defaultValue: 'New Daywork' }),
+          onClick: emptyAction,
+        }}
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-secondary text-content-tertiary text-xs uppercase tracking-wide">
+          <tr>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.sheet_no', { defaultValue: 'Sheet #' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.work_date', { defaultValue: 'Date' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.description', { defaultValue: 'Description' })}
+            </th>
+            <th className="px-4 py-2.5 text-right">
+              {t('variations.total', { defaultValue: 'Total' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.status', { defaultValue: 'Status' })}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr
+              key={r.id}
+              onClick={() => onSelect(r.id)}
+              className="border-t border-border-light hover:bg-surface-secondary cursor-pointer"
+            >
+              <td className="px-4 py-2 font-mono text-xs text-content-secondary">
+                {r.sheet_number}
+              </td>
+              <td className="px-4 py-2 text-xs text-content-secondary">
+                {r.work_date ? <DateDisplay value={r.work_date} /> : '—'}
+              </td>
+              <td className="px-4 py-2 truncate max-w-[360px]">{r.description || '—'}</td>
+              <td className="px-4 py-2 text-right tabular-nums">
+                <MoneyDisplay
+                  amount={Number(r.total_amount) || 0}
+                  currency={r.currency || currency}
+                />
+              </td>
+              <td className="px-4 py-2">
+                <Badge variant={DAYWORK_VARIANT[r.status]} dot>
+                  {r.status}
+                </Badge>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function EoTTable({
+  rows,
+  onSelect,
+  emptyAction,
+}: {
+  rows: ExtensionOfTimeClaim[];
+  onSelect: (id: string) => void;
+  emptyAction: () => void;
+}) {
+  const { t } = useTranslation();
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        icon={<Clock size={22} />}
+        title={t('variations.empty_eot', { defaultValue: 'No EoT claims yet' })}
+        description={t('variations.empty_eot_desc', {
+          defaultValue: 'Raise an Extension-of-Time claim when a delay event affects the critical path.',
+        })}
+        action={{
+          label: t('variations.new_eot', { defaultValue: 'New EoT Claim' }),
+          onClick: emptyAction,
+        }}
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-secondary text-content-tertiary text-xs uppercase tracking-wide">
+          <tr>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.description', { defaultValue: 'Description' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.cause', { defaultValue: 'Cause' })}
+            </th>
+            <th className="px-4 py-2.5 text-right">
+              {t('variations.requested_days', { defaultValue: 'Requested' })}
+            </th>
+            <th className="px-4 py-2.5 text-right">
+              {t('variations.granted_days', { defaultValue: 'Granted' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.critical_path', { defaultValue: 'CP' })}
+            </th>
+            <th className="px-4 py-2.5 text-left">
+              {t('variations.status', { defaultValue: 'Status' })}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr
+              key={r.id}
+              onClick={() => onSelect(r.id)}
+              className="border-t border-border-light hover:bg-surface-secondary cursor-pointer"
+            >
+              <td className="px-4 py-2 truncate max-w-[360px]">{r.description || '—'}</td>
+              <td className="px-4 py-2 text-xs text-content-secondary">{r.root_cause_category}</td>
+              <td className="px-4 py-2 text-right tabular-nums">{r.requested_days}</td>
+              <td className="px-4 py-2 text-right tabular-nums">
+                {r.granted_days ?? '—'}
+              </td>
+              <td className="px-4 py-2 text-xs">
+                {r.critical_path_impact ? (
+                  <Badge variant="warning">CP</Badge>
+                ) : (
+                  <span className="text-content-tertiary">—</span>
+                )}
+              </td>
+              <td className="px-4 py-2">
+                <Badge variant={EOT_VARIANT[r.status]} dot>
+                  {r.status}
+                </Badge>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ─── Detail drawer with workflow stepper ─── */
+
+function WorkflowStepper({
+  notice,
+  request,
+  order,
+}: {
+  notice: Notice | null;
+  request: VariationRequest | null;
+  order: VariationOrder | null;
+}) {
+  const { t } = useTranslation();
+  const steps = [
+    {
+      label: t('variations.step_notice', { defaultValue: 'Notice' }),
+      present: !!notice,
+      status: notice?.status,
+    },
+    {
+      label: t('variations.step_request', { defaultValue: 'Request' }),
+      present: !!request,
+      status: request?.status,
+    },
+    {
+      label: t('variations.step_order', { defaultValue: 'Order' }),
+      present: !!order,
+      status: order?.status,
+    },
+  ];
+  return (
+    <div className="flex items-center gap-1.5 text-xs">
+      {steps.map((s, idx) => (
+        <div key={s.label} className="flex items-center gap-1.5">
+          <span
+            className={clsx(
+              'rounded-full px-2 py-0.5 border',
+              s.present
+                ? 'bg-oe-blue/10 border-oe-blue text-oe-blue'
+                : 'border-border-light text-content-tertiary',
+            )}
+          >
+            {s.label}
+            {s.status ? ` · ${s.status}` : ''}
+          </span>
+          {idx < steps.length - 1 && <ChevronRight size={12} className="text-content-tertiary" />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DetailDrawer({
+  selected,
+  notices,
+  requests,
+  orders,
+  daywork,
+  eot,
+  currency,
+  onClose,
+}: {
+  selected:
+    | { kind: 'notices'; id: string }
+    | { kind: 'requests'; id: string }
+    | { kind: 'orders'; id: string }
+    | { kind: 'daywork'; id: string }
+    | { kind: 'eot'; id: string };
+  notices: Notice[];
+  requests: VariationRequest[];
+  orders: VariationOrder[];
+  daywork: DayworkSheet[];
+  eot: ExtensionOfTimeClaim[];
+  currency: string;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
+
+  const notice = selected.kind === 'notices' ? notices.find((n) => n.id === selected.id) : null;
+  const request = selected.kind === 'requests' ? requests.find((r) => r.id === selected.id) : null;
+  const order = selected.kind === 'orders' ? orders.find((o) => o.id === selected.id) : null;
+  const sheet = selected.kind === 'daywork' ? daywork.find((d) => d.id === selected.id) : null;
+  const claim = selected.kind === 'eot' ? eot.find((e) => e.id === selected.id) : null;
+
+  const chainNotice = request
+    ? notices.find((n) => n.id === request.notice_id) ?? null
+    : notice;
+  const chainRequest = order
+    ? requests.find((r) => r.id === order.variation_request_id) ?? null
+    : request;
+  const chainOrder = request
+    ? orders.find((o) => o.variation_request_id === request.id) ?? null
+    : order;
+
+  /* Notice transitions */
+  const ackMut = useMutation({
+    mutationFn: () => acknowledgeNotice(selected.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      addToast({ type: 'success', title: t('variations.acknowledged', { defaultValue: 'Notice acknowledged' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const [respText, setRespText] = useState('');
+  const respMut = useMutation({
+    mutationFn: () => respondNotice(selected.id, respText.trim() || undefined),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      setRespText('');
+      addToast({ type: 'success', title: t('variations.responded', { defaultValue: 'Response logged' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const closeNoticeMut = useMutation({
+    mutationFn: () => closeNotice(selected.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      addToast({ type: 'success', title: t('variations.notice_closed', { defaultValue: 'Notice closed' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+
+  /* Request transitions */
+  const submitVrMut = useMutation({
+    mutationFn: () => submitVR(selected.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      addToast({ type: 'success', title: t('variations.vr_submitted', { defaultValue: 'Request submitted' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const [decisionNotes, setDecisionNotes] = useState('');
+  const approveMut = useMutation({
+    mutationFn: () => approveVR(selected.id, decisionNotes.trim() || undefined),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      setDecisionNotes('');
+      addToast({ type: 'success', title: t('variations.vr_approved', { defaultValue: 'Request approved' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const rejectMut = useMutation({
+    mutationFn: () => rejectVR(selected.id, decisionNotes.trim() || undefined),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      setDecisionNotes('');
+      addToast({ type: 'success', title: t('variations.vr_rejected', { defaultValue: 'Request rejected' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const convertMut = useMutation({
+    mutationFn: () =>
+      convertVRToVO(selected.id, request ? { currency: request.currency || currency } : {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      addToast({ type: 'success', title: t('variations.converted', { defaultValue: 'Converted to order' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+
+  /* Order transitions */
+  const startMut = useMutation({
+    mutationFn: () => startVO(selected.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      addToast({ type: 'success', title: t('variations.vo_started', { defaultValue: 'Order started' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const completeMut = useMutation({
+    mutationFn: () => completeVO(selected.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      addToast({ type: 'success', title: t('variations.vo_completed', { defaultValue: 'Order completed' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const voidMut = useMutation({
+    mutationFn: () => voidVO(selected.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      addToast({ type: 'success', title: t('variations.vo_voided', { defaultValue: 'Order voided' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+
+  /* Daywork transitions */
+  const signMut = useMutation({
+    mutationFn: () => signDaywork(selected.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      addToast({ type: 'success', title: t('variations.daywork_signed', { defaultValue: 'Daywork signed' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const billMut = useMutation({
+    mutationFn: () => billDaywork(selected.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      addToast({ type: 'success', title: t('variations.daywork_billed', { defaultValue: 'Daywork billed' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+
+  /* EoT transitions */
+  const submitEoTMut = useMutation({
+    mutationFn: () => submitEoT(selected.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      addToast({ type: 'success', title: t('variations.eot_submitted', { defaultValue: 'EoT submitted' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const [grantedDays, setGrantedDays] = useState('0');
+  const grantMut = useMutation({
+    mutationFn: () => grantEoT(selected.id, Number(grantedDays) || 0, decisionNotes.trim() || undefined),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      setDecisionNotes('');
+      addToast({ type: 'success', title: t('variations.eot_granted', { defaultValue: 'EoT granted' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const rejectEoTMut = useMutation({
+    mutationFn: () => rejectEoT(selected.id, decisionNotes.trim() || undefined),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      setDecisionNotes('');
+      addToast({ type: 'success', title: t('variations.eot_rejected', { defaultValue: 'EoT rejected' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+
+  const heading =
+    notice?.code ||
+    request?.code ||
+    order?.code ||
+    sheet?.sheet_number ||
+    (claim ? `EoT ${claim.id.slice(0, 8)}` : '');
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/30" />
+      <div
+        className="relative h-full w-full max-w-xl overflow-y-auto bg-surface-elevated shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-light bg-surface-elevated px-5 py-3">
+          <h2 className="text-base font-semibold">{heading}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 hover:bg-surface-secondary"
+            aria-label={t('common.close', { defaultValue: 'Close' })}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-4 p-5">
+          {(selected.kind === 'notices' ||
+            selected.kind === 'requests' ||
+            selected.kind === 'orders') && (
+            <WorkflowStepper
+              notice={chainNotice ?? null}
+              request={chainRequest ?? null}
+              order={chainOrder ?? null}
+            />
+          )}
+
+          {notice && (
+            <>
+              <div>
+                <p className="text-lg font-semibold">{notice.title || '—'}</p>
+                <p className="mt-1 text-sm text-content-secondary whitespace-pre-wrap">
+                  {notice.description || '—'}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <Field
+                  label={t('variations.recipient', { defaultValue: 'Recipient' })}
+                  value={notice.recipient_name || notice.recipient_type}
+                />
+                <Field
+                  label={t('variations.status')}
+                  value={
+                    <Badge variant={NOTICE_VARIANT[notice.status]} dot>
+                      {notice.status}
+                    </Badge>
+                  }
+                />
+                <Field
+                  label={t('variations.target_response')}
+                  value={notice.target_response_date ? <DateDisplay value={notice.target_response_date} /> : '—'}
+                />
+                <Field
+                  label={t('variations.raised_at', { defaultValue: 'Raised' })}
+                  value={notice.raised_at ? <DateDisplay value={notice.raised_at} /> : '—'}
+                />
+              </div>
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-border-light">
+                {notice.status === 'issued' && (
+                  <Button
+                    variant="secondary"
+                    icon={<CheckCircle2 size={14} />}
+                    onClick={() => ackMut.mutate()}
+                    loading={ackMut.isPending}
+                  >
+                    {t('variations.acknowledge', { defaultValue: 'Acknowledge' })}
+                  </Button>
+                )}
+                {(notice.status === 'issued' || notice.status === 'acknowledged') && (
+                  <Card padding="sm" className="w-full">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-content-secondary mb-2">
+                      {t('variations.respond', { defaultValue: 'Respond' })}
+                    </p>
+                    <div className="space-y-2">
+                      <textarea
+                        rows={2}
+                        value={respText}
+                        onChange={(e) => setRespText(e.target.value)}
+                        placeholder={t('variations.response_placeholder', {
+                          defaultValue: 'Response summary…',
+                        })}
+                        className={clsx(inputCls, 'h-auto py-2')}
+                      />
+                      <Button
+                        variant="primary"
+                        icon={<Send size={14} />}
+                        onClick={() => respMut.mutate()}
+                        loading={respMut.isPending}
+                      >
+                        {t('variations.send_response', { defaultValue: 'Send response' })}
+                      </Button>
+                    </div>
+                  </Card>
+                )}
+                {notice.status === 'responded' && (
+                  <Button
+                    variant="secondary"
+                    icon={<XCircle size={14} />}
+                    onClick={() => closeNoticeMut.mutate()}
+                    loading={closeNoticeMut.isPending}
+                  >
+                    {t('variations.close', { defaultValue: 'Close' })}
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+
+          {request && (
+            <>
+              <div>
+                <p className="text-lg font-semibold">{request.title || '—'}</p>
+                <p className="mt-1 text-sm text-content-secondary whitespace-pre-wrap">
+                  {request.description || '—'}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <Field
+                  label={t('variations.classification')}
+                  value={request.classification}
+                />
+                <Field
+                  label={t('variations.urgency', { defaultValue: 'Urgency' })}
+                  value={request.urgency}
+                />
+                <Field
+                  label={t('variations.cost_impact')}
+                  value={
+                    <MoneyDisplay
+                      amount={Number(request.estimated_cost_impact) || 0}
+                      currency={request.currency || currency}
+                    />
+                  }
+                />
+                <Field
+                  label={t('variations.days')}
+                  value={String(request.estimated_schedule_days)}
+                />
+                <Field
+                  label={t('variations.status')}
+                  value={
+                    <Badge variant={VR_VARIANT[request.status]} dot>
+                      {request.status}
+                    </Badge>
+                  }
+                />
+                <Field
+                  label={t('variations.submitted_at', { defaultValue: 'Submitted' })}
+                  value={request.submitted_at ? <DateDisplay value={request.submitted_at} /> : '—'}
+                />
+              </div>
+              {request.decision_notes && (
+                <Card padding="sm">
+                  <p className="text-xs uppercase tracking-wide text-content-tertiary mb-1">
+                    {t('variations.decision_notes', { defaultValue: 'Decision notes' })}
+                  </p>
+                  <p className="text-sm whitespace-pre-wrap">{request.decision_notes}</p>
+                </Card>
+              )}
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-border-light">
+                {request.status === 'draft' && (
+                  <Button
+                    variant="primary"
+                    icon={<Send size={14} />}
+                    onClick={() => submitVrMut.mutate()}
+                    loading={submitVrMut.isPending}
+                  >
+                    {t('variations.submit', { defaultValue: 'Submit' })}
+                  </Button>
+                )}
+                {(request.status === 'submitted' || request.status === 'under_review') && (
+                  <Card padding="sm" className="w-full">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-content-secondary mb-2">
+                      {t('variations.decision', { defaultValue: 'Decision' })}
+                    </p>
+                    <div className="space-y-2">
+                      <textarea
+                        rows={2}
+                        value={decisionNotes}
+                        onChange={(e) => setDecisionNotes(e.target.value)}
+                        placeholder={t('variations.decision_notes_placeholder', {
+                          defaultValue: 'Decision notes…',
+                        })}
+                        className={clsx(inputCls, 'h-auto py-2')}
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          variant="primary"
+                          icon={<CheckCircle2 size={14} />}
+                          onClick={() => approveMut.mutate()}
+                          loading={approveMut.isPending}
+                        >
+                          {t('variations.approve', { defaultValue: 'Approve' })}
+                        </Button>
+                        <Button
+                          variant="danger"
+                          icon={<XCircle size={14} />}
+                          onClick={() => rejectMut.mutate()}
+                          loading={rejectMut.isPending}
+                        >
+                          {t('variations.reject', { defaultValue: 'Reject' })}
+                        </Button>
+                      </div>
+                    </div>
+                  </Card>
+                )}
+                {request.status === 'approved' && (
+                  <Button
+                    variant="primary"
+                    icon={<ArrowRight size={14} />}
+                    onClick={() => convertMut.mutate()}
+                    loading={convertMut.isPending}
+                  >
+                    {t('variations.convert_to_vo', { defaultValue: 'Convert to Order' })}
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+
+          {order && (
+            <>
+              <div>
+                <p className="text-lg font-semibold">{order.title || '—'}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <Field
+                  label={t('variations.cost_impact')}
+                  value={
+                    <MoneyDisplay
+                      amount={Number(order.final_cost_impact) || 0}
+                      currency={order.currency || currency}
+                    />
+                  }
+                />
+                <Field
+                  label={t('variations.days')}
+                  value={String(order.final_schedule_days)}
+                />
+                <Field
+                  label={t('variations.status')}
+                  value={
+                    <Badge variant={VO_VARIANT[order.status]} dot>
+                      {order.status}
+                    </Badge>
+                  }
+                />
+                <Field
+                  label={t('variations.agreed_at')}
+                  value={order.agreed_at ? <DateDisplay value={order.agreed_at} /> : '—'}
+                />
+                <Field
+                  label={t('variations.started_at', { defaultValue: 'Started' })}
+                  value={
+                    order.implementation_started_at ? (
+                      <DateDisplay value={order.implementation_started_at} />
+                    ) : (
+                      '—'
+                    )
+                  }
+                />
+                <Field
+                  label={t('variations.completed_at', { defaultValue: 'Completed' })}
+                  value={
+                    order.implementation_completed_at ? (
+                      <DateDisplay value={order.implementation_completed_at} />
+                    ) : (
+                      '—'
+                    )
+                  }
+                />
+              </div>
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-border-light">
+                {order.status === 'issued' && (
+                  <Button
+                    variant="primary"
+                    onClick={() => startMut.mutate()}
+                    loading={startMut.isPending}
+                  >
+                    {t('variations.start', { defaultValue: 'Start' })}
+                  </Button>
+                )}
+                {order.status === 'in_progress' && (
+                  <Button
+                    variant="primary"
+                    icon={<CheckCircle2 size={14} />}
+                    onClick={() => completeMut.mutate()}
+                    loading={completeMut.isPending}
+                  >
+                    {t('variations.complete', { defaultValue: 'Complete' })}
+                  </Button>
+                )}
+                {(order.status === 'issued' || order.status === 'in_progress') && (
+                  <Button
+                    variant="danger"
+                    icon={<XCircle size={14} />}
+                    onClick={() => voidMut.mutate()}
+                    loading={voidMut.isPending}
+                  >
+                    {t('variations.void', { defaultValue: 'Void' })}
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+
+          {sheet && (
+            <>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <Field
+                  label={t('variations.sheet_no')}
+                  value={sheet.sheet_number}
+                />
+                <Field
+                  label={t('variations.work_date')}
+                  value={sheet.work_date ? <DateDisplay value={sheet.work_date} /> : '—'}
+                />
+                <Field
+                  label={t('variations.total')}
+                  value={
+                    <MoneyDisplay
+                      amount={Number(sheet.total_amount) || 0}
+                      currency={sheet.currency || currency}
+                    />
+                  }
+                />
+                <Field
+                  label={t('variations.status')}
+                  value={
+                    <Badge variant={DAYWORK_VARIANT[sheet.status]} dot>
+                      {sheet.status}
+                    </Badge>
+                  }
+                />
+              </div>
+              {sheet.description && (
+                <Card padding="sm">
+                  <p className="text-sm whitespace-pre-wrap">{sheet.description}</p>
+                </Card>
+              )}
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-border-light">
+                {sheet.status === 'draft' && (
+                  <Button
+                    variant="primary"
+                    icon={<CheckCircle2 size={14} />}
+                    onClick={() => signMut.mutate()}
+                    loading={signMut.isPending}
+                  >
+                    {t('variations.sign', { defaultValue: 'Sign' })}
+                  </Button>
+                )}
+                {sheet.status === 'signed' && (
+                  <Button
+                    variant="secondary"
+                    onClick={() => billMut.mutate()}
+                    loading={billMut.isPending}
+                  >
+                    {t('variations.bill', { defaultValue: 'Bill' })}
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+
+          {claim && (
+            <>
+              <div>
+                <p className="text-sm whitespace-pre-wrap">{claim.description || '—'}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <Field
+                  label={t('variations.cause')}
+                  value={claim.root_cause_category}
+                />
+                <Field
+                  label={t('variations.requested_days')}
+                  value={String(claim.requested_days)}
+                />
+                <Field
+                  label={t('variations.granted_days')}
+                  value={claim.granted_days != null ? String(claim.granted_days) : '—'}
+                />
+                <Field
+                  label={t('variations.critical_path')}
+                  value={claim.critical_path_impact ? 'CP' : '—'}
+                />
+                <Field
+                  label={t('variations.status')}
+                  value={
+                    <Badge variant={EOT_VARIANT[claim.status]} dot>
+                      {claim.status}
+                    </Badge>
+                  }
+                />
+                <Field
+                  label={t('variations.period', { defaultValue: 'Period' })}
+                  value={
+                    claim.claim_period_start && claim.claim_period_end
+                      ? `${claim.claim_period_start} → ${claim.claim_period_end}`
+                      : '—'
+                  }
+                />
+              </div>
+              {claim.decision_notes && (
+                <Card padding="sm">
+                  <p className="text-xs uppercase tracking-wide text-content-tertiary mb-1">
+                    {t('variations.decision_notes')}
+                  </p>
+                  <p className="text-sm whitespace-pre-wrap">{claim.decision_notes}</p>
+                </Card>
+              )}
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-border-light">
+                {claim.status === 'draft' && (
+                  <Button
+                    variant="primary"
+                    icon={<Send size={14} />}
+                    onClick={() => submitEoTMut.mutate()}
+                    loading={submitEoTMut.isPending}
+                  >
+                    {t('variations.submit')}
+                  </Button>
+                )}
+                {(claim.status === 'submitted' || claim.status === 'under_review') && (
+                  <Card padding="sm" className="w-full">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-content-secondary mb-2">
+                      {t('variations.decide', { defaultValue: 'Decide' })}
+                    </p>
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="number"
+                          value={grantedDays}
+                          onChange={(e) => setGrantedDays(e.target.value)}
+                          placeholder="0"
+                          className={inputCls}
+                          min={0}
+                        />
+                        <textarea
+                          rows={1}
+                          value={decisionNotes}
+                          onChange={(e) => setDecisionNotes(e.target.value)}
+                          placeholder={t('variations.decision_notes_placeholder', {
+                            defaultValue: 'Decision notes…',
+                          })}
+                          className={clsx(inputCls, 'h-auto py-2')}
+                        />
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="primary"
+                          icon={<CheckCircle2 size={14} />}
+                          onClick={() => grantMut.mutate()}
+                          loading={grantMut.isPending}
+                        >
+                          {t('variations.grant', { defaultValue: 'Grant' })}
+                        </Button>
+                        <Button
+                          variant="danger"
+                          icon={<XCircle size={14} />}
+                          onClick={() => rejectEoTMut.mutate()}
+                          loading={rejectEoTMut.isPending}
+                        >
+                          {t('variations.reject')}
+                        </Button>
+                      </div>
+                    </div>
+                  </Card>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, value }: { label: React.ReactNode; value: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-wide text-content-tertiary">{label}</p>
+      <p className="mt-0.5 text-sm text-content-primary">{value}</p>
+    </div>
+  );
+}
+
+/* ─── Create modal ─── */
+
+function CreateModal({
+  kind,
+  projectId,
+  currency,
+  notices,
+  requests,
+  onClose,
+}: {
+  kind: Tab;
+  projectId: string;
+  currency: string;
+  notices: Notice[];
+  requests: VariationRequest[];
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
+  const [busy, setBusy] = useState(false);
+
+  const [noticeForm, setNoticeForm] = useState({
+    title: '',
+    description: '',
+    recipient_type: 'owner' as Notice['recipient_type'],
+    recipient_name: '',
+    target_response_date: '',
+  });
+
+  const [vrForm, setVrForm] = useState({
+    title: '',
+    description: '',
+    notice_id: '',
+    classification: 'scope_change' as VariationRequest['classification'],
+    urgency: 'med' as VariationRequest['urgency'],
+    estimated_cost_impact: '0',
+    estimated_schedule_days: '0',
+    currency,
+  });
+
+  const [voForm, setVoForm] = useState({
+    title: '',
+    variation_request_id: '',
+    final_cost_impact: '0',
+    final_schedule_days: '0',
+    currency,
+  });
+
+  const [dwForm, setDwForm] = useState({
+    work_date: '',
+    description: '',
+    currency,
+  });
+
+  const [eotForm, setEotForm] = useState({
+    description: '',
+    root_cause_category: 'neutral' as ExtensionOfTimeClaim['root_cause_category'],
+    requested_days: '0',
+    critical_path_impact: false,
+    claim_period_start: '',
+    claim_period_end: '',
+  });
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      if (kind === 'notices') {
+        await createNotice({
+          project_id: projectId,
+          title: noticeForm.title.trim(),
+          description: noticeForm.description.trim(),
+          recipient_type: noticeForm.recipient_type,
+          recipient_name: noticeForm.recipient_name.trim(),
+          target_response_date: noticeForm.target_response_date || undefined,
+        });
+        addToast({
+          type: 'success',
+          title: t('variations.notice_created', { defaultValue: 'Notice created' }),
+        });
+      } else if (kind === 'requests') {
+        await createVR({
+          project_id: projectId,
+          notice_id: vrForm.notice_id || null,
+          title: vrForm.title.trim(),
+          description: vrForm.description.trim(),
+          classification: vrForm.classification,
+          urgency: vrForm.urgency,
+          estimated_cost_impact: Number(vrForm.estimated_cost_impact) || 0,
+          estimated_schedule_days: Number(vrForm.estimated_schedule_days) || 0,
+          currency: vrForm.currency,
+        });
+        addToast({
+          type: 'success',
+          title: t('variations.vr_created', { defaultValue: 'Request created' }),
+        });
+      } else if (kind === 'orders') {
+        await createVO({
+          project_id: projectId,
+          variation_request_id: voForm.variation_request_id || null,
+          title: voForm.title.trim(),
+          final_cost_impact: Number(voForm.final_cost_impact) || 0,
+          final_schedule_days: Number(voForm.final_schedule_days) || 0,
+          currency: voForm.currency,
+        });
+        addToast({
+          type: 'success',
+          title: t('variations.vo_created', { defaultValue: 'Order created' }),
+        });
+      } else if (kind === 'daywork') {
+        await createDaywork({
+          project_id: projectId,
+          work_date: dwForm.work_date || undefined,
+          description: dwForm.description.trim(),
+          currency: dwForm.currency,
+        });
+        addToast({
+          type: 'success',
+          title: t('variations.daywork_created', { defaultValue: 'Daywork sheet created' }),
+        });
+      } else if (kind === 'eot') {
+        await createEoT({
+          project_id: projectId,
+          description: eotForm.description.trim(),
+          root_cause_category: eotForm.root_cause_category,
+          requested_days: Number(eotForm.requested_days) || 0,
+          critical_path_impact: eotForm.critical_path_impact,
+          claim_period_start: eotForm.claim_period_start || undefined,
+          claim_period_end: eotForm.claim_period_end || undefined,
+        });
+        addToast({
+          type: 'success',
+          title: t('variations.eot_created', { defaultValue: 'EoT claim created' }),
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['variations'] });
+      onClose();
+    } catch (err) {
+      addToast({ type: 'error', title: getErrorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40" />
+      <div
+        className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl bg-surface-elevated p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold">
+            {kind === 'notices' && t('variations.new_notice', { defaultValue: 'New Notice' })}
+            {kind === 'requests' && t('variations.new_request', { defaultValue: 'New Request' })}
+            {kind === 'orders' && t('variations.new_order', { defaultValue: 'New Order' })}
+            {kind === 'daywork' && t('variations.new_daywork', { defaultValue: 'New Daywork' })}
+            {kind === 'eot' && t('variations.new_eot', { defaultValue: 'New EoT Claim' })}
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 hover:bg-surface-secondary"
+            aria-label={t('common.close', { defaultValue: 'Close' })}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          {kind === 'notices' && (
+            <>
+              <div>
+                <label className={labelCls}>
+                  {t('variations.title_col', { defaultValue: 'Title' })}
+                </label>
+                <input
+                  value={noticeForm.title}
+                  onChange={(e) => setNoticeForm({ ...noticeForm, title: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className={labelCls}>
+                  {t('variations.description', { defaultValue: 'Description' })}
+                </label>
+                <textarea
+                  value={noticeForm.description}
+                  onChange={(e) => setNoticeForm({ ...noticeForm, description: e.target.value })}
+                  rows={3}
+                  className={clsx(inputCls, 'h-auto py-2')}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>
+                    {t('variations.recipient_type', { defaultValue: 'Recipient type' })}
+                  </label>
+                  <select
+                    value={noticeForm.recipient_type}
+                    onChange={(e) =>
+                      setNoticeForm({
+                        ...noticeForm,
+                        recipient_type: e.target.value as Notice['recipient_type'],
+                      })
+                    }
+                    className={inputCls}
+                  >
+                    {(['owner', 'contractor', 'architect', 'engineer', 'consultant'] as const).map(
+                      (rt) => (
+                        <option key={rt} value={rt}>
+                          {rt}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>
+                    {t('variations.recipient_name', { defaultValue: 'Recipient name' })}
+                  </label>
+                  <input
+                    value={noticeForm.recipient_name}
+                    onChange={(e) =>
+                      setNoticeForm({ ...noticeForm, recipient_name: e.target.value })
+                    }
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className={labelCls}>
+                  {t('variations.target_response', { defaultValue: 'Response by' })}
+                </label>
+                <input
+                  type="date"
+                  value={noticeForm.target_response_date}
+                  onChange={(e) =>
+                    setNoticeForm({ ...noticeForm, target_response_date: e.target.value })
+                  }
+                  className={inputCls}
+                />
+              </div>
+            </>
+          )}
+
+          {kind === 'requests' && (
+            <>
+              <div>
+                <label className={labelCls}>
+                  {t('variations.title_col', { defaultValue: 'Title' })}
+                </label>
+                <input
+                  value={vrForm.title}
+                  onChange={(e) => setVrForm({ ...vrForm, title: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className={labelCls}>
+                  {t('variations.description', { defaultValue: 'Description' })}
+                </label>
+                <textarea
+                  value={vrForm.description}
+                  onChange={(e) => setVrForm({ ...vrForm, description: e.target.value })}
+                  rows={3}
+                  className={clsx(inputCls, 'h-auto py-2')}
+                />
+              </div>
+              <div>
+                <label className={labelCls}>
+                  {t('variations.from_notice', { defaultValue: 'From notice (optional)' })}
+                </label>
+                <select
+                  value={vrForm.notice_id}
+                  onChange={(e) => setVrForm({ ...vrForm, notice_id: e.target.value })}
+                  className={inputCls}
+                >
+                  <option value="">—</option>
+                  {notices.map((n) => (
+                    <option key={n.id} value={n.id}>
+                      {n.code} — {n.title || '—'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>{t('variations.classification')}</label>
+                  <select
+                    value={vrForm.classification}
+                    onChange={(e) =>
+                      setVrForm({
+                        ...vrForm,
+                        classification: e.target.value as VariationRequest['classification'],
+                      })
+                    }
+                    className={inputCls}
+                  >
+                    {(
+                      [
+                        'scope_change',
+                        'unforeseen',
+                        'owner_change',
+                        'design_dev',
+                        'regulatory',
+                        'other',
+                      ] as const
+                    ).map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>{t('variations.urgency')}</label>
+                  <select
+                    value={vrForm.urgency}
+                    onChange={(e) =>
+                      setVrForm({ ...vrForm, urgency: e.target.value as VariationRequest['urgency'] })
+                    }
+                    className={inputCls}
+                  >
+                    {(['low', 'med', 'high'] as const).map((u) => (
+                      <option key={u} value={u}>
+                        {u}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className={labelCls}>{t('variations.cost_impact')}</label>
+                  <input
+                    type="number"
+                    value={vrForm.estimated_cost_impact}
+                    onChange={(e) =>
+                      setVrForm({ ...vrForm, estimated_cost_impact: e.target.value })
+                    }
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>{t('variations.days')}</label>
+                  <input
+                    type="number"
+                    value={vrForm.estimated_schedule_days}
+                    onChange={(e) =>
+                      setVrForm({ ...vrForm, estimated_schedule_days: e.target.value })
+                    }
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>{t('common.currency', { defaultValue: 'Currency' })}</label>
+                  <input
+                    value={vrForm.currency}
+                    onChange={(e) => setVrForm({ ...vrForm, currency: e.target.value })}
+                    className={inputCls}
+                    maxLength={3}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {kind === 'orders' && (
+            <>
+              <div>
+                <label className={labelCls}>
+                  {t('variations.title_col', { defaultValue: 'Title' })}
+                </label>
+                <input
+                  value={voForm.title}
+                  onChange={(e) => setVoForm({ ...voForm, title: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className={labelCls}>
+                  {t('variations.from_request', { defaultValue: 'From request (optional)' })}
+                </label>
+                <select
+                  value={voForm.variation_request_id}
+                  onChange={(e) =>
+                    setVoForm({ ...voForm, variation_request_id: e.target.value })
+                  }
+                  className={inputCls}
+                >
+                  <option value="">—</option>
+                  {requests.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.code} — {r.title || '—'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className={labelCls}>{t('variations.cost_impact')}</label>
+                  <input
+                    type="number"
+                    value={voForm.final_cost_impact}
+                    onChange={(e) =>
+                      setVoForm({ ...voForm, final_cost_impact: e.target.value })
+                    }
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>{t('variations.days')}</label>
+                  <input
+                    type="number"
+                    value={voForm.final_schedule_days}
+                    onChange={(e) =>
+                      setVoForm({ ...voForm, final_schedule_days: e.target.value })
+                    }
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>{t('common.currency', { defaultValue: 'Currency' })}</label>
+                  <input
+                    value={voForm.currency}
+                    onChange={(e) => setVoForm({ ...voForm, currency: e.target.value })}
+                    className={inputCls}
+                    maxLength={3}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {kind === 'daywork' && (
+            <>
+              <div>
+                <label className={labelCls}>{t('variations.work_date')}</label>
+                <input
+                  type="date"
+                  value={dwForm.work_date}
+                  onChange={(e) => setDwForm({ ...dwForm, work_date: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className={labelCls}>
+                  {t('variations.description', { defaultValue: 'Description' })}
+                </label>
+                <textarea
+                  value={dwForm.description}
+                  onChange={(e) => setDwForm({ ...dwForm, description: e.target.value })}
+                  rows={3}
+                  className={clsx(inputCls, 'h-auto py-2')}
+                />
+              </div>
+              <div>
+                <label className={labelCls}>{t('common.currency', { defaultValue: 'Currency' })}</label>
+                <input
+                  value={dwForm.currency}
+                  onChange={(e) => setDwForm({ ...dwForm, currency: e.target.value })}
+                  className={inputCls}
+                  maxLength={3}
+                />
+              </div>
+            </>
+          )}
+
+          {kind === 'eot' && (
+            <>
+              <div>
+                <label className={labelCls}>
+                  {t('variations.description', { defaultValue: 'Description' })}
+                </label>
+                <textarea
+                  value={eotForm.description}
+                  onChange={(e) => setEotForm({ ...eotForm, description: e.target.value })}
+                  rows={3}
+                  className={clsx(inputCls, 'h-auto py-2')}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>{t('variations.cause')}</label>
+                  <select
+                    value={eotForm.root_cause_category}
+                    onChange={(e) =>
+                      setEotForm({
+                        ...eotForm,
+                        root_cause_category: e.target
+                          .value as ExtensionOfTimeClaim['root_cause_category'],
+                      })
+                    }
+                    className={inputCls}
+                  >
+                    {(['employer_caused', 'neutral', 'contractor_caused', 'concurrent'] as const).map(
+                      (c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>{t('variations.requested_days')}</label>
+                  <input
+                    type="number"
+                    value={eotForm.requested_days}
+                    onChange={(e) => setEotForm({ ...eotForm, requested_days: e.target.value })}
+                    className={inputCls}
+                    min={0}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>
+                    {t('variations.period_start', { defaultValue: 'Period start' })}
+                  </label>
+                  <input
+                    type="date"
+                    value={eotForm.claim_period_start}
+                    onChange={(e) =>
+                      setEotForm({ ...eotForm, claim_period_start: e.target.value })
+                    }
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>
+                    {t('variations.period_end', { defaultValue: 'Period end' })}
+                  </label>
+                  <input
+                    type="date"
+                    value={eotForm.claim_period_end}
+                    onChange={(e) =>
+                      setEotForm({ ...eotForm, claim_period_end: e.target.value })
+                    }
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={eotForm.critical_path_impact}
+                  onChange={(e) =>
+                    setEotForm({ ...eotForm, critical_path_impact: e.target.checked })
+                  }
+                />
+                {t('variations.affects_critical_path', {
+                  defaultValue: 'Affects critical path',
+                })}
+              </label>
+            </>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5">
+          <Button variant="ghost" onClick={onClose}>
+            {t('common.cancel', { defaultValue: 'Cancel' })}
+          </Button>
+          <Button
+            variant="primary"
+            onClick={submit}
+            loading={busy}
+            icon={busy ? <Loader2 size={14} /> : <Plus size={14} />}
+          >
+            {t('common.create', { defaultValue: 'Create' })}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}

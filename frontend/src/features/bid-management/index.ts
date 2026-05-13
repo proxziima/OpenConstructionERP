@@ -1,0 +1,1 @@
+export { BidManagementPage } from './BidManagementPage';

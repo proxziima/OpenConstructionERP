@@ -1,0 +1,1 @@
+export { PropertyDevPage } from './PropertyDevPage';
