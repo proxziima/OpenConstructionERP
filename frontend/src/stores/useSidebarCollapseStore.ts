@@ -42,5 +42,5 @@ export const useSidebarCollapseStore = create<SidebarCollapseState>((set, get) =
   toggle: () => get().setIconified(!get().iconified),
 }));
 
-export const SIDEBAR_WIDTH_FULL = '264px';
+export const SIDEBAR_WIDTH_FULL = '248px';
 export const SIDEBAR_WIDTH_ICON = '64px';

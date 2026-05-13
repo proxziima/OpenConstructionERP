@@ -88,10 +88,11 @@
   --oe-transition-slow: 350ms cubic-bezier(0.25, 0.1, 0.25, 1);
 
   /* Layout */
-  /* Bumped 232 → 264 (32px / ~4 extra chars on the label) so longer
-     menu items like "Match Elements", "Specifications",
-     "Communication" stop truncating with an ellipsis at default zoom. */
-  --oe-sidebar-width: 264px;
+  /* Tuned to 248px — wide enough to fit longer labels like
+     "Match Elements", "Specifications", "Communication" without
+     ellipsis truncation, narrow enough to give the user more room
+     in the main content area than the old 264px width did. */
+  --oe-sidebar-width: 248px;
   --oe-header-height: 52px;
   --oe-content-max-width: 1440px;
 }
