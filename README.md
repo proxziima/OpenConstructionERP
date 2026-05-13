@@ -134,47 +134,57 @@ Star OpenConstructionERP on GitHub and be instantly notified of new releases.
 
 ---
 
-## ✨ What's New in v2.7.0
+## ✨ What's New in v3.0.x
 
-The latest stable release — shipped **May 3, 2026**. Rolls up 14 patch iterations (2.6.42 → 2.6.54) into one stable minor.
+The v3 stable line — milestone **v3.0.0** (May 12, 2026) rolled up 100+ v2.x patch releases; **v3.0.1** (May 13) shipped the 18-Modules Wave; **v3.0.2** is in flight with deep parser correctness, FSM/audit log, and supply-chain hardening.
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
-**🐛 Reliability**
-- CWICR catalog download fixed on stock Windows Python ([#104](https://github.com/datadrivenconstruction/OpenConstructionERP/issues/104)) — `httpx` + `certifi` replaces `urllib`, kills `CERTIFICATE_VERIFY_FAILED`
-- Cost-DB cache invalidation wired through every import / clear path — newly imported regions appear instantly
-- Tasks board cards move between columns via optimistic update with rollback on PATCH fail
-- Cost-DB modal opens instantly: startup pre-warm, 60-min cache, idle-time prefetch
+**🧱 18-Modules Wave — 88 modules total**
+Three grouped categories added on top of the existing estimation / takeoff / collaboration core:
+- **Field Operations** — Service & Maintenance · Equipment & Fleet · Daily Diary (SCL Protocol contemporary records) · Subcontractor Portal · Resources & Crew (LEM rollup)
+- **Commercial** — CRM (BANT scoring, weighted forecast) · Contracts (FIDIC Red/Yellow/Silver, JCT SBC, NEC4 ECC, AIA A201, ConsensusDocs) · Subcontractor Mgmt · Bid Management (EU Dir 2014/24 Art 69 outlier detection) · Variations (FIDIC 20.2.1 time-bar, JCT 5.6.1.3 re-rate) · Supplier Catalogs · Property Development (RICS Red Book residual appraisal)
+- **Schedule & Quality** — Advanced Schedule (Last Planner, CPM Kahn, EVM) · QMS (ISO 9001:2015) · HSE (ISO 45001 / OSHA 1904.39 / RIDDOR / DGUV) · Carbon & ESG (EN 15978 LCA, GHG Scope 1/2/3) · BI Dashboards
 
-**🌍 Internationalisation**
-- 24 UI languages now (added Croatian, Indonesian, Romanian, Thai, Vietnamese)
-- ~28 k translation keys covered across all locales
-- BOQ resource type chips translated × 21 locales
-- Privacy / Terms rewritten for self-hosted edition
+**🌍 India stability**
+- ezdxf 1.4.x layer-visibility regression fixed (every fresh-install layer was hidden by bound-method truthiness)
+- Devanagari / Tamil / Telugu / Arabic / Chinese OCR by default
+- Lakh / crore numeral parser (`1,00,000` reads as 100 000)
+- Scanned-PDF fallback through PaddleOCR
+
+**🗺️ CRS auto-detect worldwide**
+- India UTM 42-46N · Germany Gauss-Krüger + UTM 32/33 · UK BNG · France Lambert-93 · Switzerland LV95 · Austria MGI · Netherlands RD · US State Plane + UTM 10-19N · UAE/KSA UTM 38-40N · Japan JGD2011 · Brazil SIRGAS · China CGCS2000
 
 </td>
 <td width="50%" valign="top">
 
-**🎨 BOQ & estimation**
-- Multi-variant resource picker — explicit modal for cost items with multiple independent variant slots (concrete grade × rebar × formwork)
-- Variant resources dedupe across modal · apply-time · render-time · summary layers
-- Violet **Variant** chip replaces cryptic *Materials* tag on variant rows
-- Bulk-fill chips (median / average / cheapest / priciest), per-row delta-vs-mean
-- RTL-correct layout, full keyboard navigation
+**🔍 IFC parser correctness (silent BOQ corruption fix)**
+- Full `IfcUnitAssignment` parser per ISO 16739-1:2024 §5.4.3 — every SI prefix (KILO/MILLI/MICRO/…), Imperial conversion (inch/foot/yard/lb/°F), recursive `IfcConversionBasedUnit`, `IfcDerivedUnit` combinatorics
+- Per-dimension scale table applied to every `IfcQuantity` value — a 24-inch wall is now 0.6096 m, not raw `24`
+- 92 unit-assignment regression tests; 108 IFC parser tests total
 
-**✨ UX Polish**
-- BIM disk-usage chip moved to hover-tooltip (no more `data/bim/ 86.3 MB` cluttering project name)
-- QA-crawler bug sweep: 12 + 3 fixes from automated multi-locale crawl
-- Skeleton table in cost-DB modal results pane
-- "Add to: section" footer dropdown in cost-DB modal
+**🔒 Security & supply chain**
+- `Settings` fail-fast guard: refuses to start in production when `JWT_SECRET` is still the bundled dev default
+- 230+ IDOR endpoints hardened across service / subcontractors / contracts / bid_management / schedule_advanced / bi_dashboards / takeoff / measurements / CAD sessions
+- BOQ lock/unlock uses CAS UPDATE — eliminates TOCTOU race
+- Converter installer: host allow-list, symlink/TOCTOU guard, 512MB per-file + 1.5GB cumulative streaming caps, Ed25519-signed manifest with SHA-256 verification, refuse-on-mismatch
+
+**📡 Qdrant native (no Docker)**
+- One-click install from official GitHub Releases via `/api/v1/match_elements/qdrant/install`
+- Self-healing cached client reset
+- Health probe + install card on `/match-elements`
+
+**🚫 Removed**
+- All file-size limits across uploads (env override remains for tenant policy)
+- Docker requirement for vector DB
 
 </td>
 </tr>
 </table>
 
-See the [full v2.7.0 changelog](CHANGELOG.md#270--2026-05-03) or the [v2.7.0 GitHub release](https://github.com/datadrivenconstruction/OpenConstructionERP/releases/tag/v2.7.0).
+See the [v3.0.0 release notes](https://github.com/datadrivenconstruction/OpenConstructionERP/releases/tag/v3.0.0) and the [CHANGELOG](CHANGELOG.md) for the per-release breakdown.
 
 ---
 
@@ -576,11 +586,17 @@ Three demo accounts are created automatically on first start. The default passwo
 flowchart TB
     UI["Frontend SPA<br>React 18, TypeScript, Vite<br>AG Grid, Tailwind, PDF.js"]
 
-    subgraph Backend ["FastAPI Backend, 60+ modules"]
-        CORE["Core<br>Module loader, Event bus, Hooks, RBAC, Validation"]
-        BIZ["Business modules<br>BOQ, Costs, Schedule, 5D, Takeoff<br>Tendering, Risk, Reports, Catalog<br>Requirements, Markups, Punch List, BIM Hub, CDE"]
-        AIS["AI services<br>AI Chat SSE, AI Estimate, Cost Intelligence<br>7 LLM providers"]
-        CORE --> BIZ
+    subgraph Backend ["FastAPI Backend, 88 modules"]
+        CORE["Core<br>Module loader, Event bus, Hooks, RBAC<br>Validation, FSM + audit log"]
+        ESTIM["Estimating<br>BOQ, Costs, Catalog, Assemblies<br>Takeoff, BIM Hub, Match-Elements, 5D"]
+        FIELD["Field Operations<br>Service, Equipment, Daily Diary<br>Portal, Resources & Crew"]
+        COMM["Commercial<br>CRM, Contracts, Subcontractors<br>Bid Management, Variations, Suppliers, Property Dev"]
+        QSAFE["Schedule & Quality<br>Advanced Schedule (LPS/CPM/EVM)<br>QMS, HSE, Carbon & ESG, BI Dashboards"]
+        AIS["AI<br>AI Chat SSE, AI Estimate, Cost Intelligence<br>7 LLM providers"]
+        CORE --> ESTIM
+        CORE --> FIELD
+        CORE --> COMM
+        CORE --> QSAFE
         CORE --> AIS
     end
 
