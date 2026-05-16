@@ -82,6 +82,30 @@ def _sanitize_filename(name: str) -> str:
     return name
 
 
+def _blocked_extension_segment(name: str) -> str | None:
+    """Return the first dangerous extension segment in ``name``, else None.
+
+    A suffix-only check (``Path(name).suffix``) only inspects the final
+    extension, so a double-extension payload slips through (A-DOC-10).
+    This scans **every** dotted segment so a blocked executable/script
+    extension anywhere in the name is caught (``x.exe.pdf`` → ``.exe``,
+    ``run.bat.png`` → ``.bat``). ``.php`` is intentionally NOT blocked
+    (no PHP runtime in this stack); the magic-byte gate + UUID-prefixed
+    storage cover the residual content risk.
+
+    It deliberately only flags segments that are in ``BLOCKED_EXTENSIONS``
+    — ordinary multi-dot filenames (``drawing.v2.dwg``,
+    ``report.2024.final.pdf``) are NOT rejected, so this is hardening,
+    not over-restriction.
+    """
+    # ``a.php.png`` → segments ['php', 'png']; leading '' (hidden-file
+    # dot) is skipped by [1:].
+    for segment in name.split(".")[1:]:
+        if f".{segment.lower()}" in BLOCKED_EXTENSIONS:
+            return f".{segment.lower()}"
+    return None
+
+
 def _generate_photo_thumbnail(
     source_bytes: bytes,
     dest_path: Path,
@@ -157,12 +181,14 @@ class DocumentService:
         raw_name = file.filename or "untitled"
         safe_name = _sanitize_filename(raw_name)
 
-        # Block dangerous file extensions
-        ext = Path(safe_name).suffix.lower()
-        if ext in BLOCKED_EXTENSIONS:
+        # Block dangerous file extensions — scan EVERY dotted segment so
+        # a double-extension payload (shell.php.png) is rejected, not just
+        # the final suffix (A-DOC-10).
+        bad_ext = _blocked_extension_segment(safe_name)
+        if bad_ext is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File type '{ext}' is not allowed for security reasons.",
+                detail=f"File type '{bad_ext}' is not allowed for security reasons.",
             )
 
         # Validate category
@@ -367,11 +393,20 @@ class DocumentService:
         old_name = document.name
         old_cde = document.cde_state
 
-        # Validate CDE state transition
+        # Validate CDE state transition.
+        #
+        # A document that has never had a state set (``cde_state IS NULL``
+        # — true for seed rows and every freshly-uploaded document) is
+        # treated as being in the ISO 19650 initial state ``wip``. This
+        # closes A-DOC-09: previously the whole guard was skipped while
+        # ``current_state is None``, so ``wip -> published`` (or any
+        # arbitrary jump) was accepted on a stateless document. Re-asserting
+        # the same state (``wip -> wip``) is allowed so a client can
+        # explicitly initialise the field without a spurious 400.
         if "cde_state" in fields and fields["cde_state"] is not None:
             new_state = fields["cde_state"]
-            current_state = document.cde_state
-            if current_state is not None:
+            current_state = document.cde_state or "wip"
+            if new_state != current_state:
                 allowed = self.VALID_CDE_TRANSITIONS.get(current_state, [])
                 if new_state not in allowed:
                     raise HTTPException(
@@ -499,7 +534,17 @@ class DocumentService:
         total_count, total_size, cat_rows = await self.repo.summary_for_project(project_id)
         recent_docs = await self.repo.recent_uploads(project_id, limit=5)
 
-        by_category: dict[str, int] = {cat: count for cat, count in cat_rows}
+        # Normalise to the documented whitelist (A-DOC-11). Upload coerces
+        # unknown categories to ``other``, but seed rows and other raw
+        # INSERT paths (e.g. the photo cross-link) bypass that, so the
+        # stored column can hold ``certificate``/``engineering``/``permit``
+        # etc. Fold every non-whitelisted category into ``other`` —
+        # aggregating counts so the totals still reconcile — instead of
+        # surfacing categories the rest of the API contract rejects.
+        by_category: dict[str, int] = {}
+        for cat, count in cat_rows:
+            key = cat if cat in VALID_CATEGORIES else "other"
+            by_category[key] = by_category.get(key, 0) + count
 
         recent_uploads = [
             {
@@ -564,12 +609,13 @@ class PhotoService:
 
         # Block dangerous extensions on the photo path too — a renamed
         # ``evil.exe`` with a fake ``image/jpeg`` content_type still gets
-        # caught here even before the magic-byte check.
-        ext = Path(safe_name).suffix.lower()
-        if ext in BLOCKED_EXTENSIONS:
+        # caught here even before the magic-byte check. Scans every
+        # dotted segment so ``shell.php.png`` is rejected (A-DOC-10).
+        bad_ext = _blocked_extension_segment(safe_name)
+        if bad_ext is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File type '{ext}' is not allowed for security reasons.",
+                detail=f"File type '{bad_ext}' is not allowed for security reasons.",
             )
 
         # Validate category
@@ -762,10 +808,45 @@ class PhotoService:
     # ── Delete ─────────────────────────────────────────────────────────────
 
     async def delete_photo(self, photo_id: uuid.UUID) -> None:
-        """Delete a photo and its file."""
+        """Delete a photo, its file, and the cross-linked Documents-hub row.
+
+        ``upload_photo`` mirrors every photo into ``oe_documents_document``
+        (category ``photo``) so it shows up in the file manager. Deleting
+        only the ``ProjectPhoto`` row used to leave that Document orphaned
+        (A-DOC-06): the summary still counted it and downloading it 403'd
+        because its ``file_path`` lives under ``PHOTO_BASE`` while the
+        download route only allows ``UPLOAD_BASE``. We now remove the
+        cross-linked Document(s) in the same transaction so the hub stays
+        consistent.
+        """
         photo = await self.get_photo(photo_id)
         file_path_str = photo.file_path
         thumb_path_str = getattr(photo, "thumbnail_path", None)
+
+        # Remove the cross-linked Documents-hub row(s) created by
+        # ``upload_photo``. The link is the shared ``file_path`` (the raw
+        # INSERT stores the photo's on-disk path verbatim) scoped to this
+        # project's photo-category documents — robust even though the
+        # cross-link is not a real FK.
+        if file_path_str:
+            cross_linked = (
+                await self.session.execute(
+                    select(Document).where(
+                        Document.project_id == photo.project_id,
+                        Document.category == "photo",
+                        Document.file_path == file_path_str,
+                    )
+                )
+            ).scalars().all()
+            for doc in cross_linked:
+                await self.session.delete(doc)
+            if cross_linked:
+                await self.session.flush()
+                logger.info(
+                    "Removed %d cross-linked Document row(s) for photo %s",
+                    len(cross_linked),
+                    photo_id,
+                )
 
         # Delete DB record FIRST
         await self.repo.delete(photo_id)

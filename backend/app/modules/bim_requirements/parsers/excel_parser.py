@@ -148,51 +148,75 @@ def _normalize_datatype(raw: str) -> str:
     return raw.strip()
 
 
+# A locale-tolerant numeric literal: optional sign, digits, with either a
+# ``.`` or ``,`` decimal separator (German/EU spreadsheets use the comma).
+# Thousands grouping is deliberately NOT accepted so a real enum like
+# "A,B" is never mistaken for a number.
+_NUM = r"[+-]?\d+(?:[.,]\d+)?"
+
+
+def _to_float(token: str) -> float | None:
+    """Parse a single numeric token tolerant of a comma decimal separator.
+
+    ``"0,24"`` -> ``0.24``; ``"2.5"`` -> ``2.5``. A grouped token (more than
+    one separator, e.g. ``"1.234,56"``) is refused rather than mis-scaled.
+    """
+    t = token.strip()
+    if not t:
+        return None
+    if t.count(".") + t.count(",") > 1:
+        return None
+    try:
+        return float(t.replace(",", "."))
+    except ValueError:
+        return None
+
+
 def _parse_constraint_value(raw: str) -> dict[str, Any]:
     """‌⁠‍Parse a constraint value string into structured constraint_def fields.
 
     Handles patterns like:
-        "REI60; REI90; REI120"  -> enum
-        ">= 2.5 m"             -> min + unit
-        "0.1 - 1.0"            -> min + max (range)
-        "TEXT" / "STRING"       -> datatype
-        "^[A-Z]{2}"            -> pattern (regex)
-        "required" / "Pflicht"  -> cardinality
+        "REI60; REI90; REI120"   -> enum
+        ">= 2.5 m" / ">= 0,24 m"  -> min + unit  (comma decimals supported)
+        "0.1 - 1.0" / "0,1 - 1,0" -> min + max (range)
+        "TEXT" / "STRING"        -> datatype
+        "^[A-Z]{2}"             -> pattern (regex)
+        "required" / "Pflicht"   -> cardinality
+
+    Number parsing is locale-tolerant: a German decimal comma must NOT be
+    treated as an enum separator (E-I18N-005). Numeric forms (range /
+    comparison) are matched *before* the comma-enum fallback.
     """
     result: dict[str, Any] = {}
     text = raw.strip()
     if not text:
         return result
 
-    # Check for enum (semicolons first — unambiguous; then commas as fallback)
+    # Semicolons are an unambiguous enum separator -- check first.
     if ";" in text:
         enums = [v.strip() for v in text.split(";") if v.strip()]
         if len(enums) > 1:
             result["enum"] = enums
             return result
-    elif "," in text:
-        parts = [v.strip() for v in text.split(",") if v.strip()]
-        # Don't treat as enum if all parts look numeric (could be "1,234" number)
-        if len(parts) > 1 and not all(re.match(r"^[\d.]+$", p) for p in parts):
-            result["enum"] = parts
-            return result
 
-    # Check for range pattern: "0.1 - 1.0" or "0.1-1.0"
-    range_match = re.match(r"^([\d.]+)\s*[-\u2013]\s*([\d.]+)$", text)
+    # Range pattern: "0.1 - 1.0", "0,1 - 1,0", "0.1-1.0" (comma decimals OK).
+    # Matched BEFORE the comma-enum fallback so a German range is not split
+    # into a garbage enumeration (E-I18N-005).
+    range_match = re.match(rf"^({_NUM})\s*[-–]\s*({_NUM})$", text)
     if range_match:
-        try:
-            result["min"] = float(range_match.group(1))
-            result["max"] = float(range_match.group(2))
+        lo = _to_float(range_match.group(1))
+        hi = _to_float(range_match.group(2))
+        if lo is not None and hi is not None:
+            result["min"] = lo
+            result["max"] = hi
             return result
-        except ValueError:
-            pass
 
-    # Check for comparison: ">= 2.5 m" or "<= 100"
-    comp_match = re.match(r"^([<>]=?)\s*([\d.]+)\s*(.*)$", text)
+    # Comparison: ">= 2.5 m", ">= 0,24 m", "<= 100" (comma decimals OK).
+    comp_match = re.match(rf"^([<>]=?)\s*({_NUM})\s*(.*)$", text)
     if comp_match:
         op = comp_match.group(1)
-        try:
-            val = float(comp_match.group(2))
+        val = _to_float(comp_match.group(2))
+        if val is not None:
             unit = comp_match.group(3).strip()
             if ">=" in op or ">" in op:
                 result["min"] = val
@@ -201,8 +225,19 @@ def _parse_constraint_value(raw: str) -> dict[str, Any]:
             if unit:
                 result["unit"] = unit
             return result
-        except ValueError:
-            pass
+
+    # Comma-separated enum fallback -- only reached when the value is NOT a
+    # numeric range/comparison. Guard against splitting a lone comma-decimal
+    # scalar ("0,24") into bogus enum members (E-I18N-005).
+    if "," in text:
+        parts = [v.strip() for v in text.split(",") if v.strip()]
+        if len(parts) > 1 and not all(_to_float(p) is not None for p in parts):
+            result["enum"] = parts
+            return result
+        single = _to_float(text)
+        if single is not None:
+            result["value"] = single
+            return result
 
     # Check for regex pattern
     if text.startswith("^") or text.startswith("(?"):
@@ -324,21 +359,65 @@ class ExcelCSVParser(BaseRequirementParser):
         wb.close()
         return rows
 
+    # Candidate field delimiters, in priority order. Comma is the default
+    # (US/UK Excel and the historical behaviour); semicolon is the default
+    # for German/French Excel "Save as CSV"; pipe and tab are common in
+    # data-exchange exports. Hard-coding the comma collapsed those files
+    # into a single column with ZERO rows and no error (E-I18N-006).
+    _CSV_DELIMITERS = (",", ";", "|", "\t")
+
+    @classmethod
+    def _sniff_delimiter(cls, text: str) -> str:
+        """Pick the delimiter that best splits the header/first data rows.
+
+        Deterministic (``csv.Sniffer`` is unreliable on short inputs): for
+        each candidate, parse the first few non-empty lines and score it by
+        how many columns it yields consistently. The comma wins ties so
+        single-column / already-comma files behave exactly as before.
+        """
+        sample_lines = [ln for ln in text.splitlines() if ln.strip()][:10]
+        if not sample_lines:
+            return ","
+
+        best_delim = ","
+        best_score = -1.0
+        for delim in cls._CSV_DELIMITERS:
+            try:
+                rows = list(csv.reader(io.StringIO("\n".join(sample_lines)), delimiter=delim))
+            except csv.Error:
+                continue
+            rows = [r for r in rows if r]
+            if not rows:
+                continue
+            col_counts = [len(r) for r in rows]
+            max_cols = max(col_counts)
+            if max_cols < 2:
+                continue  # this delimiter does not split the data at all
+            # Reward many columns + consistent column count across rows.
+            consistent = sum(1 for c in col_counts if c == max_cols) / len(col_counts)
+            score = max_cols + consistent
+            if score > best_score:
+                best_score = score
+                best_delim = delim
+        return best_delim
+
     def _read_csv_file(self, path: Path) -> list[list[Any]]:
-        """Read a CSV file with encoding detection."""
+        """Read a CSV file with encoding + delimiter detection."""
         for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
             try:
                 with open(path, encoding=encoding, newline="") as f:
-                    reader = csv.reader(f)
-                    return [list(row) for row in reader]
+                    text = f.read()
             except (UnicodeDecodeError, UnicodeError):
                 continue
+            delim = self._sniff_delimiter(text)
+            return [list(row) for row in csv.reader(io.StringIO(text), delimiter=delim)]
         return []
 
     def _read_csv_string(self, source: str | bytes) -> list[list[Any]]:
-        """Read CSV from a string or bytes."""
+        """Read CSV from a string or bytes (delimiter auto-detected)."""
         text = source.decode("utf-8") if isinstance(source, bytes) else source
-        reader = csv.reader(io.StringIO(text))
+        delim = self._sniff_delimiter(text)
+        reader = csv.reader(io.StringIO(text), delimiter=delim)
         return [list(row) for row in reader]
 
     def _auto_map_columns(self, headers: list[str]) -> dict[int, str]:

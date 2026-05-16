@@ -62,9 +62,17 @@ class RiskRepository:
         return items, total
 
     async def create(self, item: RiskItem) -> RiskItem:
-        """Insert a new risk item."""
+        """Insert a new risk item.
+
+        ``refresh()`` after ``flush()`` so server-side defaults
+        (``id``, ``created_at``, ``updated_at``, ``metadata``) are
+        populated before the row is serialized — otherwise the create
+        response path triggers an implicit lazy-load. Mirrors the
+        repository convention used across the codebase.
+        """
         self.session.add(item)
         await self.session.flush()
+        await self.session.refresh(item)
         return item
 
     async def update_fields(self, risk_id: uuid.UUID, **fields: object) -> None:

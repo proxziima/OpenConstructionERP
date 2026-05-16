@@ -78,6 +78,7 @@ class _StubBudgetRepo:
             "total_actual": "0",
             "total_forecast": "0",
         }
+        self._by_category: list[dict[str, str]] = []
 
     def set_aggregate(self, **values: str) -> None:
         self._aggregate.update(values)
@@ -103,6 +104,14 @@ class _StubBudgetRepo:
 
     async def aggregate_by_project(self, project_id: uuid.UUID) -> dict[str, str]:
         return dict(self._aggregate)
+
+    async def aggregate_by_category(
+        self, project_id: uuid.UUID
+    ) -> list[dict[str, str]]:
+        return list(self._by_category)
+
+    def set_by_category(self, rows: list[dict[str, str]]) -> None:
+        self._by_category = rows
 
 
 class _StubCashflowRepo:
@@ -328,3 +337,137 @@ async def test_get_dashboard_returns_aggregated_counts(
     # Variance = planned - forecast = 5000 → on_budget
     assert dashboard.status == "on_budget"
     assert dashboard.currency == "EUR"
+
+
+@pytest.mark.asyncio
+async def test_get_dashboard_no_currency_does_not_fabricate_eur(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (currency must be data-driven): when the project lookup
+    yields no currency the dashboard must return an empty string, never a
+    hardcoded ``EUR`` — that silently mislabels USD/GBP/JPY budgets.
+    """
+    service = _make_service()
+    pid = uuid.uuid4()
+    service.budget_repo.set_aggregate(total_planned="100000")  # type: ignore[attr-defined]
+
+    class _NoCurrencyRepo:
+        def __init__(self, *_a: Any, **_k: Any) -> None: ...
+
+        async def get_by_id(self, _pid: uuid.UUID) -> Any:
+            return SimpleNamespace(currency="")
+
+    from app.modules.projects import repository as proj_repo_mod
+
+    monkeypatch.setattr(proj_repo_mod, "ProjectRepository", _NoCurrencyRepo)
+
+    dashboard = await service.get_dashboard(pid)
+
+    assert dashboard.currency == ""
+
+
+@pytest.mark.asyncio
+async def test_get_dashboard_uses_project_currency_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A project configured in USD must surface USD, not EUR."""
+    service = _make_service()
+    pid = uuid.uuid4()
+    service.budget_repo.set_aggregate(total_planned="50000")  # type: ignore[attr-defined]
+
+    class _UsdRepo:
+        def __init__(self, *_a: Any, **_k: Any) -> None: ...
+
+        async def get_by_id(self, _pid: uuid.UUID) -> Any:
+            return SimpleNamespace(currency="USD")
+
+    from app.modules.projects import repository as proj_repo_mod
+
+    monkeypatch.setattr(proj_repo_mod, "ProjectRepository", _UsdRepo)
+
+    dashboard = await service.get_dashboard(pid)
+
+    assert dashboard.currency == "USD"
+
+
+# ── Budget summary ────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_budget_summary_returns_absolute_variance() -> None:
+    """Regression (BUG-1): ``BudgetCategoryRow`` must carry an absolute
+    ``variance`` (planned - forecast) so the frontend table stops having to
+    recompute it locally — the field used to be missing from the payload.
+    """
+    service = _make_service()
+    pid = uuid.uuid4()
+    service.budget_repo.set_by_category(  # type: ignore[attr-defined]
+        [
+            {
+                "category": "material",
+                "planned": "100000",
+                "committed": "20000",
+                "actual": "30000",
+                "forecast": "90000",
+            },
+            {
+                "category": "labor",
+                "planned": "50000",
+                "committed": "0",
+                "actual": "10000",
+                "forecast": "60000",
+            },
+        ]
+    )
+
+    summary = await service.get_budget_summary(pid)
+
+    by_cat = {c.category: c for c in summary.categories}
+    # material: under forecast → positive variance
+    assert by_cat["material"].variance == 10_000.0
+    assert by_cat["material"].variance_pct == 10.0
+    # labor: over forecast → negative variance
+    assert by_cat["labor"].variance == -10_000.0
+    assert by_cat["labor"].variance_pct == -20.0
+
+
+# ── S-curve ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_s_curve_plots_snapshot_values_without_double_cumulation() -> None:
+    """Regression (BUG-6): EVM snapshots store cumulative-to-date BCWS/BCWP/
+    ACWP. The S-curve must plot them verbatim — the previous implementation
+    re-summed them across periods and produced curves that climbed far past
+    BAC (a what-if snapshot storing BAC alone would already exceed it).
+    """
+    service = _make_service()
+    pid = uuid.uuid4()
+
+    await service.create_snapshot(
+        SnapshotCreate(
+            project_id=pid,
+            period="2026-01",
+            planned_cost=100_000.0,
+            earned_value=90_000.0,
+            actual_cost=95_000.0,
+        )
+    )
+    await service.create_snapshot(
+        SnapshotCreate(
+            project_id=pid,
+            period="2026-02",
+            planned_cost=200_000.0,
+            earned_value=180_000.0,
+            actual_cost=190_000.0,
+        )
+    )
+
+    s_curve = await service.get_s_curve(pid)
+    points = {p.period: p for p in s_curve.periods}
+
+    # Values are plotted as-is, NOT 100k + 200k = 300k for Feb.
+    assert points["2026-01"].planned == 100_000.0
+    assert points["2026-02"].planned == 200_000.0
+    assert points["2026-02"].earned == 180_000.0
+    assert points["2026-02"].actual == 190_000.0

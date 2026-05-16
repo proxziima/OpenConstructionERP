@@ -16,6 +16,7 @@ import {
   ChevronLeft,
   ChevronRight,
   AlertTriangle,
+  Trash2,
 } from 'lucide-react';
 import {
   Button,
@@ -34,17 +35,21 @@ import { getErrorMessage } from '@/shared/lib/api';
 import { projectsApi } from '@/features/projects/api';
 import {
   listDiaries,
+  getDiary,
   createDiary,
   closeDiary,
   signDiary,
   weatherToday,
+  listEntries,
   createEntry,
+  deleteEntry,
   listPhotos,
   listDroneSurveys,
   listRealityCaptures,
   listArchiveSignatures,
   type DailyDiary,
   type WeatherRecord,
+  type DiaryEntry,
   type DiaryPhoto,
   type DroneSurvey,
   type RealityCapture,
@@ -81,10 +86,17 @@ function todayIso(): string {
   return `${y}-${m}-${d}`;
 }
 
+function isoDate(year: number, month: number, day: number): string {
+  return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
 function monthBounds(year: number, month: number): { from: string; to: string } {
-  const first = new Date(Date.UTC(year, month, 1));
-  const last = new Date(Date.UTC(year, month + 1, 0));
-  return { from: first.toISOString().slice(0, 10), to: last.toISOString().slice(0, 10) };
+  // Built from the local calendar fields the grid itself uses, NOT a UTC
+  // toISOString() slice — the latter shifts the first/last day by ±1 for
+  // any viewer behind/ahead of UTC, so the range query would miss the
+  // edge-of-month diaries the grid still renders cells for.
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  return { from: isoDate(year, month, 1), to: isoDate(year, month, lastDay) };
 }
 
 function daysInMonth(year: number, month: number): number {
@@ -145,6 +157,18 @@ export function DailyDiaryPage() {
     enabled: !!projectId && tab === 'diaries',
   });
 
+  // The "Today" tab shows the explicitly-selected diary when one is set
+  // (e.g. a past day clicked in the calendar); otherwise it resolves the
+  // project's diary for the current local day. Previously it ALWAYS queried
+  // today's diary and ignored activeDiaryId, so clicking a historical day
+  // in the calendar silently showed today (or an empty state) instead of
+  // the clicked diary — the calendar's primary navigation was dead.
+  const selectedDiaryQ = useQuery({
+    queryKey: ['daily-diary', 'by-id', activeDiaryId],
+    queryFn: () => getDiary(activeDiaryId),
+    enabled: !!activeDiaryId && tab === 'today',
+  });
+
   const todayDiariesQ = useQuery({
     queryKey: ['daily-diary', 'today', projectId],
     queryFn: () =>
@@ -154,19 +178,18 @@ export function DailyDiaryPage() {
         date_to: todayIso(),
         limit: 1,
       }),
-    enabled: !!projectId && tab === 'today',
+    enabled: !!projectId && tab === 'today' && !activeDiaryId,
   });
 
-  // Pick active diary when switching to "today" tab
-  useEffect(() => {
-    if (tab !== 'today') return;
-    if (todayDiariesQ.data && todayDiariesQ.data.length > 0) {
-      const first = todayDiariesQ.data[0];
-      if (first) setActiveDiaryId(first.id);
-    } else if (todayDiariesQ.data && todayDiariesQ.data.length === 0) {
-      setActiveDiaryId('');
-    }
-  }, [tab, todayDiariesQ.data]);
+  const activeDiary: DailyDiary | undefined = activeDiaryId
+    ? selectedDiaryQ.data
+    : todayDiariesQ.data?.[0];
+  const activeLoading = activeDiaryId
+    ? selectedDiaryQ.isLoading
+    : todayDiariesQ.isLoading;
+  const activeError = activeDiaryId
+    ? selectedDiaryQ.isError
+    : todayDiariesQ.isError;
 
   const archiveQ = useQuery({
     queryKey: ['daily-diary', 'archive', projectId],
@@ -244,7 +267,12 @@ export function DailyDiaryPage() {
               <button
                 key={it.id}
                 type="button"
-                onClick={() => setTab(it.id)}
+                onClick={() => {
+                  // Clicking the "Today" tab itself always means *today's*
+                  // diary — drop any diary selected from the calendar.
+                  if (it.id === 'today') setActiveDiaryId('');
+                  setTab(it.id);
+                }}
                 className={clsx(
                   'flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap',
                   tab === it.id
@@ -319,27 +347,29 @@ export function DailyDiaryPage() {
           />
         )
       ) : tab === 'today' ? (
-        todayDiariesQ.isError ? (
+        activeError ? (
           <Card className="py-12">
             <EmptyState
               icon={<AlertTriangle size={22} />}
               title={t('common.error', { defaultValue: 'Error' })}
               description={t('daily_diary.today_load_error', {
-                defaultValue: 'Failed to load today’s diary. Please try again.',
+                defaultValue: 'Failed to load the diary. Please try again.',
               })}
               action={{
                 label: t('common.retry', { defaultValue: 'Retry' }),
-                onClick: () => void todayDiariesQ.refetch(),
+                onClick: () =>
+                  void (activeDiaryId
+                    ? selectedDiaryQ.refetch()
+                    : todayDiariesQ.refetch()),
               }}
             />
           </Card>
         ) : (
           <TodayTab
             projectId={projectId}
-            diary={todayDiariesQ.data?.[0]}
-            loading={todayDiariesQ.isLoading}
+            diary={activeDiary}
+            loading={activeLoading}
             onCreate={() => setCreateOpen(true)}
-            activeDiaryId={activeDiaryId}
             onSign={() => setSignOpen(true)}
           />
         )
@@ -370,9 +400,9 @@ export function DailyDiaryPage() {
           onClose={() => setCreateOpen(false)}
         />
       )}
-      {signOpen && activeDiaryId && (
+      {signOpen && activeDiary && (
         <SignDiaryModal
-          diaryId={activeDiaryId}
+          diaryId={activeDiary.id}
           onClose={() => setSignOpen(false)}
         />
       )}
@@ -476,7 +506,7 @@ function DiariesCalendar({
             ))}
             {Array.from({ length: daysCount }, (_, i) => {
               const day = i + 1;
-              const iso = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              const iso = isoDate(year, month, day);
               const diary = byDate.get(iso);
               const isToday = iso === todayIso();
               return (
@@ -521,36 +551,41 @@ function TodayTab({
   diary,
   loading,
   onCreate,
-  activeDiaryId,
   onSign,
 }: {
   projectId: string;
   diary: DailyDiary | undefined;
   loading: boolean;
   onCreate: () => void;
-  activeDiaryId: string;
   onSign: () => void;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
 
+  // All asset panels are scoped to the diary's OWN date — not todayIso().
+  // A diary opened from the calendar can be any past day; previously the
+  // panels always queried today, so a back-dated diary showed today's
+  // weather/photos beside a header for a different date.
+  const diaryDate = diary?.diary_date;
+  const diaryId = diary?.id;
+
   const weatherQ = useQuery({
-    queryKey: ['daily-diary', 'weather', projectId],
-    queryFn: () => weatherToday(projectId),
-    enabled: !!projectId,
+    queryKey: ['daily-diary', 'weather', projectId, diaryDate],
+    queryFn: () => weatherToday(projectId, diaryDate),
+    enabled: !!projectId && !!diaryDate,
   });
 
   const photosQ = useQuery({
-    queryKey: ['daily-diary', 'photos', projectId, todayIso()],
+    queryKey: ['daily-diary', 'photos', projectId, diaryDate],
     queryFn: () =>
       listPhotos({
         project_id: projectId,
-        date_from: `${todayIso()}T00:00:00`,
-        date_to: `${todayIso()}T23:59:59`,
+        date_from: `${diaryDate}T00:00:00`,
+        date_to: `${diaryDate}T23:59:59`,
         limit: 200,
       }),
-    enabled: !!projectId,
+    enabled: !!projectId && !!diaryDate,
   });
 
   const droneQ = useQuery({
@@ -566,16 +601,15 @@ function TodayTab({
   });
 
   const signaturesQ = useQuery({
-    queryKey: ['daily-diary', 'signatures', activeDiaryId],
-    queryFn: () => listArchiveSignatures(activeDiaryId),
-    enabled: !!activeDiaryId && diary?.status === 'signed',
+    queryKey: ['daily-diary', 'signatures', diaryId],
+    queryFn: () => listArchiveSignatures(diaryId as string),
+    enabled: !!diaryId && diary?.status === 'signed',
   });
 
   const closeMut = useMutation({
     mutationFn: (id: string) => closeDiary(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['daily-diary', 'today'] });
-      qc.invalidateQueries({ queryKey: ['daily-diary', 'list'] });
+      qc.invalidateQueries({ queryKey: ['daily-diary'] });
       addToast({ type: 'success', title: t('daily_diary.closed', { defaultValue: 'Diary closed' }) });
     },
     onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
@@ -609,7 +643,10 @@ function TodayTab({
     );
   }
 
-  const latestSignature = signaturesQ.data?.[0];
+  // signatures_for_diary returns revision-ascending; the latest signed
+  // snapshot (after any re-sign) is the LAST element, not [0].
+  const latestSignature = signaturesQ.data?.[signaturesQ.data.length - 1];
+  // Most recent reading of the day is first (captured_at desc).
   const latestWeather: WeatherRecord | undefined = weatherQ.data?.[0];
 
   return (
@@ -806,6 +843,18 @@ function EntriesTimeline({
   const [description, setDescription] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // Previously this component only rendered an add-form: created entries
+  // were invisible (no list endpoint, no list query). It now reads back
+  // the diary's entries so the timeline actually shows them.
+  const entriesQ = useQuery({
+    queryKey: ['daily-diary', 'entries', diaryId],
+    queryFn: () => listEntries(diaryId),
+    enabled: !!diaryId,
+  });
+
+  const invalidateEntries = () =>
+    qc.invalidateQueries({ queryKey: ['daily-diary', 'entries', diaryId] });
+
   const submit = async () => {
     if (!title.trim()) return;
     setBusy(true);
@@ -814,12 +863,12 @@ function EntriesTimeline({
         diary_id: diaryId,
         entry_type: entryType,
         entry_time: new Date().toISOString(),
-        title,
-        description,
+        title: title.trim(),
+        description: description.trim() || undefined,
       });
       setTitle('');
       setDescription('');
-      qc.invalidateQueries({ queryKey: ['daily-diary'] });
+      void invalidateEntries();
       addToast({ type: 'success', title: t('daily_diary.entry_created', { defaultValue: 'Entry added' }) });
     } catch (err) {
       addToast({ type: 'error', title: getErrorMessage(err) });
@@ -828,17 +877,28 @@ function EntriesTimeline({
     }
   };
 
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => deleteEntry(id),
+    onSuccess: () => {
+      void invalidateEntries();
+      addToast({ type: 'success', title: t('daily_diary.entry_deleted', { defaultValue: 'Entry removed' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+
+  const entries = entriesQ.data ?? [];
+
   return (
     <Card padding="md">
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-content-secondary mb-3">
-        {t('daily_diary.entries', { defaultValue: 'Entries' })}
-      </h3>
-      {sealed ? (
-        <p className="text-xs text-content-tertiary py-2">
-          {t('daily_diary.entries_sealed', { defaultValue: 'Diary is sealed — entries are read-only.' })}
-        </p>
-      ) : (
-        <div className="space-y-2">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-content-secondary">
+          {t('daily_diary.entries', { defaultValue: 'Entries' })}
+        </h3>
+        <span className="text-xs text-content-tertiary">{entries.length}</span>
+      </div>
+
+      {!sealed && (
+        <div className="space-y-2 mb-4">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
             <select
               value={entryType}
@@ -888,6 +948,59 @@ function EntriesTimeline({
             className={clsx(inputCls, 'h-auto py-2')}
           />
         </div>
+      )}
+
+      {sealed && (
+        <p className="text-xs text-content-tertiary mb-3">
+          {t('daily_diary.entries_sealed', { defaultValue: 'Diary is sealed — entries are read-only.' })}
+        </p>
+      )}
+
+      {entriesQ.isLoading ? (
+        <SkeletonTable rows={3} columns={3} />
+      ) : entries.length === 0 ? (
+        <p className="text-sm text-content-tertiary py-4 text-center">
+          {t('daily_diary.no_entries', { defaultValue: 'No entries logged yet.' })}
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {entries.map((e: DiaryEntry) => (
+            <li
+              key={e.id}
+              className="rounded-md border border-border-light bg-surface-secondary/40 p-2.5 text-sm"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="neutral" size="sm">
+                      {e.entry_type}
+                    </Badge>
+                    <span className="font-medium truncate">{e.title || '—'}</span>
+                  </div>
+                  {e.description && (
+                    <p className="mt-1 text-xs text-content-secondary whitespace-pre-wrap">
+                      {e.description}
+                    </p>
+                  )}
+                  <p className="mt-1 text-2xs text-content-tertiary">
+                    <DateDisplay value={e.entry_time} />
+                  </p>
+                </div>
+                {!sealed && (
+                  <button
+                    type="button"
+                    onClick={() => deleteMut.mutate(e.id)}
+                    disabled={deleteMut.isPending}
+                    className="shrink-0 rounded-md p-1 text-content-tertiary hover:bg-surface-secondary hover:text-semantic-danger disabled:opacity-50"
+                    aria-label={t('common.delete', { defaultValue: 'Delete' })}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
       )}
     </Card>
   );

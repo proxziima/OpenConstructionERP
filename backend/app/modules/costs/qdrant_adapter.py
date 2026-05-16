@@ -161,6 +161,19 @@ def country_to_collection(country: str | None) -> str:
     return base
 
 
+# Region-id heads DDC ships that differ from the 2-letter ISO-3166
+# alpha-2 code its snapshot writes into the ``country`` payload. Keep
+# in lockstep with the catalogue files DDC actually publishes — a new
+# 3-letter/language-style head means a new entry here, not a code
+# branch. 2-letter heads (DE, MX, BR, AT, CH, RU…) pass through
+# unchanged via ``dict.get(head, head)``.
+_REGION_HEAD_ALIASES: dict[str, str] = {
+    "USA": "US",
+    "GBR": "GB",
+    "ENG": "CA",  # Canadian-English catalogue file DDC ships
+}
+
+
 def country_filter_for(country: str | None) -> str | None:
     """Return the ISO-3166 head of a region id for the ``country`` payload.
 
@@ -178,11 +191,16 @@ def country_filter_for(country: str | None) -> str | None:
     does not. The underscore is the explicit signal that the caller
     meant a specific catalogue, not a language-wide search.
 
-    The mapping intentionally does NOT remap ``USA → US``: the CWICR
-    payload field uses whatever DDC writes during vectorisation, and
-    we don't want to second-guess it here. If a mismatch surfaces in
-    production, fix it at the data-ingest layer rather than the
-    application's filter helper.
+    3-letter / language-style head remap
+    ------------------------------------
+    Some catalogue region ids DDC ships use a 3-letter or
+    language-style head (``USA_USD``, ``GBR_LONDON``, ``ENG_TORONTO``)
+    while the snapshot's ``country`` payload is the 2-letter ISO-3166
+    alpha-2 code DDC writes during vectorisation (``"US"``, ``"GB"``,
+    ``"CA"``). Pinning the raw head (``"USA"``) would match **zero**
+    rows in such a snapshot and silently exclude every rate for that
+    region. The alias table mirrors the heads DDC actually ships, so
+    the filter aligns with the snapshot rather than second-guessing it.
     """
 
     if not country or not country.strip():
@@ -192,6 +210,7 @@ def country_filter_for(country: str | None) -> str | None:
         # Bare code (``DE``, ``USA``, ``RU``) — language-wide intent.
         return None
     head = raw.split("_", 1)[0]
+    head = _REGION_HEAD_ALIASES.get(head, head)
     return head or None
 
 

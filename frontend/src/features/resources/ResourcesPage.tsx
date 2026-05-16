@@ -99,12 +99,6 @@ const ASSIGN_VARIANT: Record<AssignmentStatus, 'neutral' | 'blue' | 'success' | 
 const inputCls =
   'h-9 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue';
 
-function isoNow(offsetDays = 0): string {
-  const d = new Date();
-  d.setDate(d.getDate() + offsetDays);
-  return d.toISOString();
-}
-
 function startOfWeek(): string {
   const d = new Date();
   const day = d.getDay();
@@ -3077,10 +3071,15 @@ function ProposeAssignmentModal({
     queryFn: () => listSkills({ limit: 200 }).catch(() => []),
   });
 
+  // datetime-local inputs are wall-clock and tz-naive. Seeding them from
+  // a UTC ISO string and then re-parsing with `new Date` double-applies
+  // the timezone offset, so a proposed assignment landed hours away from
+  // the time the dispatcher actually picked. Use the same local-clock
+  // helpers the other modals use.
   const [form, setForm] = useState({
     resource_id: resources[0]?.id || '',
-    start_at: isoNow(0).slice(0, 16),
-    end_at: isoNow(1).slice(0, 16),
+    start_at: isoLocalNow(0),
+    end_at: isoLocalNow(1),
     allocation_percent: 100,
     notes: '',
     required_skills: [] as string[],
@@ -3096,10 +3095,20 @@ function ProposeAssignmentModal({
     }
     setBusy(true);
     try {
+      if (new Date(form.end_at) <= new Date(form.start_at)) {
+        addToast({
+          type: 'error',
+          title: t('resources.end_after_start', {
+            defaultValue: 'End must be after start.',
+          }),
+        });
+        setBusy(false);
+        return;
+      }
       await proposeAssignment({
         resource_id: form.resource_id,
-        start_at: new Date(form.start_at).toISOString(),
-        end_at: new Date(form.end_at).toISOString(),
+        start_at: localDatetimeToIso(form.start_at),
+        end_at: localDatetimeToIso(form.end_at),
         allocation_percent: form.allocation_percent,
         required_skills: form.required_skills,
         notes: form.notes,

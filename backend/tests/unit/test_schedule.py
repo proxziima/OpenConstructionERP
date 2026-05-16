@@ -330,3 +330,26 @@ async def test_gantt_data_generation() -> None:
     assert gantt.summary.completed == 1
     assert gantt.summary.in_progress == 1
     assert gantt.summary.not_started == 1
+
+
+@pytest.mark.asyncio
+async def test_gantt_duration_matches_stored_working_days() -> None:
+    """Regression: Gantt ``duration_days`` must equal the stored
+    working-day duration (compute_duration), NOT a raw calendar-day diff.
+
+    2026-05-01 (Fri) → 2026-05-15 (Fri) spans 14 calendar days but only
+    11 working days. The old code reported 14 here while the activity
+    table / CPM reported 11 — a visible inconsistency in the UI.
+    """
+    svc = _make_service()
+    schedule = await _create_schedule(svc)
+    activity = await _create_activity(
+        svc, schedule.id, start_date="2026-05-01", end_date="2026-05-15",
+    )
+    assert activity.duration_days == 11  # working days
+
+    gantt = await svc.get_gantt_data(schedule.id)
+    assert gantt.activities[0].duration_days == 11, (
+        "Gantt duration must match the stored working-day duration, "
+        "not the calendar-day diff"
+    )

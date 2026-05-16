@@ -32,6 +32,8 @@ import { useToastStore } from '@/stores/useToastStore';
 import { getErrorMessage } from '@/shared/lib/api';
 import {
   listEquipment,
+  getEquipment,
+  getEquipmentDashboard,
   createEquipment,
   updateEquipment,
   deleteEquipment,
@@ -370,14 +372,26 @@ function DetailDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  // Fetch the single record via the dedicated endpoint. The previous
+  // implementation listed up to 500 units and `.find()`-ed the row, which
+  // (a) silently returned "asset no longer exists" for any fleet larger
+  // than 500 units and (b) refetched the whole list on every drawer open.
+  // A 404 here is a genuine "not found"; React Query keeps it in `error`.
   const eqQ = useQuery({
     queryKey: ['equipment', 'detail', id],
-    queryFn: () =>
-      listEquipment({ limit: 500 }).then(
-        (rows) => rows.find((r) => r.id === id) ?? null,
-      ),
+    queryFn: () => getEquipment(id),
   });
   const eq = eqQ.data;
+
+  // Per-unit KPI rollup (utilization %, fuel cost MTD, open work orders,
+  // expiring inspections, and the assignment-blocked flag). These are
+  // computed server-side but were never surfaced — most importantly the
+  // `blocked` state, which is invisible to dispatchers without this.
+  const dashQ = useQuery({
+    queryKey: ['equipment', 'unitDashboard', id],
+    queryFn: () => getEquipmentDashboard(id),
+    enabled: !!eq,
+  });
 
   // Close on Escape — symmetric with EquipmentFormModal so keyboard
   // users get a predictable dismissal. Skipped while a destructive
@@ -581,6 +595,21 @@ function DetailDrawer({ id, onClose }: { id: string; onClose: () => void }) {
               />
             </div>
 
+            {dashQ.data?.blocked && (
+              <div
+                role="alert"
+                className="mx-5 mt-3 flex items-start gap-2 rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-2 text-xs text-status-error"
+              >
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  {t('equipment.blocked_banner', {
+                    defaultValue:
+                      'This unit is blocked from new assignments — its status is not active or a required inspection has expired.',
+                  })}
+                </span>
+              </div>
+            )}
+
             <div className="border-b border-border-light px-5">
               <nav className="flex gap-1 -mb-px">
                 {(
@@ -642,6 +671,7 @@ function DetailDrawer({ id, onClose }: { id: string; onClose: () => void }) {
                   equipment={eq}
                   telemetry={telemetryQ.data ?? []}
                   loading={telemetryQ.isLoading}
+                  dashboard={dashQ.data ?? null}
                 />
               )}
               {tab === 'maintenance' && (
@@ -707,14 +737,68 @@ function UtilizationTab({
   equipment,
   telemetry,
   loading,
+  dashboard,
 }: {
   equipment: Equipment;
   telemetry: { id: string; recorded_at: string; fuel_level?: number | string | null; hour_meter?: number | string | null; odometer_km?: number | string | null; engine_status?: string | null }[];
   loading: boolean;
+  dashboard: {
+    utilization_pct: number;
+    fuel_cost_mtd: number | string;
+    open_work_orders: number;
+    expiring_inspections: number;
+  } | null;
 }) {
   const { t } = useTranslation();
   return (
     <div className="space-y-3">
+      {dashboard && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <Card padding="sm">
+            <p className="text-xs text-content-tertiary">
+              {t('equipment.utilization_mtd', {
+                defaultValue: 'Utilization (MTD)',
+              })}
+            </p>
+            <p className="mt-1 text-lg font-semibold tabular-nums">
+              {dashboard.utilization_pct.toFixed(0)}%
+            </p>
+          </Card>
+          <Card padding="sm">
+            <p className="text-xs text-content-tertiary">
+              {t('equipment.fuel_cost_mtd', {
+                defaultValue: 'Fuel cost (MTD)',
+              })}
+            </p>
+            <p className="mt-1 text-lg font-semibold tabular-nums">
+              <MoneyDisplay
+                amount={toNum(dashboard.fuel_cost_mtd)}
+                currency={equipment.currency || undefined}
+              />
+            </p>
+          </Card>
+          <Card padding="sm">
+            <p className="text-xs text-content-tertiary">
+              {t('equipment.open_work_orders', {
+                defaultValue: 'Open work orders',
+              })}
+            </p>
+            <p className="mt-1 text-lg font-semibold tabular-nums">
+              {dashboard.open_work_orders}
+            </p>
+          </Card>
+          <Card padding="sm">
+            <p className="text-xs text-content-tertiary">
+              {t('equipment.expiring_inspections', {
+                defaultValue: 'Expiring inspections',
+              })}
+            </p>
+            <p className="mt-1 text-lg font-semibold tabular-nums">
+              {dashboard.expiring_inspections}
+            </p>
+          </Card>
+        </div>
+      )}
       <div className="grid grid-cols-3 gap-2">
         <Card padding="sm">
           <p className="text-xs text-content-tertiary">
@@ -1127,10 +1211,17 @@ function _toPayload(
     year: toOptNum(form.year),
     ownership: form.ownership,
     status: form.status,
+    location_lat: toOptNum(form.location_lat),
+    location_lng: toOptNum(form.location_lng),
     hour_meter: toOptNum(form.hour_meter),
     odometer_km: toOptNum(form.odometer_km),
     purchase_date: toOptStr(form.purchase_date),
     purchase_value: toOptNum(form.purchase_value),
+    // Required by depreciation_value_at — previously collected by the
+    // form but silently dropped here, so depreciation never computed and
+    // the lat/lng inputs were inert. Now round-tripped.
+    useful_life_years: toOptNum(form.useful_life_years),
+    residual_value: toOptNum(form.residual_value),
     currency: toOptStr(form.currency),
     notes: toOptStr(form.notes),
   };

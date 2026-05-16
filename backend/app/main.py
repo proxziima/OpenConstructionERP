@@ -1620,63 +1620,38 @@ def create_app() -> FastAPI:
         _section("Database")
         if "sqlite" in settings.database_url or "postgresql" in settings.database_url:
             # SQLite auto-migration: add missing columns before create_all
+            import importlib
+            import pkgutil
+
+            from app import modules as _modules_pkg
             from app.core import audit as _audit_core  # noqa: F401
             from app.core.sqlite_migrator import sqlite_auto_migrate
             from app.database import Base, engine
-            from app.modules.ai import models as _ai_models  # noqa: F401
-            from app.modules.architecture_map import models as _architecture_map_models  # noqa: F401
-            from app.modules.assemblies import models as _asm_models  # noqa: F401
-            from app.modules.bim_hub import models as _bim_hub_models  # noqa: F401
-            from app.modules.bim_requirements import models as _bim_requirements_models  # noqa: F401
-            from app.modules.boq import models as _boq_models  # noqa: F401
-            from app.modules.catalog import models as _catalog_models  # noqa: F401
-            from app.modules.cde import models as _cde_models  # noqa: F401
-            from app.modules.changeorders import models as _changeorders_models  # noqa: F401
-            from app.modules.collaboration import models as _collaboration_models  # noqa: F401
-            from app.modules.collaboration_locks import models as _collaboration_locks_models  # noqa: F401
-            from app.modules.compliance import models as _compliance_models  # noqa: F401
-            from app.modules.contacts import models as _contacts_models  # noqa: F401
-            from app.modules.correspondence import models as _correspondence_models  # noqa: F401
-            from app.modules.costmodel import models as _cm_models  # noqa: F401
-            from app.modules.costs import models as _costs_models  # noqa: F401
-            from app.modules.dashboards import models as _dashboards_models  # noqa: F401
-            from app.modules.documents import models as _documents_models  # noqa: F401
-            from app.modules.dwg_takeoff import models as _dwg_takeoff_models  # noqa: F401
-            from app.modules.eac import models as _eac_models  # noqa: F401
 
-            # Enterprise / feature-pack modules
-            from app.modules.enterprise_workflows import models as _enterprise_workflows_models  # noqa: F401
-            from app.modules.erp_chat import models as _erp_chat_models  # noqa: F401
-            from app.modules.fieldreports import models as _fieldreports_models  # noqa: F401
-            from app.modules.finance import models as _finance_models  # noqa: F401
-            from app.modules.full_evm import models as _full_evm_models  # noqa: F401
-            from app.modules.i18n_foundation import models as _i18n_models  # noqa: F401
-            from app.modules.inspections import models as _inspections_models  # noqa: F401
-            from app.modules.integrations import models as _integrations_models  # noqa: F401
-            from app.modules.jobs import models as _jobs_models  # noqa: F401
-            from app.modules.markups import models as _markups_models  # noqa: F401
-            from app.modules.match_elements import models as _match_elements_models  # noqa: F401
-            from app.modules.meetings import models as _meetings_models  # noqa: F401
-            from app.modules.ncr import models as _ncr_models  # noqa: F401
-            from app.modules.notifications import models as _notifications_models  # noqa: F401
-            from app.modules.procurement import models as _procurement_models  # noqa: F401
-            from app.modules.projects import models as _projects_models  # noqa: F401
-            from app.modules.punchlist import models as _punchlist_models  # noqa: F401
-            from app.modules.reporting import models as _reporting_models  # noqa: F401
-            from app.modules.requirements import models as _requirements_models  # noqa: F401
-            from app.modules.rfi import models as _rfi_models  # noqa: F401
-            from app.modules.rfq_bidding import models as _rfq_bidding_models  # noqa: F401
-            from app.modules.risk import models as _risk_models  # noqa: F401
-            from app.modules.safety import models as _safety_models  # noqa: F401
-            from app.modules.schedule import models as _sched_models  # noqa: F401
-            from app.modules.submittals import models as _submittals_models  # noqa: F401
-            from app.modules.takeoff import models as _takeoff_models  # noqa: F401
-            from app.modules.tasks import models as _tasks_models  # noqa: F401
-            from app.modules.teams import models as _teams_models  # noqa: F401
-            from app.modules.tendering import models as _tendering_models  # noqa: F401
-            from app.modules.transmittals import models as _transmittals_models  # noqa: F401
-            from app.modules.users import models as _users_models  # noqa: F401
-            from app.modules.validation import models as _validation_models  # noqa: F401
+            # Register EVERY module's SQLAlchemy models before create_all so
+            # a fresh SQLite/PostgreSQL database gets all tables. This was
+            # previously a hand-maintained import list that silently omitted
+            # ~18 modules (service, resources, equipment, portal,
+            # daily_diary, schedule_advanced, crm, contracts, variations,
+            # bid_management, qms, hse_advanced, carbon, bi_dashboards,
+            # subcontractors, supplier_catalogs, property_dev,
+            # compliance_docs). Their tables were never created on a clean
+            # install, so every list endpoint 500'd with "no such table".
+            # Discovering models dynamically makes that whole class of bug
+            # impossible: any module package with a models.py is registered
+            # automatically — adding a new module needs no edit here.
+            for _m in pkgutil.iter_modules(_modules_pkg.__path__):
+                if not _m.ispkg:
+                    continue
+                _models_mod = f"app.modules.{_m.name}.models"
+                try:
+                    importlib.import_module(_models_mod)
+                except ModuleNotFoundError as exc:
+                    # No models.py in this module — fine, skip it. Re-raise
+                    # if the failure is a *different* missing import inside
+                    # the models module (that is a real bug, not absence).
+                    if exc.name != _models_mod:
+                        raise
 
             # SQLite-only: add missing columns to existing tables before
             # create_all runs. PostgreSQL deployments must use Alembic for

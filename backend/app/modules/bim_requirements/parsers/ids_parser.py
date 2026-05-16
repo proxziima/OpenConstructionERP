@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import defusedxml.ElementTree as safe_ET
+from defusedxml.common import DefusedXmlException
 
 from app.modules.bim_requirements.parsers.base import (
     BaseRequirementParser,
@@ -139,6 +140,25 @@ class IDSParser(BaseRequirementParser):
         try:
             xml_content = self._read_source(source)
             root = safe_ET.fromstring(xml_content)
+        except DefusedXmlException as exc:
+            # XXE / billion-laughs / DTD-fetch attempt. ``EntitiesForbidden``,
+            # ``DTDForbidden`` and ``ExternalReferenceForbidden`` are all
+            # subclasses of ``DefusedXmlException``; catching the base class
+            # keeps the guard in the *code* (E-SEC-016) rather than relying
+            # on the interpreter version. Tagged ``xml_security`` so the
+            # service can surface a clean 400 (malicious input) instead of a
+            # generic 422 (unparseable file).
+            result.errors.append(
+                {
+                    "row": 0,
+                    "field": "xml_security",
+                    "msg": (
+                        "XML rejected: external entities, DTDs and entity "
+                        f"expansion are not permitted ({exc.__class__.__name__})."
+                    ),
+                }
+            )
+            return result
         except ET.ParseError as exc:
             result.errors.append({"row": 0, "field": "xml", "msg": f"Invalid XML: {exc}"})
             return result

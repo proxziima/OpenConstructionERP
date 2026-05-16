@@ -295,10 +295,11 @@ def cpm_forward_backward_pass(
     ef: dict[Any, int] = {}
     for aid in topo:
         dur = max(0, int(by_id[aid].get("duration", 0) or 0))
-        if preds[aid]:
-            es[aid] = max(ef[p] for p in preds[aid] if p in ef)
-        else:
-            es[aid] = 0
+        # A predecessor that is part of a cycle is excluded from ``topo``
+        # and therefore never gets an ``ef``; default to 0 instead of
+        # letting ``max()`` raise on an empty generator (500 on /cpm).
+        ready_preds = [ef[p] for p in preds[aid] if p in ef]
+        es[aid] = max(ready_preds) if ready_preds else 0
         ef[aid] = es[aid] + dur
 
     if not ef:
@@ -310,10 +311,10 @@ def cpm_forward_backward_pass(
     ls: dict[Any, int] = {}
     for aid in reversed(topo):
         dur = max(0, int(by_id[aid].get("duration", 0) or 0))
-        if succs[aid]:
-            lf[aid] = min(ls[s] for s in succs[aid] if s in ls)
-        else:
-            lf[aid] = project_finish
+        # Symmetric to the forward pass: a successor in a cycle never gets
+        # an ``ls`` — fall back to ``project_finish`` instead of raising.
+        ready_succs = [ls[s] for s in succs[aid] if s in ls]
+        lf[aid] = min(ready_succs) if ready_succs else project_finish
         ls[aid] = lf[aid] - dur
 
     out: dict[str, dict[str, Any]] = {}
@@ -465,7 +466,14 @@ def compute_evm(
 
     spi = (ev_total / pv_total) if pv_total > 0 else Decimal("0")
     cpi = (ev_total / ac_total) if ac_total > 0 else Decimal("0")
-    eac = ac_total + ((bac_total - ev_total) / cpi) if cpi > 0 else bac_total
+    if cpi > 0:
+        eac = ac_total + ((bac_total - ev_total) / cpi)
+    else:
+        # CPI undefined (no earned value yet). The PMI fallback keeps the
+        # money already spent in the forecast: EAC = AC + (BAC − EV).
+        # The previous ``eac = bac_total`` discarded sunk cost and made
+        # VAC (= BAC − EAC) read 0 even after real spend.
+        eac = ac_total + (bac_total - ev_total)
     etc = eac - ac_total
     vac = bac_total - eac
     sv = ev_total - pv_total

@@ -10,8 +10,10 @@ import {
   isCategoricalAggFn,
   canAggregateColumn,
   formatCount,
+  rollupParentValue,
   AGG_FUNCTIONS,
 } from '@/features/cad-explorer/aggregation';
+import type { AggregateGroup } from '@/features/cad-explorer/api';
 
 /** Minimal synthetic dataset — two categories, mixed text / numeric
  *  columns, some nulls. Chosen so the expected counts are obvious by
@@ -196,5 +198,46 @@ describe('aggregation — formatCount', () => {
 
   it('never includes a decimal point', () => {
     expect(formatCount(42)).not.toMatch(/[.,]\d/);
+  });
+});
+
+/**
+ * D-TKC-008: hierarchical pivot parent rows must roll up with the SAME
+ * aggregation the user picked, not an unconditional sum of child
+ * results. Previously aggFn='avg' showed Σ(child averages).
+ */
+describe('aggregation — rollupParentValue', () => {
+  // Two child groups: 4 elements averaging 2.0, 6 elements averaging 3.0.
+  const children: AggregateGroup[] = [
+    { key: { type: 'A' }, results: { x: 2 }, count: 4 },
+    { key: { type: 'B' }, results: { x: 3 }, count: 6 },
+  ];
+
+  it('sum / count are additive', () => {
+    expect(rollupParentValue(children, 'x', 'sum')).toBe(5);
+    expect(rollupParentValue(children, 'x', 'count')).toBe(5);
+  });
+
+  it('avg is the count-weighted mean (not the sum of averages)', () => {
+    // (2*4 + 3*6) / (4+6) = 26/10 = 2.6 — NOT 5 (the old bug).
+    expect(rollupParentValue(children, 'x', 'avg')).toBeCloseTo(2.6, 9);
+  });
+
+  it('min is the min of child mins, max the max of child maxes', () => {
+    expect(rollupParentValue(children, 'x', 'min')).toBe(2);
+    expect(rollupParentValue(children, 'x', 'max')).toBe(3);
+  });
+
+  it('count_unique is not derivable from group summaries → null', () => {
+    expect(rollupParentValue(children, 'x', 'count_unique')).toBeNull();
+  });
+
+  it('empty children rolls up to 0', () => {
+    expect(rollupParentValue([], 'x', 'avg')).toBe(0);
+  });
+
+  it('avg with zero total count does not divide by zero', () => {
+    const zero: AggregateGroup[] = [{ key: {}, results: { x: 9 }, count: 0 }];
+    expect(rollupParentValue(zero, 'x', 'avg')).toBe(0);
   });
 });

@@ -7,10 +7,91 @@ BOQ links, quantity maps, element groups, and model diffs.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _validate_multiplier(raw: str | None) -> str | None:
+    """QR-001 — reject a structurally invalid quantity-map multiplier.
+
+    The multiplier feeds ``qty * multiplier * (1 + waste/100)`` at
+    apply-time. A free string previously let ``"1e500"`` (overflows to
+    ``inf`` after ``float()`` and serialises to JSON ``null``),
+    ``"-2"`` (silently flips sign of every matched quantity), or
+    ``"__import__('os')"`` (a rule that always hard-fails at apply
+    time, silently dropping every matched element) be persisted as a
+    "valid" rule.
+
+    A valid multiplier is a *finite, strictly-positive* decimal. We
+    parse with :class:`~decimal.Decimal` (locale-independent, no
+    binary float rounding) and bound the magnitude so the downstream
+    ``float()`` cannot reach non-finite territory. ``None`` / unset is
+    left untouched (the create-schema default ``"1"`` applies).
+    """
+    if raw is None:
+        return raw
+    text = raw.strip()
+    if not text:
+        # Empty string is meaningless for a multiplier — treat as the
+        # neutral element rather than rejecting (back-compat with rows
+        # that stored "").
+        return "1"
+    try:
+        value = Decimal(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(
+            f"multiplier must be a finite positive number, got {raw!r}"
+        ) from exc
+    if not value.is_finite():
+        raise ValueError(f"multiplier must be finite, got {raw!r}")
+    if value <= 0:
+        raise ValueError(
+            f"multiplier must be strictly positive, got {raw!r} "
+            f"(a non-positive multiplier would zero-out or sign-flip "
+            f"every matched quantity)"
+        )
+    # 1e15 is already absurd for any real construction quantity factor;
+    # keeping well under float-overflow territory means the apply-time
+    # float() can never yield inf even after the waste multiplier.
+    if value > Decimal("1e15"):
+        raise ValueError(
+            f"multiplier {raw!r} is implausibly large (max 1e15)"
+        )
+    return text
+
+
+def _validate_waste_pct(raw: str | None) -> str | None:
+    """QR-001 — bound the quantity-map waste factor to a sane percentage.
+
+    ``waste_factor_pct`` enters the apply-time math as
+    ``(1 + waste/100)``. A negative value (e.g. ``"-50"``) silently
+    *halves* every matched quantity instead of adding waste — the
+    opposite of the field's intent and impossible to spot in the
+    dry-run preview. We require ``0 <= waste <= 100`` (a >100 % waste
+    factor on a takeoff quantity is never legitimate). ``None`` / unset
+    is left untouched.
+    """
+    if raw is None:
+        return raw
+    text = raw.strip()
+    if not text:
+        return "0"
+    try:
+        value = Decimal(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(
+            f"waste_factor_pct must be a number 0-100, got {raw!r}"
+        ) from exc
+    if not value.is_finite():
+        raise ValueError(f"waste_factor_pct must be finite, got {raw!r}")
+    if value < 0 or value > 100:
+        raise ValueError(
+            f"waste_factor_pct must be between 0 and 100, got {raw!r}"
+        )
+    return text
 
 # ── BIMModel schemas ─────────────────────────────────────────────────────────
 
@@ -523,6 +604,9 @@ class BIMQuantityMapCreate(BaseModel):
     is_active: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    _check_multiplier = field_validator("multiplier")(_validate_multiplier)
+    _check_waste = field_validator("waste_factor_pct")(_validate_waste_pct)
+
 
 class BIMQuantityMapUpdate(BaseModel):
     """Partial update for a quantity mapping rule."""
@@ -540,6 +624,9 @@ class BIMQuantityMapUpdate(BaseModel):
     boq_target: dict[str, Any] | None = None
     is_active: bool | None = None
     metadata: dict[str, Any] | None = None
+
+    _check_multiplier = field_validator("multiplier")(_validate_multiplier)
+    _check_waste = field_validator("waste_factor_pct")(_validate_waste_pct)
 
 
 class BIMQuantityMapResponse(BaseModel):

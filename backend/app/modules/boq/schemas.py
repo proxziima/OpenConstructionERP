@@ -432,17 +432,20 @@ class MarkupCreate(BaseModel):
 
     ``apply_to`` controls the markup base:
 
-    * ``direct_cost`` — applies to the BOQ direct-cost subtotal only.
-    * ``subtotal`` — applies to the direct-cost subtotal (synonym kept
-      for legacy GAEB clients; equivalent to ``direct_cost`` for new
-      projects).
+    * ``direct_cost`` — applies to the BOQ direct-cost subtotal only
+      (excludes every other markup line).
+    * ``subtotal`` — applies to the direct-cost subtotal **plus the sum
+      of all preceding markup lines** (e.g. VAT/output tax on the
+      contractor price including overhead & profit). Behaves identically
+      to ``cumulative``; the alias is retained for GAEB/legacy clients
+      that label the tax base "subtotal".
     * ``cumulative`` — applies to the running total *including all
       prior markups*. When multiple markups have ``apply_to='cumulative'``
       they are evaluated in ``sort_order`` ASC, and each cumulative
       markup's base is the direct-cost subtotal **plus** every PRIOR
-      markup (cumulative or direct_cost) in the same BOQ. This compounds
-      profit-on-overhead-on-cost, the GAEB / DIN 276 default. Reorder
-      markups by changing ``sort_order``; ties are stable by ``id``.
+      markup (cumulative, subtotal or direct_cost) in the same BOQ. This
+      compounds profit-on-overhead-on-cost, the GAEB / DIN 276 default.
+      Reorder markups by changing ``sort_order``; ties are stable by ``id``.
     """
 
     model_config = ConfigDict(str_strip_whitespace=True)

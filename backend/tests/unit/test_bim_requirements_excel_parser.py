@@ -140,3 +140,55 @@ class TestExcelParser:
         csv_content = "Property,Value\nFireRating,REI60\n"
         result = parser.parse(csv_content)
         assert "column_mapping" in result.metadata
+
+
+class TestLocaleConstraintParsing:
+    """E-I18N-005: German decimal commas must not become enum separators."""
+
+    def test_german_min_constraint(self) -> None:
+        assert _parse_constraint_value(">= 0,24 m") == {"min": 0.24, "unit": "m"}
+
+    def test_german_range(self) -> None:
+        assert _parse_constraint_value("0,1 - 1,0") == {"min": 0.1, "max": 1.0}
+
+    def test_german_lone_decimal_is_value_not_enum(self) -> None:
+        assert _parse_constraint_value("0,24") == {"value": 0.24}
+
+    def test_us_forms_unchanged(self) -> None:
+        assert _parse_constraint_value(">= 2.5 m") == {"min": 2.5, "unit": "m"}
+        assert _parse_constraint_value("0.1 - 1.0") == {"min": 0.1, "max": 1.0}
+        assert _parse_constraint_value("<= 100") == {"max": 100.0}
+
+    def test_real_enum_still_splits(self) -> None:
+        assert _parse_constraint_value("REI60; REI90; REI120") == {
+            "enum": ["REI60", "REI90", "REI120"]
+        }
+        assert _parse_constraint_value("Steel, Concrete, Timber") == {
+            "enum": ["Steel", "Concrete", "Timber"]
+        }
+
+
+class TestDelimiterSniffing:
+    """E-I18N-006: pipe / semicolon / tab CSVs must import, not collapse."""
+
+    def test_pipe_delimited(self, parser: ExcelCSVParser) -> None:
+        result = parser.parse("element|property|value\nIfcWall|Thickness|2.5\n")
+        assert result.success
+        assert len(result.requirements) == 1
+        assert result.requirements[0].property_name == "Thickness"
+
+    def test_semicolon_delimited_german_excel(self, parser: ExcelCSVParser) -> None:
+        result = parser.parse("element;property;value\nIfcWall;Thickness;2.5\n")
+        assert result.success
+        assert len(result.requirements) == 1
+        assert result.requirements[0].property_name == "Thickness"
+
+    def test_tab_delimited(self, parser: ExcelCSVParser) -> None:
+        result = parser.parse("element\tproperty\tvalue\nIfcWall\tThickness\t2.5\n")
+        assert result.success
+        assert len(result.requirements) == 1
+
+    def test_comma_still_default(self, parser: ExcelCSVParser) -> None:
+        result = parser.parse("Element,Property,Value\nIFCWALL,FireRating,REI60\n")
+        assert result.success
+        assert result.requirements[0].property_name == "FireRating"

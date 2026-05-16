@@ -217,6 +217,85 @@ _UNIT_ALIASES: dict[str, str] = {
 }
 
 
+# Header keyword → semantic role. Used by ``_map_table_columns`` to
+# locate the description / quantity / unit columns by their header text
+# instead of fixed positions (D-TKC-014). Covers EN / DE / FR / ES so a
+# GAEB/DIN, NRM or MasterFormat table is read correctly regardless of
+# column order.
+_HEADER_QTY_KEYWORDS = (
+    "quantity",
+    "qty",
+    "menge",
+    "anzahl",
+    "quantite",
+    "quantité",
+    "cantidad",
+    "amount",
+    "mass",
+    "masse",
+)
+_HEADER_UNIT_KEYWORDS = (
+    "unit",
+    "uom",
+    "einheit",
+    "einh",
+    "me",  # GAEB "Mengeneinheit"
+    "unite",
+    "unité",
+    "unidad",
+)
+_HEADER_DESC_KEYWORDS = (
+    "description",
+    "desc",
+    "bezeichnung",
+    "beschreibung",
+    "text",
+    "leistung",
+    "designation",
+    "désignation",
+    "descripcion",
+    "descripción",
+    "item",
+    "position",
+)
+
+
+def _map_table_columns(headers: list[str]) -> dict[str, int | None]:
+    """Resolve which column index holds description / quantity / unit.
+
+    Matches the header row by keyword (D-TKC-014). Falls back to the
+    historical positional assumption (col0=desc, col1=qty, col2=unit)
+    ONLY for roles a header keyword could not locate, so a table whose
+    columns are ordered ``[Pos | Unit | Qty | Description]`` is read
+    correctly instead of mis-reading qty/unit.
+    """
+
+    def _find(keywords: tuple[str, ...]) -> int | None:
+        for i, h in enumerate(headers):
+            hl = h.lower().strip()
+            if any(kw == hl for kw in keywords):
+                return i
+        # Substring pass (e.g. "total quantity", "unit of measure").
+        for i, h in enumerate(headers):
+            hl = h.lower().strip()
+            if any(kw in hl for kw in keywords):
+                return i
+        return None
+
+    desc_i = _find(_HEADER_DESC_KEYWORDS)
+    qty_i = _find(_HEADER_QTY_KEYWORDS)
+    unit_i = _find(_HEADER_UNIT_KEYWORDS)
+
+    n = len(headers)
+    if desc_i is None:
+        desc_i = 0 if n > 0 else None
+    if qty_i is None:
+        qty_i = 1 if n > 1 else None
+    if unit_i is None:
+        unit_i = 2 if n > 2 else None
+    return {"description": desc_i, "quantity": qty_i, "unit": unit_i}
+
+
 def _normalize_unit(raw: Any) -> str:
     """Map an arbitrary unit string to the canonical BOQ form.
 
@@ -651,22 +730,36 @@ class TakeoffService:
             for table in page.get("tables", []):
                 if len(table) < 2:
                     continue
-                # Use first row as header, remaining as data
-                headers = [h.lower().strip() for h in table[0]]
-                for row in table[1:]:
-                    if not any(cell.strip() for cell in row):
-                        continue
-                    desc = row[0] if len(row) > 0 else ""
-                    qty_str = row[1] if len(row) > 1 else "0"
-                    unit = row[2] if len(row) > 2 else "pcs"
+                # D-TKC-014 — map columns by their header semantics
+                # instead of fixed indices, so a table ordered
+                # ``[Pos | Unit | Qty | Description]`` is read
+                # correctly (the v1.9.0 code computed ``headers`` then
+                # ignored it and always used col0/col1/col2).
+                headers = [str(h).lower().strip() for h in table[0]]
+                col_map = _map_table_columns(headers)
+                desc_i = col_map["description"]
+                qty_i = col_map["quantity"]
+                unit_i = col_map["unit"]
 
-                    # Indian-locale number parsing (lakh / crore / decimal-comma
-                    # / feet-inches / mm/m suffixes). Falls back to 1.0 only when
-                    # the parser returns exactly 0 AND the input was non-empty —
-                    # otherwise an empty quantity column flips to "1 pcs" silently.
+                def _cell(row: list, i: int | None) -> str:
+                    if i is None or i >= len(row):
+                        return ""
+                    return str(row[i])
+
+                for row in table[1:]:
+                    if not any(str(cell).strip() for cell in row):
+                        continue
+                    desc = _cell(row, desc_i)
+                    qty_str = _cell(row, qty_i)
+                    unit = _cell(row, unit_i) or "pcs"
+
+                    # D-TKC-032 — a blank / unparseable quantity must
+                    # NOT silently become 1.0 (the v1.9.0 behaviour
+                    # fabricated a quantity of 1 that flowed straight
+                    # into the BOQ on "select-all → add"). An empty or
+                    # non-numeric cell now yields 0.0 and a low
+                    # confidence so the estimator must confirm it.
                     qty = _parse_indian_number(qty_str)
-                    if qty == 0.0 and not str(qty_str).strip():
-                        qty = 1.0
 
                     idx += 1
                     clean_desc = desc.strip()
@@ -727,13 +820,27 @@ class TakeoffService:
                         }
                     )
 
+        # D-TKC-019 — aggregate PER (category, unit). The v1.9.0 code
+        # lumped every row into one "general" bucket, took the unit
+        # from only the FIRST element, and summed quantities across
+        # heterogeneous units (m + m² + pcs) under that single arbitrary
+        # unit — a dimensionally meaningless total. We now key the
+        # bucket on (category, unit) so each unit is totalled
+        # separately and never cross-summed.
         categories: dict = {}
         for el in elements:
             cat = el["category"]
-            if cat not in categories:
-                categories[cat] = {"count": 0, "total_quantity": 0, "unit": el["unit"]}
-            categories[cat]["count"] += 1
-            categories[cat]["total_quantity"] += el["quantity"]
+            unit = el["unit"]
+            bucket_key = f"{cat}|{unit}"
+            if bucket_key not in categories:
+                categories[bucket_key] = {
+                    "category": cat,
+                    "count": 0,
+                    "total_quantity": 0,
+                    "unit": unit,
+                }
+            categories[bucket_key]["count"] += 1
+            categories[bucket_key]["total_quantity"] += el["quantity"]
 
         return {
             "elements": elements,

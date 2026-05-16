@@ -30,7 +30,13 @@ class _BaseRepo:
     """Shared CRUD helpers — concrete repos bind ``model`` and ``project_field``."""
 
     model: Any
-    project_field: Any | None = None
+    # Column NAME (str), not the mapped attribute. Storing the
+    # InstrumentedAttribute (e.g. ``Notice.project_id``) as a class
+    # attribute turns it into a descriptor: accessing ``self.project_field``
+    # then invokes SQLAlchemy's ``__get__`` with the *repository* instance
+    # and raises ``UnmappedInstanceError``. Resolve the real column lazily
+    # via ``getattr(self.model, self.project_field)`` instead.
+    project_field: str | None = None
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -65,7 +71,8 @@ class _BaseRepo:
     ) -> tuple[list[Any], int]:
         if self.project_field is None:  # pragma: no cover -- defensive
             return [], 0
-        base = select(self.model).where(self.project_field == project_id)
+        col = getattr(self.model, self.project_field)
+        base = select(self.model).where(col == project_id)
         if status is not None:
             base = base.where(self.model.status == status)
         count_stmt = select(func.count()).select_from(base.subquery())
@@ -82,9 +89,10 @@ class _BaseRepo:
         """
         if self.project_field is None:  # pragma: no cover -- defensive
             return {}
+        col = getattr(self.model, self.project_field)
         stmt = (
             select(self.model.status, func.count())
-            .where(self.project_field == project_id)
+            .where(col == project_id)
             .group_by(self.model.status)
         )
         rows = (await self.session.execute(stmt)).all()
@@ -93,7 +101,7 @@ class _BaseRepo:
 
 class NoticeRepository(_BaseRepo):
     model = Notice
-    project_field = Notice.project_id
+    project_field = "project_id"
 
     async def next_code(self, project_id: uuid.UUID) -> str:
         stmt = (
@@ -107,7 +115,7 @@ class NoticeRepository(_BaseRepo):
 
 class VariationRequestRepository(_BaseRepo):
     model = VariationRequest
-    project_field = VariationRequest.project_id
+    project_field = "project_id"
 
     async def next_code(self, project_id: uuid.UUID) -> str:
         stmt = (
@@ -129,7 +137,7 @@ class VariationRequestRepository(_BaseRepo):
 
 class VariationOrderRepository(_BaseRepo):
     model = VariationOrder
-    project_field = VariationOrder.project_id
+    project_field = "project_id"
 
     async def next_code(self, project_id: uuid.UUID) -> str:
         stmt = (
@@ -226,12 +234,12 @@ class VariationScheduleImpactRepository(_BaseRepo):
 
 class SiteMeasurementRepository(_BaseRepo):
     model = SiteMeasurement
-    project_field = SiteMeasurement.project_id
+    project_field = "project_id"
 
 
 class DayworkSheetRepository(_BaseRepo):
     model = DayworkSheet
-    project_field = DayworkSheet.project_id
+    project_field = "project_id"
 
     async def next_sheet_number(self, project_id: uuid.UUID) -> str:
         stmt = (
@@ -284,7 +292,7 @@ class DayworkSheetLineRepository(_BaseRepo):
 
 class DisruptionClaimRepository(_BaseRepo):
     model = DisruptionClaim
-    project_field = DisruptionClaim.project_id
+    project_field = "project_id"
 
     async def pending_claims(self, project_id: uuid.UUID) -> list[DisruptionClaim]:
         stmt = select(DisruptionClaim).where(
@@ -297,7 +305,7 @@ class DisruptionClaimRepository(_BaseRepo):
 
 class ExtensionOfTimeClaimRepository(_BaseRepo):
     model = ExtensionOfTimeClaim
-    project_field = ExtensionOfTimeClaim.project_id
+    project_field = "project_id"
 
     async def pending_claims(self, project_id: uuid.UUID) -> list[ExtensionOfTimeClaim]:
         stmt = select(ExtensionOfTimeClaim).where(
@@ -310,7 +318,7 @@ class ExtensionOfTimeClaimRepository(_BaseRepo):
 
 class FinalAccountRepository(_BaseRepo):
     model = FinalAccount
-    project_field = FinalAccount.project_id
+    project_field = "project_id"
 
     async def for_project(self, project_id: uuid.UUID) -> FinalAccount | None:
         stmt = select(FinalAccount).where(FinalAccount.project_id == project_id)

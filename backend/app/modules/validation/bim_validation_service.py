@@ -21,6 +21,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.validation.engine import SEVERITY_WEIGHTS, compute_quality_score
 from app.modules.bim_hub.repository import BIMElementRepository, BIMModelRepository
 from app.modules.validation.models import ValidationReport
 from app.modules.validation.repository import ValidationReportRepository
@@ -101,10 +102,20 @@ class BIMValidationService:
         error_count = 0
         info_count = 0
         total_checks = 0
+        # Severity-weighted accumulators so the BIM-model score uses the
+        # SAME formula as the core BOQ ValidationReport.score — otherwise the
+        # two "quality scores" are not comparable in the unified dashboard
+        # (E-XMOD-015). A passing (rule, element) pair contributes the rule's
+        # severity weight to both numerator and denominator (mirrors the core
+        # engine, where a passing ERROR-rule result carries ERROR weight);
+        # each failure contributes its severity weight to the denominator.
+        passed_weight = 0.0
+        total_weight = 0.0
         results_json: list[dict[str, Any]] = []
         truncated = False
 
         for rule in rules:
+            rule_weight = SEVERITY_WEIGHTS.get(str(rule.severity), 1.0)
             for elem in elements:
                 if not rule.matches(elem):
                     continue
@@ -112,9 +123,12 @@ class BIMValidationService:
                 failures: list[BIMElementRuleResult] = rule.evaluate(elem)
                 if not failures:
                     passed_count += 1
+                    passed_weight += rule_weight
+                    total_weight += rule_weight
                     continue
 
                 for failure in failures:
+                    total_weight += SEVERITY_WEIGHTS.get(str(failure.severity), 1.0)
                     if failure.severity == "error":
                         error_count += 1
                     elif failure.severity == "warning":
@@ -171,7 +185,13 @@ class BIMValidationService:
         else:
             status_value = "passed"
 
-        score = (passed_count / total_checks) if total_checks else 1.0
+        # Same severity-weighted definition + blocking-error cap as the core
+        # ValidationReport.score (E-XMOD-015). Replaces the old raw
+        # passed_count / total_checks ratio which ignored severity entirely.
+        if total_checks == 0:
+            score = 1.0
+        else:
+            score = compute_quality_score(passed_weight, total_weight, error_count)
 
         duration_ms = round((time.monotonic() - started) * 1000, 2)
         logger.info(

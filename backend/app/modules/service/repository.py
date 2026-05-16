@@ -210,6 +210,33 @@ class TicketRepository(_BaseRepo[ServiceTicket]):
         rows = (await self.session.execute(stmt)).scalars().all()
         return list(rows), int(total)
 
+    async def list_all(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+        status: str | None = None,
+        priority: str | None = None,
+    ) -> tuple[list[ServiceTicket], int]:
+        """List tickets across every contract (tenant-wide dispatcher view).
+
+        Backs the global ``/tickets/`` listing on the ``/service`` route,
+        where there is no contract or project to scope by. Mirrors the
+        ``WorkOrderRepository.list_all`` / ``ContractRepository.list_all``
+        shape so the page's three list tabs behave consistently.
+        """
+        base = select(ServiceTicket)
+        if status is not None:
+            base = base.where(ServiceTicket.status == status)
+        if priority is not None:
+            base = base.where(ServiceTicket.priority == priority)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        stmt = base.order_by(ServiceTicket.reported_at.desc()).offset(offset).limit(limit)
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return list(rows), int(total)
+
     async def count_open_for_contract(self, contract_id: uuid.UUID) -> int:
         stmt = (
             select(func.count())

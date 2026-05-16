@@ -94,6 +94,18 @@ class TaskService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Dependency task must belong to the same project",
                 )
+            # A task cannot be born already-completed while its predecessor
+            # is still open — that would silently bypass the dependency
+            # guard that complete_task() enforces on the normal path.
+            if data.status == "completed" and predecessor.status != "completed":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot create a completed task while its dependency "
+                        f"'{predecessor.title}' (status: {predecessor.status}) "
+                        f"is not completed."
+                    ),
+                )
 
         task = Task(
             project_id=data.project_id,
@@ -177,6 +189,42 @@ class TaskService:
                 detail="Task not found",
             )
         return task
+
+    async def resolve_assignee_names(
+        self,
+        tasks: list[Task],
+    ) -> dict[str, str]:
+        """Map ``responsible_id`` → user display name for a batch of tasks.
+
+        One ``IN (...)`` query over the distinct assignee ids — avoids the
+        N+1 the per-row name lookup would otherwise cause. Ids that don't
+        resolve (deleted users, free-text-only assignees) are simply
+        absent from the returned mapping so the caller can fall back to
+        ``metadata.assignee_name``.
+        """
+        ids: set[uuid.UUID] = set()
+        for t in tasks:
+            if t.responsible_id:
+                try:
+                    ids.add(uuid.UUID(str(t.responsible_id)))
+                except (ValueError, AttributeError):
+                    continue
+        if not ids:
+            return {}
+
+        from app.modules.users.models import User
+
+        rows = (
+            await self.session.execute(
+                select(User.id, User.full_name, User.email).where(User.id.in_(ids))
+            )
+        ).all()
+        names: dict[str, str] = {}
+        for uid, full_name, email in rows:
+            label = (full_name or "").strip() or (email or "")
+            if label:
+                names[str(uid)] = label
+        return names
 
     async def list_tasks(
         self,
@@ -493,6 +541,32 @@ class TaskService:
         await self.repo.update_fields(task_id, **fields)
         await self.session.refresh(task)
         logger.info("Task completed: %s", task_id)
+
+        await _safe_audit(
+            self.session,
+            action="update",
+            entity_type="task",
+            entity_id=str(task_id),
+            user_id=current_user_id,
+            details={
+                "title": task.title[:100],
+                "updated_fields": list(fields.keys()),
+                "completed": True,
+            },
+        )
+
+        # Completion is a status change — keep the vector index and any
+        # other subscribers in sync, exactly like update_task does. Without
+        # this the task stays indexed with its pre-completion status.
+        await _safe_publish(
+            "tasks.task.updated",
+            {
+                "task_id": str(task_id),
+                "project_id": str(task.project_id),
+                "updated_fields": list(fields.keys()),
+            },
+            source_module="oe_tasks",
+        )
         return task
 
     async def list_blockers(self, task_id: uuid.UUID) -> list[Task]:

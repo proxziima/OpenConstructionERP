@@ -631,13 +631,63 @@ def summarize_cad_elements(elements: list[dict]) -> str:
 
 
 def _to_float(val: object) -> float:
-    """Safely convert a value to float, returning 0.0 on failure."""
+    """Safely convert a value to float, returning 0.0 on failure.
+
+    Rejects NaN / ±Infinity (a converter occasionally emits ``inf`` for a
+    degenerate solid) so a single bad cell can't poison a whole sum.
+    """
     if val is None:
         return 0.0
     try:
-        return float(val)
+        f = float(val)
     except (ValueError, TypeError):
         return 0.0
+    if f != f or f in (float("inf"), float("-inf")):
+        return 0.0
+    return f
+
+
+def _norm_col(name: str) -> str:
+    """Normalise a column name for alias matching.
+
+    DDC / Revit / IFC exporters emit the same physical quantity under
+    many spellings: ``volume`` / ``Volume`` / ``Volume (m3)`` /
+    ``volume_m3`` / ``Volume [m³]``. Lower-case, strip any trailing
+    unit-in-brackets/parens, and drop separators so they all collapse to
+    one key (BUG-D-TKC-004 — the exact-key lookup silently produced 0.0
+    for every variant).
+    """
+    import re
+
+    s = str(name).strip().lower()
+    s = s.replace("²", "2").replace("³", "3")
+    # Drop a trailing unit qualifier in brackets/parens: "volume (m3)",
+    # "area [m2]", "weight {kg}".
+    s = re.sub(r"[\s,]*[([{].*?[)\]}]\s*$", "", s)
+    # Collapse separators ("volume_m3" → "volumem3", "type name" → "typename")
+    s = re.sub(r"[\s_\-./]+", "", s)
+    # Strip ONLY an unambiguous digit-bearing metric suffix
+    # ("volumem3" → "volume", "aream2" → "area"). Bare letters like
+    # "m"/"t"/"kg" are NOT stripped — that would mis-merge unrelated
+    # columns (e.g. "team", "kgrid").
+    s = re.sub(r"(m2|m3)$", "", s) if len(s) > 4 else s
+    return s
+
+
+def _resolve_column_value(el: dict, col: str) -> float:
+    """Look up ``col`` in an element dict, tolerant of DDC name variants.
+
+    Tries the exact key first (fast path), then falls back to a
+    normalised-name match so ``sum_columns=['volume']`` still finds a
+    converter that wrote ``'Volume (m3)'`` (BUG-D-TKC-004).
+    """
+    if col in el:
+        return _to_float(el.get(col))
+    target = _norm_col(col)
+    for k, v in el.items():
+        if _norm_col(k) == target:
+            return _to_float(v)
+    return 0.0
 
 
 def group_cad_elements(elements: list[dict]) -> dict:
@@ -1041,25 +1091,27 @@ def group_cad_elements_dynamic(
         entry = groups[key]
         entry["count"] += 1
 
+        # BUG-D-TKC-004: tolerant column lookup — a DDC export that wrote
+        # 'Volume (m3)' must still feed sum_columns=['volume'] instead of
+        # silently contributing 0.0.
         for col in sum_columns:
-            entry["sums"][col] += _to_float(el.get(col, 0))
+            entry["sums"][col] += _resolve_column_value(el, col)
 
-    grand_totals["count"] = float(len(elements))
-    for col in sum_columns:
-        grand_totals[col] = 0.0
-
+    # BUG-D-TKC-003: accumulate the grand total from the RAW per-group
+    # sum, then round each group's displayed value separately. Previously
+    # the grand total summed already-rounded group values, so hundreds of
+    # sub-0.0001 quantities each rounded to 0.0 and the real total (e.g.
+    # 0.014997 m³) vanished entirely.
+    raw_grand: dict[str, float] = dict.fromkeys(sum_columns, 0.0)
     result_groups: list[dict] = []
     for g in groups.values():
-        # Round sums
         for col in sum_columns:
+            raw_grand[col] += g["sums"][col]
             g["sums"][col] = round(g["sums"][col], 4)
-            grand_totals[col] += g["sums"][col]
-
         result_groups.append(g)
 
-    # Round grand totals
     for col in sum_columns:
-        grand_totals[col] = round(grand_totals[col], 4)
+        grand_totals[col] = round(raw_grand[col], 4)
     grand_totals["count"] = len(elements)
 
     return {

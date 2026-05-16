@@ -31,6 +31,7 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { takeoffApi, type TakeoffDocumentResponse } from './api';
+import { canonicalizeUnit } from './lib/units';
 
 const TakeoffViewerModule = lazy(() => import('@/modules/pdf-takeoff/TakeoffViewerModule'));
 
@@ -1134,7 +1135,15 @@ export function TakeoffPage() {
   });
 
   const addToBOQMutation = useMutation({
-    mutationFn: async (items: { description: string; quantity: number; unit: string }[]) => {
+    mutationFn: async (
+      items: {
+        description: string;
+        quantity: number;
+        unit: string;
+        source?: string;
+        metadata?: Record<string, unknown>;
+      }[],
+    ) => {
       if (!selectedBoqId) {
         throw new Error(t('takeoff.no_boq_selected', 'Please select a project and BOQ first'));
       }
@@ -1359,7 +1368,11 @@ export function TakeoffPage() {
         .map((el) => ({
           description: el.description,
           quantity: el.quantity,
-          unit: el.unit,
+          // Canonicalize the (often German / raw-OCR) extracted unit so
+          // BOQ validation + cost matching can see the row (D-TKC-021).
+          unit: canonicalizeUnit(el.unit),
+          source: 'takeoff',
+          metadata: { takeoff_raw_unit: el.unit },
         }));
 
       if (selectedItems.length > 0) {
@@ -1380,7 +1393,9 @@ export function TakeoffPage() {
         {
           description: measurement.description,
           quantity: parseFloat(measurement.value) || 0,
-          unit: measurement.unit,
+          unit: canonicalizeUnit(measurement.unit),
+          source: 'takeoff',
+          metadata: { takeoff_raw_unit: measurement.unit },
         },
       ]);
     },

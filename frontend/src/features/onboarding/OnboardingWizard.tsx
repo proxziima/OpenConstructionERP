@@ -1732,12 +1732,34 @@ function StepFinish({
 
 export function OnboardingWizard() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [selectedLang, setSelectedLang] = useState(() => i18n.language?.split('-')[0] || 'en');
   const [companyType, setCompanyType] = useState<CompanyTypeKey | null>(null);
   const [enabledModules, setEnabledModules] = useState<Set<string>>(
     () => new Set(ALL_MODULES.filter((m) => !m.core).map((m) => m.key)),
   );
+
+  /* ONBOARD-MODAL: the wizard itself had NO completed-flag guard — it
+     always rendered step 0 ("Welcome to OpenConstructionERP"). It is only
+     mounted at the /onboarding route, but anything that routes there
+     (the dashboard first-run redirect, a stale bookmark, a back-button,
+     QA navigation) re-showed the welcome modal even for users who already
+     finished onboarding. Gate the wizard on the SAME localStorage flag
+     the dashboard redirect uses (`oe_onboarding_completed`, via the
+     shared `isOnboardingCompleted()` helper) and bounce completed users
+     straight to the app. The Settings "restart onboarding" action removes
+     that flag *before* navigating here, so an intentional re-run still
+     works (flag absent → guard passes → wizard shows). Computed once at
+     mount so finishing the wizard (which sets the flag) doesn't yank the
+     UI out from under the success step. */
+  const [alreadyCompleted] = useState(() => isOnboardingCompleted());
+
+  useEffect(() => {
+    if (alreadyCompleted) {
+      navigate('/', { replace: true });
+    }
+  }, [alreadyCompleted, navigate]);
 
   // Track whether user chose "Quick Start" (skip profile + modules, go to data)
   const [quickStart, setQuickStart] = useState(false);
@@ -1820,6 +1842,14 @@ export function OnboardingWizard() {
     setShowModuleConfig(true);
     setStep(3); // always go to module review
   }, []);
+
+  // Onboarding already finished: render nothing while the effect above
+  // redirects to the app. Returning null (instead of the wizard) is what
+  // actually stops the "Welcome to OpenConstructionERP" modal from
+  // flashing on top of /settings & friends. (ONBOARD-MODAL)
+  if (alreadyCompleted) {
+    return null;
+  }
 
   return (
     <div className="relative flex min-h-screen flex-col bg-surface-primary overflow-hidden">

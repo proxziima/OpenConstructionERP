@@ -94,6 +94,11 @@ export interface AccessRuleCreate {
   expires_at?: string | null;
 }
 
+export interface AccessRuleList {
+  items: AccessRule[];
+  total: number;
+}
+
 export interface DocumentAccessLogEntry {
   id: string;
   portal_user_id: string;
@@ -147,6 +152,23 @@ export function resendInvite(id: string): Promise<InviteResponse> {
 }
 
 /* ── Access rules ──────────────────────────────────────────────────────── */
+
+export function listAccessRules(params?: {
+  portal_user_id?: string;
+  resource_type?: string;
+  offset?: number;
+  limit?: number;
+}): Promise<AccessRuleList> {
+  const qs = new URLSearchParams();
+  if (params?.portal_user_id) qs.set('portal_user_id', params.portal_user_id);
+  if (params?.resource_type) qs.set('resource_type', params.resource_type);
+  if (params?.offset !== undefined) qs.set('offset', String(params.offset));
+  if (params?.limit !== undefined) qs.set('limit', String(params.limit));
+  const q = qs.toString();
+  return apiGet<AccessRuleList>(
+    `/v1/portal/admin/access-rules${q ? `?${q}` : ''}`,
+  );
+}
 
 export function grantAccess(data: AccessRuleCreate): Promise<AccessRule> {
   return apiPost<AccessRule>('/v1/portal/admin/access-rules', data);

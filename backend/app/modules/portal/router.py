@@ -11,6 +11,7 @@ Two surfaces, mounted under ``/api/v1/portal/``:
         PATCH  /admin/users/{id}
         POST   /admin/users/{id}/resend-invite
         POST   /admin/access-rules
+        GET    /admin/access-rules
         DELETE /admin/access-rules/{id}
         GET    /admin/document-access-log
 
@@ -41,6 +42,7 @@ from app.modules.portal.dependencies import (
 )
 from app.modules.portal.schemas import (
     AccessRuleCreate,
+    AccessRuleList,
     AccessRuleResponse,
     DocumentAccessLogCreate,
     DocumentAccessLogEntry,
@@ -216,6 +218,35 @@ async def admin_grant_access(
         expires_at=data.expires_at,
     )
     return AccessRuleResponse.model_validate(rule)
+
+
+@router.get("/admin/access-rules", response_model=AccessRuleList)
+async def admin_list_access_rules(
+    _perm: None = Depends(
+        RequirePermission("portal.admin.access_rules.manage"),
+    ),
+    service: PortalService = Depends(_get_service),
+    portal_user_id: uuid.UUID | None = Query(default=None),
+    resource_type: str | None = Query(default=None),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+) -> AccessRuleList:
+    """List access rules (optionally filtered by user / resource type).
+
+    Without this, the admin UI could only display grants made in the
+    current browser session — every rule vanished from the table on reload
+    and seeded/previously-granted rules were never visible at all.
+    """
+    items, total = await service.list_access_rules(
+        portal_user_id=portal_user_id,
+        resource_type=resource_type,
+        offset=offset,
+        limit=limit,
+    )
+    return AccessRuleList(
+        items=[AccessRuleResponse.model_validate(r) for r in items],
+        total=total,
+    )
 
 
 @router.delete("/admin/access-rules/{rule_id}", status_code=204)
@@ -434,8 +465,12 @@ async def portal_create_ticket(
 
     Enforces RLS: the caller must have an active ``service_contract`` access
     rule for ``data.contract_id``. On success, a real ``ServiceTicket`` row
-    is created with ``source="portal"`` and ``reported_by="portal:<id>"`` so
-    the dispatcher can triage portal vs phone tickets at a glance.
+    is created with ``source="portal"`` and ``reported_by="<portal_user_id>"``
+    so the dispatcher can triage portal vs phone tickets via the ``source``
+    column. ``reported_by`` holds the bare portal-user UUID (36 chars) — a
+    ``portal:`` prefix would overflow the 36-char ``reported_by`` field of
+    ``ServiceTicketCreate`` / the ``ServiceTicket.reported_by`` column and
+    422/500 every portal ticket.
     """
     from fastapi import HTTPException
 
@@ -459,10 +494,10 @@ async def portal_create_ticket(
             title=data.title,
             description=data.description,
             priority=data.priority,
-            reported_by=f"portal:{user.id}",
+            reported_by=str(user.id),
             source="portal",
         ),
-        user_id=f"portal:{user.id}",
+        user_id=str(user.id),
     )
     return PortalTicketResponse.model_validate(ticket)
 
@@ -480,10 +515,13 @@ async def portal_list_tickets(
 ) -> PortalTicketList:
     """List tickets the caller filed.
 
-    Returns only tickets where ``reported_by == "portal:<my_id>"`` AND the
-    caller still has a ``service_contract`` access rule on the parent
-    contract — i.e. tickets stay visible to the buyer who filed them as
-    long as their contract access has not been revoked.
+    Returns only tickets where ``source == "portal"`` and
+    ``reported_by == "<my_id>"`` AND the caller still has a
+    ``service_contract`` access rule on the parent contract — i.e. tickets
+    stay visible to the buyer who filed them as long as their contract
+    access has not been revoked. ``source == "portal"`` is part of the
+    predicate so a portal user UUID can never alias an internal
+    ``reported_by`` value from a phone/email ticket.
     """
     from sqlalchemy import func as _func
     from sqlalchemy import select as _select
@@ -496,11 +534,11 @@ async def portal_list_tickets(
     if not accessible_contracts:
         return PortalTicketList(items=[], total=0)
 
-    portal_tag = f"portal:{user.id}"
     base = (
         _select(_ST)
         .where(_ST.contract_id.in_(accessible_contracts))
-        .where(_ST.reported_by == portal_tag)
+        .where(_ST.source == "portal")
+        .where(_ST.reported_by == str(user.id))
     )
 
     # Total via SQL aggregate — do not materialise every row just to count.

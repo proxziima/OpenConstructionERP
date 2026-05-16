@@ -96,6 +96,12 @@ class BIMElementRule:
             least ONE must exist (e.g. door width may live in either
             ``properties`` or ``quantities``).
         require_any_of_quantities: Same, but for quantities.
+        require_any_positive_quantity: Optional list of quantity paths where
+            at least ONE must be present AND a number strictly greater than
+            zero. Use this (not ``require_any_of_quantities``) when the rule
+            name/contract promises a *positive* value — e.g. "wall thickness
+            > 0". Presence-only checks let a ``thickness_m = 0`` (or the
+            non-numeric string ``"0,24"``) silently PASS (E-BIM-010).
         require_storey: If True, the element must have a non-empty ``storey``.
         require_name: If True, the element must have a real ``name`` (not
             ``None``, ``""``, or the literal string ``"None"``).
@@ -110,6 +116,7 @@ class BIMElementRule:
     quantity_checks: list[dict[str, Any]] = field(default_factory=list)
     require_any_of_properties: list[str] = field(default_factory=list)
     require_any_of_quantities: list[str] = field(default_factory=list)
+    require_any_positive_quantity: list[str] = field(default_factory=list)
     require_storey: bool = False
     require_name: bool = False
     enabled: bool = True
@@ -243,6 +250,25 @@ class BIMElementRule:
                     {"any_of": self.require_any_of_quantities, "scope": "quantities"},
                 )
 
+        # any-positive-quantity — at least one path must be a number > 0
+        # (E-BIM-010). A 0 / "" / non-numeric value does NOT satisfy this.
+        if self.require_any_positive_quantity:
+            satisfied = False
+            for p in self.require_any_positive_quantity:
+                num = _coerce_number(_lookup_path(quants, p))
+                if num is not None and num > 0:
+                    satisfied = True
+                    break
+            if not satisfied:
+                _emit(
+                    "Element missing a positive value for any of: "
+                    + ", ".join(self.require_any_positive_quantity),
+                    {
+                        "any_positive_of": self.require_any_positive_quantity,
+                        "scope": "quantities",
+                    },
+                )
+
         return results
 
 
@@ -274,18 +300,123 @@ def _has_value(value: Any) -> bool:
     return True
 
 
+_GROUP_WHITESPACE = "   \t"  # space, NBSP, NARROW NBSP, tab
+
+
 def _coerce_number(value: Any) -> float | None:
-    """Coerce a value into a float. Returns ``None`` if not possible."""
+    """Coerce a value into a float, tolerant of locale number formats.
+
+    BIM elements imported from German/EU CAD pipelines carry numeric
+    properties as strings with comma decimals or trailing units
+    (``"0,24"``, ``"1.234,56"``, ``"3.0 m"``). The old ``float(value)``
+    rejected all of those and the caller reported a *false* "is not a
+    number" ERROR — non-deterministic compliance by locale (E-I18N-017).
+    This mirrors the canonical coercion used by the core BOQ rules.
+
+    Returns ``None`` only when the value genuinely is not a number.
+    """
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
+        f = float(value)
+        return f if f == f and f not in (float("inf"), float("-inf")) else None
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+
+    sign = 1.0
+    if text[0] in "+-":
+        if text[0] == "-":
+            sign = -1.0
+        text = text[1:].strip()
+
+    import re as _re
+
+    m = _re.match(r"[0-9][0-9.,   \t]*", text)
+    if not m:
+        return None
+    numeric = m.group(0).strip(_GROUP_WHITESPACE)
+    for ws in _GROUP_WHITESPACE:
+        numeric = numeric.replace(ws, "")
+    if not numeric:
+        return None
+
+    has_dot = "." in numeric
+    has_comma = "," in numeric
+    if has_dot and has_comma:
+        if numeric.rfind(",") > numeric.rfind("."):
+            numeric = numeric.replace(".", "").replace(",", ".")
+        else:
+            numeric = numeric.replace(",", "")
+    elif has_comma:
+        if numeric.count(",") > 1:
+            numeric = numeric.replace(",", "")
+        else:
+            numeric = numeric.replace(",", ".")
+    elif has_dot and numeric.count(".") > 1:
+        numeric = numeric.replace(".", "")
+
+    try:
+        return sign * float(numeric)
+    except ValueError:
+        return None
+
+
+# ── Safe regex guard (E-SEC-002) ─────────────────────────────────────────────
+#
+# ``must_match`` patterns come from untrusted IDS / Excel / COBie imports
+# (ids_parser stores attacker-controlled ``<xs:pattern value=...>``). Running
+# an arbitrary regex with ``re.search`` and no bounds lets a
+# catastrophic-backtracking pattern like ``(a+)+$`` peg a CPU core and hang
+# the request worker. We do NOT pull in a heavy safe-regex engine; instead we
+# apply conservative static + size limits that make pathological blow-up
+# impossible while leaving every realistic IDS pattern working.
+
+_MAX_PATTERN_LEN = 1_000
+_MAX_MATCH_INPUT_LEN = 10_000
+# Nested unbounded quantifiers — the classic ReDoS shape: a quantified group
+# that itself contains an unbounded quantifier, e.g. (a+)+ (a*)* (a+)* ((ab)+)+
+_NESTED_QUANTIFIER = None  # compiled lazily
+
+
+def _is_pattern_safe(pattern: str) -> bool:
+    """Reject patterns that are too long or exhibit nested unbounded
+    quantifiers (the catastrophic-backtracking shape)."""
+    if len(pattern) > _MAX_PATTERN_LEN:
+        return False
+    global _NESTED_QUANTIFIER
+    import re as _re
+
+    if _NESTED_QUANTIFIER is None:
+        # A group ( ... <quantifier> ... ) immediately followed by another
+        # unbounded quantifier. Covers (a+)+, (a*)*, (a+)*, (.*)+ , (?:a+)+ .
+        _NESTED_QUANTIFIER = _re.compile(r"\([^()]*[+*][^()]*\)\s*[+*]")
+    return _NESTED_QUANTIFIER.search(pattern) is None
+
+
+def _safe_search(pattern: str, value: str) -> bool | None:
+    """Bounded, ReDoS-resistant ``re.search``.
+
+    Returns ``True``/``False`` for a normal match result, or ``None`` if the
+    pattern was rejected as unsafe / un-compilable (caller treats that as a
+    non-match so a hostile rule degrades to a plain failure instead of
+    hanging the worker).
+    """
+    import re as _re
+
+    if not _is_pattern_safe(pattern):
+        return None
+    # Bound the input too — backtracking cost is a function of input length
+    # as well as pattern shape.
+    bounded = value[:_MAX_MATCH_INPUT_LEN]
+    try:
+        compiled = _re.compile(pattern)
+    except _re.error:
+        return None
+    return compiled.search(bounded) is not None
 
 
 def _check_value(value: Any, check: dict[str, Any]) -> str | None:
@@ -305,10 +436,16 @@ def _check_value(value: Any, check: dict[str, Any]) -> str | None:
             return f"value {value!r} not in {allowed!r}"
 
     if "must_match" in check:
-        import re
-
         pattern = str(check["must_match"])
-        if not isinstance(value, str) or re.search(pattern, value) is None:
+        if not isinstance(value, str):
+            return f"does not match /{pattern}/"
+        matched = _safe_search(pattern, value)
+        if matched is None:
+            # Pattern rejected as unsafe (ReDoS / too long / un-compilable):
+            # treat as a non-match so a hostile rule degrades gracefully
+            # instead of hanging the worker (E-SEC-002).
+            return f"does not match /{pattern}/ (pattern rejected as unsafe)"
+        if not matched:
             return f"does not match /{pattern}/"
 
     numeric_keys = ("must_be_gt", "must_be_gte", "must_be_lt", "must_be_lte")

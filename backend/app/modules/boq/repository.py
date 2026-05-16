@@ -116,15 +116,29 @@ class BOQRepository:
             for m in markups_by_boq.get(boq_id, []):
                 if m.markup_type == "percentage":
                     pct = Decimal(m.percentage or "0")
-                    base = running if m.apply_to == "cumulative" else dc
+                    # BUG-B-005: ``subtotal`` bases on direct_cost +
+                    # Σ(preceding markups), identical to ``cumulative`` —
+                    # keep list/detail rollup consistent with
+                    # ``_calculate_markup_amounts``.
+                    base = running if m.apply_to in ("cumulative", "subtotal") else dc
                     running += base * pct / Decimal("100")
                 elif m.markup_type == "fixed":
                     running += Decimal(m.fixed_amount or "0")
-            grand_total = round(float(running), 2)
-            direct_cost_value = round(float(dc), 2)
+            # BUG-B-001 / BUG-B-012: commercial ROUND_HALF_UP to cents,
+            # matching service-layer ``_round_currency`` so list and detail
+            # report one canonical figure (banker's ``round()`` on float
+            # diverged on .xx5 boundaries).
+            from decimal import ROUND_HALF_UP
+
+            cent = Decimal("0.01")
+            grand_total = float(running.quantize(cent, rounding=ROUND_HALF_UP))
+            direct_cost_value = float(dc.quantize(cent, rounding=ROUND_HALF_UP))
+            markups_total = float(
+                (running - dc).quantize(cent, rounding=ROUND_HALF_UP),
+            )
             breakdown[boq_id] = {
                 "direct_cost": direct_cost_value,
-                "markups_total": round(grand_total - direct_cost_value, 2),
+                "markups_total": markups_total,
                 "grand_total": grand_total,
             }
 
@@ -186,6 +200,24 @@ class PositionRepository:
         positions = list(result.scalars().all())
 
         return positions, total
+
+    async def list_all_for_boq(self, boq_id: uuid.UUID) -> list[Position]:
+        """Return EVERY position for a BOQ ordered by sort_order, no limit.
+
+        BUG-B-006: ``list_for_boq`` carries a hard ``limit=1000`` default for
+        paginated UI listing. Every money rollup (direct_cost, grand_total,
+        markup base, statistics, cost-breakdown, recalculate-rates,
+        duplicate) MUST sum all positions — a 1500-position BOQ was silently
+        dropping positions 1001+ from every total. Aggregation callers use
+        this method so the count limit can never under-state a tender.
+        """
+        stmt = (
+            select(Position)
+            .where(Position.boq_id == boq_id)
+            .order_by(Position.sort_order, Position.ordinal)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
     async def create(self, position: Position) -> Position:
         """Insert a new position."""

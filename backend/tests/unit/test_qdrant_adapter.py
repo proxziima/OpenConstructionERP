@@ -208,8 +208,14 @@ def test_empty_collection_version_strips_suffix(monkeypatch: pytest.MonkeyPatch)
         ("BR_SAOPAULO", "BR"),
         ("AT_VIENNA", "AT"),       # different country in same lang collection
         ("CH_ZURICH", "CH"),
-        ("USA_USD", "USA"),         # 3-letter alias preserved
-        ("ru_stpetersburg", "RU"),  # case-normalisation
+        # v3.0.5: 3-letter heads remap to the 2-letter code DDC writes
+        # into the snapshot's ``country`` payload. ``USA_USD`` would
+        # otherwise filter to literal ``"USA"`` and exclude every US
+        # rate (the snapshot has ``country: "US"``).
+        ("USA_USD", "US"),
+        ("ENG_TORONTO", "CA"),       # Canadian-English file DDC ships
+        ("GBR_LONDON", "GB"),        # defensive
+        ("ru_stpetersburg", "RU"),   # case-normalisation
     ],
 )
 def test_country_filter_pins_specific_region_within_language_collection(

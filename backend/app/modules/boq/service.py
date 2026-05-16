@@ -964,6 +964,32 @@ def _quantize_money_str(value: str | int | float | Decimal | None) -> str:
     return str(_quantize_money(_to_decimal(value)))
 
 
+# BUG-B-001 / BUG-B-012: rollup figures (direct_cost, markup amounts,
+# net_total, grand_total, section subtotals) must be returned quantised to
+# the currency minor unit using *commercial* rounding (ROUND_HALF_UP), not
+# the 4dp banker's rounding used for per-line storage and not raw
+# full-precision Decimal. Storage stays at 4dp (q×r identity preserved
+# per-line); only the aggregate read boundary is snapped to cents so the
+# editor (structured), the list endpoint, statistics and cost-breakdown all
+# return ONE canonical number for the same BOQ.
+_CURRENCY_QUANTUM = Decimal("0.01")
+
+
+def _round_currency(value: Decimal | float | int | str | None) -> float:
+    """Quantise an aggregate monetary value to 2dp, ROUND_HALF_UP.
+
+    Returns a float (the response schemas type these as ``float``).
+    Non-finite / unparseable input collapses to ``0.0`` so a corrupt
+    intermediate never serialises as ``NaN``/``Infinity``.
+    """
+    from decimal import ROUND_HALF_UP
+
+    d = value if isinstance(value, Decimal) else _to_decimal(value)
+    if not d.is_finite():
+        return 0.0
+    return float(d.quantize(_CURRENCY_QUANTUM, rounding=ROUND_HALF_UP))
+
+
 def _coerce_audit_value(value: Any) -> Any:
     """Convert a Position attribute to a JSON-safe primitive (BUG-AUDIT01).
 
@@ -1255,6 +1281,65 @@ def _build_classification(
     )
 
 
+def _stamp_cost_item_compat(
+    metadata: dict[str, Any],
+    *,
+    cost_item: Any,
+    position_unit: str | None,
+) -> bool:
+    """Record the linked CostItem's unit/currency and flag a mismatch.
+
+    BUG-B-013: applying a matched cost-database rate previously stored no
+    provenance and ran no compatibility check — a EUR / m³ catalogue rate
+    could be silently applied to a GBP / m² position. We can't FX-convert
+    here (rates live in the finance module — cross-module), and a hard
+    block would over-restrict legitimate cross-unit assemblies. Instead we
+    follow the architecture guide principle #7 (AI-augmented, human-confirmed): stamp
+    ``cost_item_currency`` / ``cost_item_unit`` so the value is never lost
+    and raise a non-blocking warning the traffic-light dashboard surfaces
+    when the units disagree.
+
+    Returns ``True`` when a compatibility warning was recorded so the
+    caller can set ``validation_status='warnings'``.
+    """
+    ci_unit = (str(getattr(cost_item, "unit", "") or "")).strip()
+    ci_currency = (str(getattr(cost_item, "currency", "") or "")).strip()
+    if ci_unit:
+        metadata["cost_item_unit"] = ci_unit
+    if ci_currency:
+        metadata["cost_item_currency"] = ci_currency
+
+    warnings: list[str] = []
+    pos_unit = (position_unit or "").strip()
+    if ci_unit and pos_unit and ci_unit.lower() != pos_unit.lower():
+        warnings.append(
+            f"Cost item is priced per '{ci_unit}' but this position is "
+            f"measured in '{pos_unit}' — verify the rate applies to the "
+            f"position's quantity basis.",
+        )
+    # Currency mismatch is only detectable in-module when the caller
+    # already carried a position/project currency in metadata. We never
+    # auto-convert (no FX in this module) — we only flag.
+    pos_currency = ""
+    for key in ("currency", "project_currency", "position_currency"):
+        val = metadata.get(key)
+        if isinstance(val, str) and val.strip():
+            pos_currency = val.strip()
+            break
+    if ci_currency and pos_currency and ci_currency.upper() != pos_currency.upper():
+        warnings.append(
+            f"Cost item rate is in {ci_currency} but this position is in "
+            f"{pos_currency} — no FX conversion was applied.",
+        )
+
+    if warnings:
+        metadata["cost_apply_warnings"] = warnings
+        return True
+    # No mismatch — drop any stale warning marker from a prior bad link.
+    metadata.pop("cost_apply_warnings", None)
+    return False
+
+
 def _calculate_markup_amounts(
     direct_cost: Decimal,
     markups: list[BOQMarkup],
@@ -1276,12 +1361,16 @@ def _calculate_markup_amounts(
             results.append((markup, Decimal("0")))
             continue
 
-        # Determine the base for calculation
+        # Determine the base for calculation.
+        # BUG-B-005: ``subtotal`` must base the markup on
+        # direct_cost + Σ(preceding markups) — same as ``cumulative``.
+        # Treating it as ``direct_cost`` systematically under-states any
+        # tax-on-subtotal line (VAT on contractor price incl. overhead &
+        # profit), the exact use case the schema offers ``subtotal`` for.
         apply_to = (markup.apply_to or "direct_cost").lower()
-        if apply_to == "cumulative":
+        if apply_to in ("cumulative", "subtotal"):
             base = direct_cost + running_sum
         else:
-            # "direct_cost" and "subtotal" both use direct_cost as base
             base = direct_cost
 
         # Calculate amount based on type
@@ -1639,6 +1728,15 @@ class BOQService:
                     detail="cost_item_id does not reference an active CostItem",
                 )
             merged_metadata["cost_item_id"] = str(data.cost_item_id)
+            # BUG-B-013: stamp cost-item unit/currency provenance and flag
+            # a non-blocking warning on unit / currency mismatch.
+            _cost_compat_warned = _stamp_cost_item_compat(
+                merged_metadata,
+                cost_item=cost_item,
+                position_unit=data.unit,
+            )
+        else:
+            _cost_compat_warned = False
 
         # Stamp the CWICR variant snapshot so the position's unit_rate is
         # immutable from the cost-database side: a later re-import or rate
@@ -1674,6 +1772,9 @@ class BOQService:
             confidence=str(data.confidence) if data.confidence is not None else None,
             cad_element_ids=data.cad_element_ids,
             metadata_=merged_metadata,
+            # BUG-B-013: surface a cost-item unit/currency mismatch on the
+            # validation traffic-light instead of accepting it silently.
+            validation_status="warnings" if _cost_compat_warned else "pending",
             sort_order=max_order + 1,
         )
         position = await self.position_repo.create(position)
@@ -1798,6 +1899,13 @@ class BOQService:
                         ),
                     )
                 merged_metadata["cost_item_id"] = str(data.cost_item_id)
+                _bulk_cost_warned = _stamp_cost_item_compat(
+                    merged_metadata,
+                    cost_item=cost_item,
+                    position_unit=data.unit,
+                )
+            else:
+                _bulk_cost_warned = False
 
             currency_hint = (
                 merged_metadata.get("currency")
@@ -1831,6 +1939,7 @@ class BOQService:
                     ),
                     cad_element_ids=data.cad_element_ids,
                     metadata_=merged_metadata,
+                    validation_status="warnings" if _bulk_cost_warned else "pending",
                     sort_order=max_order + offset,
                 ),
             )
@@ -1989,6 +2098,16 @@ class BOQService:
                 existing_meta = position.metadata_ if isinstance(position.metadata_, dict) else {}
                 base_meta = dict(existing_meta)
             base_meta["cost_item_id"] = str(client_cost_item_id)
+            # BUG-B-013: stamp unit/currency provenance + flag mismatch.
+            # ``data.unit`` (if the same patch changes the unit) takes
+            # precedence over the stored unit.
+            _new_unit = fields.get("unit", position.unit)
+            if _stamp_cost_item_compat(
+                base_meta,
+                cost_item=cost_item,
+                position_unit=_new_unit,
+            ) and "validation_status" not in fields:
+                fields["validation_status"] = "warnings"
             fields["metadata"] = base_meta
 
         # ── BUG-CONCURRENCY01: optimistic concurrency check ──────────────
@@ -2863,7 +2982,7 @@ class BOQService:
         Returns:
             Tuple of (direct_cost, list of (markup, computed_amount)).
         """
-        positions, _ = await self.position_repo.list_for_boq(boq_id)
+        positions = await self.position_repo.list_all_for_boq(boq_id)
         markups = await self.markup_repo.list_for_boq(boq_id)
 
         # Direct cost: sum of totals for non-section items only
@@ -2967,8 +3086,13 @@ class BOQService:
         """Recalculate unit_rates for all positions from their resource breakdowns.
 
         For each position that has ``metadata_.resources``, the unit_rate is
-        recomputed as the sum of ``quantity * unit_rate`` for every resource entry.
-        The position total is then ``unit_rate * position.quantity``.
+        recomputed as Σ(resource.quantity × resource.unit_rate) — the
+        per-unit norm convention shared with :meth:`update_position`. The
+        position total is then ``position.quantity × unit_rate`` (BUG-B-004:
+        the two paths previously disagreed by a factor of qty² — recalc used
+        ``total = resource_sum × qty`` while ``unit_rate = resource_sum``, and
+        also floored qty at 1.0).  Both now derive identical values for the
+        same resources + quantity.
 
         Args:
             boq_id: The BOQ whose positions should be recalculated.
@@ -2979,21 +3103,40 @@ class BOQService:
         # Ensure the BOQ exists and is not locked
         await self._ensure_not_locked(boq_id)
 
-        positions, _ = await self.position_repo.list_for_boq(boq_id)
-        updated = 0
-        skipped = 0
+        positions = await self.position_repo.list_all_for_boq(boq_id)
 
+        # BUG-B-003: ``position_repo.update_fields`` calls
+        # ``session.expire_all()`` on every invocation. If we read
+        # ``pos.metadata_`` / ``pos.quantity`` lazily inside the loop, the
+        # FIRST update expires every not-yet-processed ORM instance; the
+        # next iteration's attribute access then triggers an implicit
+        # async lazy-load outside the greenlet → MissingGreenlet → HTTP
+        # 500 (only reproduced with ≥2 resource-loaded positions).
+        # Snapshot every attribute we need BEFORE mutating anything so the
+        # loop never touches an expired instance.
+        snapshots: list[tuple[uuid.UUID, list[dict[str, Any]], str | None]] = []
         for pos in positions:
             meta = pos.metadata_ or {}
-            resources = meta.get("resources", [])
+            resources = meta.get("resources") or []
+            resources = [r for r in resources if isinstance(r, dict)]
+            snapshots.append((pos.id, resources, pos.quantity))
+
+        updated = 0
+        skipped = 0
+        for pos_id, resources, pos_qty_raw in snapshots:
             if resources:
-                total_resource_cost = sum(float(r.get("quantity", 0)) * float(r.get("unit_rate", 0)) for r in resources)
+                # Per-unit norm: unit_rate = Σ(r.qty × r.rate), NO division
+                # by position quantity (mirrors update_position).
+                total_resource_cost = sum(
+                    float(r.get("quantity", 0) or 0) * float(r.get("unit_rate", 0) or 0)
+                    for r in resources
+                )
                 if total_resource_cost > 0:
-                    pos_qty = max(float(pos.quantity or 0), 1.0)
-                    new_total = str(total_resource_cost * pos_qty)
+                    new_unit_rate = _quantize_money_str(str(total_resource_cost))
+                    new_total = _compute_total(pos_qty_raw, new_unit_rate)
                     await self.position_repo.update_fields(
-                        pos.id,
-                        unit_rate=str(total_resource_cost),
+                        pos_id,
+                        unit_rate=new_unit_rate,
                         total=new_total,
                     )
                     updated += 1
@@ -3041,7 +3184,7 @@ class BOQService:
         new_boq_id = new_boq.id
 
         # Copy positions — first pass: create all with old parent_id recorded
-        positions, _ = await self.position_repo.list_for_boq(boq_id)
+        positions = await self.position_repo.list_all_for_boq(boq_id)
         old_to_new: dict[uuid.UUID, uuid.UUID] = {}
 
         # Eagerly capture all attributes from source positions BEFORE any
@@ -3215,7 +3358,7 @@ class BOQService:
             HTTPException 404 if BOQ not found.
         """
         boq = await self.get_boq(boq_id)
-        positions, _ = await self.position_repo.list_for_boq(boq_id)
+        positions = await self.position_repo.list_all_for_boq(boq_id)
 
         # Build position responses with float conversions
         position_responses = []
@@ -3247,9 +3390,11 @@ class BOQService:
             created_at=boq.created_at,
             updated_at=boq.updated_at,
             positions=position_responses,
-            direct_cost_total=float(direct_cost),
-            markups_total=float(markups_total),
-            grand_total=float(grand_total_with_markups),
+            # BUG-B-001 / BUG-B-012: cents-quantised (HALF_UP) so list and
+            # detail return one canonical figure.
+            direct_cost_total=_round_currency(direct_cost),
+            markups_total=_round_currency(markups_total),
+            grand_total=_round_currency(grand_total_with_markups),
             position_count=position_count,
         )
 
@@ -3270,7 +3415,7 @@ class BOQService:
             HTTPException 404 if BOQ not found.
         """
         boq = await self.get_boq(boq_id)
-        all_positions, _ = await self.position_repo.list_for_boq(boq_id)
+        all_positions = await self.position_repo.list_all_for_boq(boq_id)
 
         # Separate sections from items
         section_map: dict[uuid.UUID, Position] = {}
@@ -3298,27 +3443,68 @@ class BOQService:
             else:
                 remaining_ungrouped.append(pos)
 
+        # BUG-B-010: build a child-section adjacency map so a parent
+        # section's subtotal rolls up nested sub-section costs (3-4+
+        # levels). A section nested under another section lands in
+        # ``section_map`` as its own entry but its parent never aggregated
+        # it, so the parent reported subtotal 0 while the child held the
+        # money — any UI summing top-level section subtotals understated
+        # the BOQ.
+        child_sections: dict[uuid.UUID, list[uuid.UUID]] = {}
+        for sid, spos in section_map.items():
+            parent = spos.parent_id
+            if parent is not None and parent in section_map:
+                child_sections.setdefault(parent, []).append(sid)
+
+        # Own-leaf subtotal (direct, non-section children only).
+        own_leaf_subtotal: dict[uuid.UUID, Decimal] = {}
+        for sid in section_map:
+            s = Decimal("0")
+            for child in children_map.get(sid, []):
+                if not _is_section(child):
+                    s += Decimal(str(_str_to_float(child.total)))
+            own_leaf_subtotal[sid] = s
+
+        # Rolled subtotal = own leaves + every descendant section's leaves.
+        # Iterative post-order with a visited guard so already-corrupt
+        # parent cycles can't spin forever.
+        _rolled_cache: dict[uuid.UUID, Decimal] = {}
+
+        def _rolled(sid: uuid.UUID, _seen: set[uuid.UUID]) -> Decimal:
+            if sid in _rolled_cache:
+                return _rolled_cache[sid]
+            if sid in _seen:
+                return own_leaf_subtotal.get(sid, Decimal("0"))
+            _seen.add(sid)
+            total = own_leaf_subtotal.get(sid, Decimal("0"))
+            for csid in child_sections.get(sid, []):
+                total += _rolled(csid, _seen)
+            _rolled_cache[sid] = total
+            return total
+
         # Build section responses
         sections: list[SectionResponse] = []
         direct_cost = Decimal("0")
 
         for section_id, section_pos in section_map.items():
             child_responses: list[PositionResponse] = []
-            subtotal = Decimal("0")
             for child in children_map.get(section_id, []):
                 child_responses.append(_build_position_response(child))
-                subtotal += Decimal(str(_str_to_float(child.total)))
 
+            rolled = _rolled(section_id, set())
             sections.append(
                 SectionResponse(
                     id=section_pos.id,
                     ordinal=section_pos.ordinal,
                     description=section_pos.description,
                     positions=child_responses,
-                    subtotal=float(subtotal),
+                    subtotal=_round_currency(rolled),
                 )
             )
-            direct_cost += subtotal
+            # direct_cost accumulates ONLY this section's own leaves so a
+            # rolled parent subtotal does not double-count its children
+            # (BUG-B-010 — grand total stays leaf-exact).
+            direct_cost += own_leaf_subtotal[section_id]
 
         # Ungrouped items
         ungrouped_responses: list[PositionResponse] = []
@@ -3349,7 +3535,7 @@ class BOQService:
                     metadata_=markup_obj.metadata_,
                     created_at=markup_obj.created_at,
                     updated_at=markup_obj.updated_at,
-                    amount=float(amount),
+                    amount=_round_currency(amount),
                 )
             )
             markup_total += amount
@@ -3367,10 +3553,12 @@ class BOQService:
             updated_at=boq.updated_at,
             sections=sections,
             positions=ungrouped_responses,
-            direct_cost=float(direct_cost),
+            # BUG-B-001 / BUG-B-012: snap aggregates to cents (HALF_UP) so
+            # the editor matches statistics / cost-breakdown / list.
+            direct_cost=_round_currency(direct_cost),
             markups=markups_calculated,
-            net_total=float(net_total),
-            grand_total=float(net_total),
+            net_total=_round_currency(net_total),
+            grand_total=_round_currency(net_total),
         )
 
     # ── Cost breakdown ─────────────────────────────────────────────────
@@ -3399,7 +3587,7 @@ class BOQService:
             HTTPException 404 if BOQ not found.
         """
         boq = await self.get_boq(boq_id)
-        all_positions, _ = await self.position_repo.list_for_boq(boq_id)
+        all_positions = await self.position_repo.list_all_for_boq(boq_id)
 
         # Accumulators
         category_amounts: dict[str, float] = {}
@@ -3516,8 +3704,10 @@ class BOQService:
 
         return CostBreakdownResponse(
             boq_id=str(boq_id),
-            grand_total=round(grand_total, 2),
-            direct_cost=round(direct_cost_val, 2),
+            # BUG-B-012: HALF_UP cents quantisation, consistent with the
+            # other read endpoints' monetary rounding.
+            grand_total=_round_currency(grand_total),
+            direct_cost=_round_currency(direct_cost_val),
             categories=categories,
             markups=markup_lines,
             top_resources=top_resources,
@@ -3542,7 +3732,7 @@ class BOQService:
             HTTPException 404 if BOQ not found.
         """
         boq = await self.get_boq(boq_id)
-        all_positions, _ = await self.position_repo.list_for_boq(boq_id)
+        all_positions = await self.position_repo.list_all_for_boq(boq_id)
 
         sections = [p for p in all_positions if _is_section(p)]
         items = [p for p in all_positions if not _is_section(p)]
@@ -3595,8 +3785,10 @@ class BOQService:
             status=boq.status,
             position_count=item_count,
             section_count=len(sections),
-            direct_cost=round(float(direct_cost), 2),
-            grand_total=round(grand_total, 2),
+            # BUG-B-012: same HALF_UP cents quantisation as structured /
+            # cost-breakdown / list so all read endpoints agree.
+            direct_cost=_round_currency(direct_cost),
+            grand_total=_round_currency(grand_total),
             avg_unit_rate=round(avg_rate, 2),
             completion_pct=round(completion_pct, 1),
             unit_breakdown=unit_breakdown,
@@ -4049,7 +4241,7 @@ class BOQService:
             HTTPException 404 if BOQ not found.
         """
         await self.get_boq(boq_id)
-        all_positions, _ = await self.position_repo.list_for_boq(boq_id)
+        all_positions = await self.position_repo.list_all_for_boq(boq_id)
 
         # Filter out section headers — only count real line items
         items = [p for p in all_positions if not _is_section(p)]

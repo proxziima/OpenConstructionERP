@@ -451,6 +451,27 @@ class PortalService:
     async def revoke_access_rule(self, rule_id: uuid.UUID) -> None:
         await self.rule_repo.delete(rule_id)
 
+    async def list_access_rules(
+        self,
+        *,
+        portal_user_id: uuid.UUID | None = None,
+        resource_type: str | None = None,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> tuple[list[PortalAccessRule], int]:
+        """Admin-facing paginated list of access rules.
+
+        Backs ``GET /admin/access-rules`` so the access-rules table is
+        durable across reloads instead of only reflecting grants made in the
+        current browser session.
+        """
+        return await self.rule_repo.list_rules(
+            portal_user_id=portal_user_id,
+            resource_type=resource_type,
+            offset=offset,
+            limit=limit,
+        )
+
     async def list_accessible_resources(
         self,
         portal_user_id: uuid.UUID,

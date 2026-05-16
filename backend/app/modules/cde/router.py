@@ -108,6 +108,11 @@ def _revision_to_response(revision: object) -> RevisionResponse:
 # ── Suitability codes (ISO 19650 lookup) ─────────────────────────────────────
 
 
+@router.get(
+    "/suitability-codes",
+    response_model=SuitabilityCodesResponse,
+    include_in_schema=False,
+)
 @router.get("/suitability-codes/", response_model=SuitabilityCodesResponse)
 async def list_suitability_codes() -> SuitabilityCodesResponse:
     """Return the ISO 19650 suitability-code table.
@@ -132,6 +137,12 @@ async def list_suitability_codes() -> SuitabilityCodesResponse:
 
 
 @router.get(
+    "/stats",
+    response_model=CDEStatsResponse,
+    dependencies=[Depends(RequirePermission("cde.read"))],
+    include_in_schema=False,
+)
+@router.get(
     "/stats/",
     response_model=CDEStatsResponse,
     dependencies=[Depends(RequirePermission("cde.read"))],
@@ -154,6 +165,22 @@ async def cde_stats(
 # ── Container List ────────────────────────────────────────────────────────────
 
 
+# NOTE on the no-trailing-slash alias below:
+# The app runs with ``redirect_slashes=False`` (see app.main), so a request
+# to ``/api/v1/cde/containers`` (no trailing slash) does NOT auto-redirect
+# to ``/containers/`` — it 404s outright. The real frontend always calls
+# ``/v1/cde/containers/`` (with the slash), so the module is fully
+# functional in-app; the 404 only bites bare-path probes, crawlers, and
+# any reverse proxy that strips trailing slashes. We mirror the canonical
+# handler on the slash-less path (hidden from the schema) so those callers
+# get a coherent, authorised 200/empty-state instead of a misleading
+# "module is dead" 404. (CRAWL-CDE-404 root cause.)
+@router.get(
+    "/containers",
+    response_model=list[ContainerResponse],
+    dependencies=[Depends(RequirePermission("cde.read"))],
+    include_in_schema=False,
+)
 @router.get(
     "/containers/",
     response_model=list[ContainerResponse],

@@ -540,14 +540,25 @@ async def get_timeline(
 # ── Get single photo ────────────────────────────────────────────────────
 
 
-@router.get("/photos/{photo_id}", response_model=PhotoResponse)
+@router.get(
+    "/photos/{photo_id}",
+    response_model=PhotoResponse,
+    dependencies=[Depends(RequirePermission("documents.read"))],
+)
 async def get_photo(
     photo_id: uuid.UUID,
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    user_id: CurrentUserId,
+    session: SessionDep,
     service: PhotoService = Depends(_get_photo_service),
 ) -> PhotoResponse:
-    """Get a single photo's metadata."""
+    """Get a single photo's metadata.
+
+    IDOR-guarded via the parent project (A-DOC-04): a non-member is
+    404'd before any photo metadata is disclosed — same contract as
+    ``serve_photo_file`` / ``get_sheet``.
+    """
     photo = await service.get_photo(photo_id)
+    await verify_project_access(photo.project_id, user_id, session)
     return _photo_to_response(photo)
 
 

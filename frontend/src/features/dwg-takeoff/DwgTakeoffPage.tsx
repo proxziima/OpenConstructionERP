@@ -12,6 +12,8 @@
 import { useState, useMemo, useCallback, useRef, useEffect, type ReactNode } from 'react';
 import {
   calculateArea,
+  calculateAreaSafe,
+  type AreaDegeneracy,
   calculateDistance,
   calculatePerimeter,
   getSegmentLengths,
@@ -3467,9 +3469,16 @@ export function DwgTakeoffPage() {
                         // numbers stay in sync with the canvas labels when the user
                         // picks a different ratio via the Scale tab.
                         const perimeter = calculatePerimeter(verts, closed) * effectiveScale;
-                        const area = closed
-                          ? calculateArea(verts) * effectiveScale * effectiveScale
-                          : 0;
+                        // calculateAreaSafe flags a self-intersecting
+                        // ("bowtie") trace whose shoelace area cancels to
+                        // a wrong/zero figure, so the estimator can fix
+                        // the polyline instead of booking it (D-TKC-015).
+                        const areaResult: { area: number; degenerate: AreaDegeneracy } =
+                          closed
+                            ? calculateAreaSafe(verts)
+                            : { area: 0, degenerate: null };
+                        const area = areaResult.area * effectiveScale * effectiveScale;
+                        const areaDegenerate = areaResult.degenerate;
                         return (
                           <div className="mt-3 space-y-2">
                             <div className="font-semibold text-xs text-foreground border-b border-border pb-1">
@@ -3483,7 +3492,7 @@ export function DwgTakeoffPage() {
                                 {formatMeasurement(perimeter, 'm')}
                               </span>
                             </div>
-                            {closed && area > 0 && (
+                            {closed && area > 0 && !areaDegenerate && (
                               <div className="flex items-center justify-between rounded-md bg-blue-950/30 px-2.5 py-1.5 border border-blue-800/40">
                                 <span className="text-blue-400 font-medium">
                                   {t('dwg_takeoff.area', 'Area')}
@@ -3491,6 +3500,19 @@ export function DwgTakeoffPage() {
                                 <span className="font-mono font-bold text-blue-300">
                                   {formatMeasurement(area, 'm\u00B2')}
                                 </span>
+                              </div>
+                            )}
+                            {closed && areaDegenerate && (
+                              <div className="rounded-md bg-amber-950/30 px-2.5 py-1.5 border border-amber-800/40 text-amber-300 text-2xs">
+                                {areaDegenerate === 'self_intersecting'
+                                  ? t('dwg_takeoff.area_self_intersecting', {
+                                      defaultValue:
+                                        'This outline crosses itself \u2014 the area is unreliable. Re-trace it as a simple (non-crossing) polygon before using it as a quantity.',
+                                    })
+                                  : t('dwg_takeoff.area_degenerate', {
+                                      defaultValue:
+                                        'This outline encloses no measurable area. Check the vertices before using it as a quantity.',
+                                    })}
                               </div>
                             )}
                             <PropertyRow

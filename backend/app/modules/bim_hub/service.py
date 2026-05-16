@@ -85,6 +85,81 @@ def _safe_float(value: Any) -> float | None:
     except (TypeError, ValueError, InvalidOperation):
         return None
 
+
+# ── Canonical unit normalisation (E-XMOD-020) ───────────────────────────────
+#
+# The BIM→BOQ picker and CAD QTO importer historically wrote the
+# superscript Unicode units ``m²`` / ``m³`` straight onto the new
+# ``Position.unit``. Downstream validation rules (RateVsBenchmark,
+# MeasurementConsistency, CPWD, Sekisan, …) key their allow-lists on the
+# ASCII tokens ``m2`` / ``m3`` ONLY, so a BIM-sourced volume position
+# silently escaped the unrealistic-rate / consistency guards. We fix this
+# authoritatively at the *write boundary* of this module: every
+# ``Position.unit`` this service persists is normalised to a single
+# canonical ASCII token. (The validation rule file is owned by another
+# pass and must NOT be edited — normalising here makes both sides agree.)
+_SUPERSCRIPT_UNIT_MAP = {
+    "²": "2",  # SUPERSCRIPT TWO  (m²)
+    "³": "3",  # SUPERSCRIPT THREE (m³)
+}
+
+
+def normalize_unit_token(raw: Any) -> str:
+    """Fold a unit string to its canonical ASCII form.
+
+    ``m³`` → ``m3``, ``m²`` → ``m2``, ``M3`` → ``m3``. Whitespace is
+    trimmed and the token is lower-cased so ``"M2"``/``"m²"``/``" m2 "``
+    all collapse to ``"m2"``. Empty / ``None`` → ``""`` (caller decides
+    the fallback — we never invent a unit here). Unknown units pass
+    through lower-cased and superscript-folded; rejecting a real-world
+    unit would be worse UX than letting the estimator edit post-import.
+    """
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    for sup, ascii_digit in _SUPERSCRIPT_UNIT_MAP.items():
+        text = text.replace(sup, ascii_digit)
+    return text.lower()
+
+
+# Units that denote a *count of discrete items* (not a geometric
+# dimension). Linking BIM geometry to a count position must NOT
+# overwrite the estimator's hand-entered piece count with a volume /
+# area / weight — see E-XMOD-003.
+_COUNT_UNITS: frozenset[str] = frozenset(
+    {
+        "pcs",
+        "pc",
+        "nr",
+        "no",
+        "nos",
+        "ea",
+        "each",
+        "unit",
+        "units",
+        "item",
+        "items",
+        "st",
+        "stk",
+        "stck",
+        "stück",
+        "stueck",
+        "u",
+        "lsum",
+        "ls",
+        "psch",
+        "pausch",
+        "pa",
+        "ens",
+        "set",
+        "sets",
+        "kpl",
+    }
+)
+
+
 # Sentinel key used by ``list_elements_with_links`` to signal that a
 # BIM-model validation report exists. Routers can detect "report ran but
 # element passed" vs "no report at all" by checking this key's presence.
@@ -1400,18 +1475,29 @@ class BIMHubService:
     ) -> None:
         """Recompute ``Position.quantity`` from all linked BIM element quantities.
 
-        Strategy: sum the quantity field from linked elements that best matches
-        the position's unit.  Mapping:
+        Strategy: sum the *dimensionally-correct* quantity field from
+        linked elements based on the position's unit:
 
-        - m3  / m³  → volume_m3
-        - m2  / m²  → area_m2
-        - m   / lfm → length_m
-        - kg         → weight_kg (if present)
+        - m3 / m³           → Σ volume_m3
+        - m2 / m²           → Σ area_m2
+        - m / lfm / lm      → Σ length_m
+        - kg                → Σ weight_kg
+        - t (metric tonne)  → Σ weight_kg ÷ 1000   (D-TKC-005)
+        - pcs / St / ea / … → element *count*       (E-XMOD-003)
 
-        When no matching quantity key is found we fall back to the first
-        non-zero numeric quantity value.  The position is only updated when
-        the computed value is > 0 so manual overrides are not clobbered by
-        elements with missing data.
+        Correctness invariants (these were the v1.9.0 defects):
+
+        * **E-XMOD-003** — a count position (``pcs``/``St``/``ea``/
+          ``lsum``/…) must NEVER take volume/area/weight. It gets the
+          number of linked elements (1 per element) so "7.5 pcs of
+          walls" can no longer happen.
+        * **D-TKC-005** — a tonne position divides ``weight_kg`` by
+          1000 so 4000 kg → 4 t, not 4000 t.
+        * **D-TKC-028** — if NO dimensionally-correct quantity exists
+          for the unit, the position is left untouched. We never fall
+          back to "first non-zero numeric value" (which silently summed
+          an area into a length position, etc.). The estimator's manual
+          value is preserved instead of being corrupted.
         """
         pos = await self.session.get(Position, position_id)
         if pos is None:
@@ -1421,19 +1507,65 @@ class BIMHubService:
         if not links:
             return
 
-        # Determine which quantity key to sum based on BOQ position unit.
-        unit = (pos.unit or "").strip().lower()
+        # Canonical ASCII unit token (m³→m3, M2→m2, …) so the mapping
+        # below is locale/encoding independent.
+        unit = normalize_unit_token(pos.unit)
+
+        # ── Count units: quantity = number of linked elements ─────────
+        # No geometric substitution — this is the E-XMOD-003 fix.
+        if unit in _COUNT_UNITS:
+            count_total = 0
+            for lnk in links:
+                elem = await self.element_repo.get(lnk.bim_element_id)
+                if elem is not None:
+                    count_total += 1
+            if count_total > 0:
+                pos.quantity = str(count_total)
+                try:
+                    rate = Decimal(pos.unit_rate or "0")
+                    pos.total = str(
+                        (Decimal(count_total) * rate).quantize(Decimal("0.01"))
+                    )
+                except (InvalidOperation, TypeError, ValueError):
+                    pass
+                await self.session.flush()
+                logger.info(
+                    "BOQ position %s (count unit %r) quantity auto-set to "
+                    "%d linked BIM element(s)",
+                    position_id,
+                    pos.unit,
+                    count_total,
+                )
+            return
+
+        # ── Geometric units: dimension-locked quantity key ────────────
         _UNIT_TO_QKEY: dict[str, list[str]] = {
             "m3": ["volume_m3", "Volume", "volume"],
-            "m³": ["volume_m3", "Volume", "volume"],
             "m2": ["area_m2", "Area", "area"],
-            "m²": ["area_m2", "Area", "area"],
             "m": ["length_m", "Length", "length"],
             "lfm": ["length_m", "Length", "length"],
+            "lm": ["length_m", "Length", "length"],
             "kg": ["weight_kg", "Weight", "weight"],
             "t": ["weight_kg", "Weight", "weight"],
+            "to": ["weight_kg", "Weight", "weight"],
         }
         preferred_keys = _UNIT_TO_QKEY.get(unit, [])
+        if not preferred_keys:
+            # D-TKC-028 — unknown / non-geometric unit and not a known
+            # count unit: do NOT guess a dimension. Leaving the manual
+            # quantity intact is strictly safer than summing an
+            # arbitrary geometric value of the wrong dimension.
+            logger.info(
+                "BOQ position %s unit %r has no dimensionally-correct "
+                "BIM quantity mapping — manual quantity left untouched "
+                "(no arbitrary fallback)",
+                position_id,
+                pos.unit,
+            )
+            return
+
+        # kg → 1, t → 1/1000 (D-TKC-005: tonne conversion).
+        scale = Decimal("0.001") if unit in ("t", "to") else Decimal("1")
 
         total = Decimal(0)
         for lnk in links:
@@ -1443,7 +1575,6 @@ class BIMHubService:
             qtys = elem.quantities or {}
 
             value: Decimal | None = None
-            # Try preferred keys first
             for key in preferred_keys:
                 raw = qtys.get(key)
                 if raw is not None:
@@ -1453,19 +1584,10 @@ class BIMHubService:
                     except (InvalidOperation, TypeError, ValueError):
                         continue
 
-            # Fallback: first non-zero numeric value
-            if value is None:
-                for v in qtys.values():
-                    try:
-                        candidate = Decimal(str(v))
-                        if candidate > 0:
-                            value = candidate
-                            break
-                    except (InvalidOperation, TypeError, ValueError):
-                        continue
-
+            # D-TKC-028 — NO arbitrary fallback. An element that lacks
+            # the dimensionally-correct quantity simply contributes 0.
             if value is not None and value > 0:
-                total += value
+                total += value * scale
 
         if total > 0:
             # Round to 4 decimal places to avoid floating-point noise
@@ -1921,27 +2043,70 @@ class BIMHubService:
         # in the rule editor).  When non-zero we also compute the line
         # total here so the new position lands fully priced — no second
         # pass needed in the BOQ editor.
+        #
+        # QR-004 — a rule author could prefill an arbitrary
+        # ``unit_rate`` (e.g. ``1e308``) that landed verbatim in a
+        # priced BOQ position with ``source='cad_import'``. We parse
+        # via Decimal (locale-independent), reject non-finite /
+        # negative, and clamp implausibly large rates so a careless or
+        # malicious rule cannot inject a corrupt price. ``total_qty``
+        # itself is already a finite Decimal (the apply-time math is
+        # now bounded by the QR-001 multiplier/waste validators).
+        _MAX_PREFILL_RATE = Decimal("100000000")  # 1e8 per-unit ceiling
         default_rate = "0"
+        rate_decimal = Decimal("0")
         target_dict = rule.boq_target or {}
         if isinstance(target_dict, dict):
             raw_rate = target_dict.get("unit_rate")
+            candidate: str | None = None
             if isinstance(raw_rate, (int, float)):
-                default_rate = str(raw_rate)
+                candidate = str(raw_rate)
             elif isinstance(raw_rate, str) and raw_rate.strip():
-                default_rate = raw_rate.strip()
+                candidate = raw_rate.strip()
+            if candidate is not None:
+                try:
+                    parsed = Decimal(candidate)
+                except (InvalidOperation, ValueError):
+                    logger.warning(
+                        "Rule %s prefilled a non-numeric unit_rate %r; "
+                        "falling back to 0",
+                        rule.id,
+                        raw_rate,
+                    )
+                    parsed = Decimal("0")
+                if not parsed.is_finite() or parsed < 0:
+                    logger.warning(
+                        "Rule %s prefilled a non-finite/negative "
+                        "unit_rate %r; clamped to 0",
+                        rule.id,
+                        raw_rate,
+                    )
+                    parsed = Decimal("0")
+                elif parsed > _MAX_PREFILL_RATE:
+                    logger.warning(
+                        "Rule %s prefilled an implausibly large "
+                        "unit_rate %r; clamped to %s",
+                        rule.id,
+                        raw_rate,
+                        _MAX_PREFILL_RATE,
+                    )
+                    parsed = _MAX_PREFILL_RATE
+                rate_decimal = parsed
+                default_rate = str(parsed)
 
-        try:
-            rate_decimal = Decimal(default_rate)
-        except Exception:
-            rate_decimal = Decimal("0")
         line_total = total_qty * rate_decimal
+
+        # E-XMOD-020 — persist the canonical ASCII unit token (m³→m3)
+        # so the new position is subject to the same RateVsBenchmark /
+        # MeasurementConsistency rules as a hand-typed "m3".
+        canonical_unit = normalize_unit_token(rule.unit) or "pcs"
 
         position = Position(
             boq_id=boq.id,
             parent_id=None,
             ordinal=ordinal,
             description=rule.name,
-            unit=rule.unit or "pcs",
+            unit=canonical_unit,
             quantity=str(total_qty),
             unit_rate=default_rate,
             total=str(line_total),

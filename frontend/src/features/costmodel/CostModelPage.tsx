@@ -22,6 +22,8 @@ import {
   Pencil,
   Check,
   X,
+  Trash2,
+  AlertTriangle,
   Loader2,
 } from 'lucide-react';
 import { Card, CardHeader, CardContent, Button, Badge, EmptyState, Skeleton, Breadcrumb } from '@/shared/ui';
@@ -807,6 +809,19 @@ const EVMDashboard = memo(function EVMDashboard({
             />
           </div>
 
+          {/* SPI-capped warning — PV is a time-elapsed proxy and was clamped */}
+          {evm.spi_capped && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-800/50 dark:bg-amber-950/20">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+              <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400/80">
+                {t('costmodel.spi_capped_hint', {
+                  defaultValue:
+                    'SPI is indicative only — the project schedule has barely started, so Planned Value is approximate and the index was clamped to a safe range.',
+                })}
+              </p>
+            </div>
+          )}
+
           {/* EVM Progress Bars */}
           <EVMProgressBars evm={evm} currency={currency} />
 
@@ -1250,6 +1265,32 @@ function SnapshotsList({ projectId, currency }: { projectId: string; currency: s
     },
   });
 
+  const deleteSnapshotMutation = useMutation({
+    mutationFn: (snapshotId: string) =>
+      costModelApi.deleteSnapshot(projectId, snapshotId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['costmodel'] });
+      addToast({
+        type: 'success',
+        title: t('costmodel.snapshot_deleted', { defaultValue: 'Snapshot deleted' }),
+      });
+    },
+    onError: (err: Error) => {
+      addToast({
+        type: 'error',
+        title: t('costmodel.snapshot_delete_failed', { defaultValue: 'Failed to delete snapshot' }),
+        message: err.message,
+      });
+    },
+  });
+
+  const handleDeleteSnapshot = useCallback(
+    (snapshotId: string) => {
+      deleteSnapshotMutation.mutate(snapshotId);
+    },
+    [deleteSnapshotMutation],
+  );
+
   if (isLoading || !snapshots || snapshots.length === 0) return null;
 
   return (
@@ -1280,6 +1321,9 @@ function SnapshotsList({ projectId, currency }: { projectId: string; currency: s
                 </th>
                 <th className="py-2 pl-3 text-left text-xs font-semibold uppercase tracking-wider text-content-secondary">
                   {t('costmodel.notes', { defaultValue: 'Notes' })}
+                </th>
+                <th className="py-2 pl-3 text-center text-xs font-semibold uppercase tracking-wider text-content-secondary w-12">
+                  {t('common.actions', { defaultValue: 'Actions' })}
                 </th>
               </tr>
             </thead>
@@ -1354,6 +1398,23 @@ function SnapshotsList({ projectId, currency }: { projectId: string; currency: s
                         />
                       </div>
                     )}
+                  </td>
+                  <td className="py-2.5 pl-3 text-center">
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSnapshot(snap.id)}
+                      disabled={deleteSnapshotMutation.isPending}
+                      className="invisible group-hover:visible inline-flex h-7 w-7 items-center justify-center rounded-md text-content-tertiary hover:text-semantic-error hover:bg-semantic-error-bg transition-colors disabled:opacity-50"
+                      title={t('costmodel.delete_snapshot', { defaultValue: 'Delete snapshot' })}
+                      aria-label={t('costmodel.delete_snapshot', { defaultValue: 'Delete snapshot' })}
+                    >
+                      {deleteSnapshotMutation.isPending &&
+                      deleteSnapshotMutation.variables === snap.id ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={13} />
+                      )}
+                    </button>
                   </td>
                 </tr>
               ))}

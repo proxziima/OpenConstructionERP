@@ -344,11 +344,19 @@ async def create_activity(
 )
 async def list_activities(
     schedule_id: uuid.UUID,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=100),
+    limit: int = Query(default=1000, ge=1, le=5000),
     service: ScheduleService = Depends(_get_service),
 ) -> list[ActivityResponse]:
-    """List all activities for a schedule, ordered by sort_order."""
+    """List all activities for a schedule, ordered by sort_order.
+
+    Verifies the caller owns the parent project (admins bypass) so a user
+    cannot enumerate activities of a schedule they do not have access to.
+    """
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
     activities, _ = await service.list_activities_for_schedule(schedule_id, offset=offset, limit=limit)
     return [_activity_to_response(a) for a in activities]
 
@@ -361,9 +369,16 @@ async def list_activities(
 )
 async def get_gantt_data(
     schedule_id: uuid.UUID,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: ScheduleService = Depends(_get_service),
 ) -> GanttData:
-    """Get structured Gantt chart data for a schedule."""
+    """Get structured Gantt chart data for a schedule.
+
+    Verifies the caller owns the parent project (admins bypass).
+    """
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
     return await service.get_gantt_data(schedule_id)
 
 
@@ -382,14 +397,18 @@ async def get_gantt_data(
 async def generate_from_boq(
     schedule_id: uuid.UUID,
     body: GenerateFromBOQRequest,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: ScheduleService = Depends(_get_service),
 ) -> list[ActivityResponse]:
     """Generate schedule activities from a BOQ.
 
     Creates one activity per BOQ section with cost-proportional durations
-    and sequential finish-to-start dependencies.
+    and sequential finish-to-start dependencies. Verifies the caller owns
+    the parent project (admins bypass) before mutating the schedule.
     """
-
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
     try:
         await service.generate_from_boq(schedule_id, body.boq_id, body.total_project_days)
         # Re-fetch activities to avoid greenlet/lazy-loading issues
@@ -415,13 +434,19 @@ async def generate_from_boq(
 )
 async def calculate_cpm(
     schedule_id: uuid.UUID,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: ScheduleService = Depends(_get_service),
 ) -> CriticalPathResponse:
     """Calculate the critical path (CPM forward/backward pass).
 
     Returns early/late start/finish, total float, and critical path for all
     activities. Updates activity colors: red for critical, blue for non-critical.
+    Verifies the caller owns the parent project (admins bypass) before
+    mutating activity CPM fields.
     """
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
     return await service.calculate_critical_path(schedule_id)
 
 
@@ -436,13 +461,19 @@ async def calculate_cpm(
 )
 async def get_risk_analysis(
     schedule_id: uuid.UUID,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: ScheduleService = Depends(_get_service),
 ) -> RiskAnalysisResponse:
     """Get PERT-based risk analysis with P50, P80, P95 duration estimates.
 
     Computes optimistic/pessimistic durations for each activity and derives
-    project-level probability estimates for schedule completion.
+    project-level probability estimates for schedule completion. Verifies the
+    caller owns the parent project (admins bypass) — risk analysis re-runs
+    CPM, which mutates activity fields.
     """
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
     return await service.get_risk_analysis(schedule_id)
 
 
@@ -618,12 +649,19 @@ async def create_work_order(
     dependencies=[Depends(RequirePermission("schedule.read"))],
 )
 async def list_work_orders(
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     schedule_id: uuid.UUID = Query(..., description="Filter work orders by schedule"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
     service: ScheduleService = Depends(_get_service),
 ) -> list[WorkOrderResponse]:
-    """List all work orders for a schedule."""
+    """List all work orders for a schedule.
+
+    Verifies the caller owns the parent project (admins bypass).
+    """
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
     work_orders, _ = await service.list_work_orders_for_schedule(schedule_id, offset=offset, limit=limit)
     return [_work_order_to_response(wo) for wo in work_orders]
 
@@ -818,6 +856,8 @@ async def delete_relationship(
     dependencies=[Depends(RequirePermission("schedule.read"))],
 )
 async def calculate_cpm_full(
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
     schedule_id: uuid.UUID = Query(..., description="Schedule to run CPM on"),
     body: CPMCalculateRequest | None = None,
     session: SessionDep = None,
@@ -828,7 +868,8 @@ async def calculate_cpm_full(
     Reads activities and explicit ScheduleRelationship records (plus inline
     dependency JSON) to build the network.  Runs forward/backward pass,
     computes floats, identifies the critical path, persists CPM results on
-    each activity, and returns the full analysis.
+    each activity, and returns the full analysis. Verifies the caller owns
+    the parent project (admins bypass) before mutating activity CPM fields.
     """
     from sqlalchemy import select
 
@@ -836,6 +877,7 @@ async def calculate_cpm_full(
     from app.modules.schedule.models import ScheduleRelationship
     from app.modules.schedule.schemas import CPMActivityResult
 
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
     schedule = await service.get_schedule(schedule_id)
     activities, _ = await service.list_activities_for_schedule(schedule_id, limit=5000)
 
@@ -1783,6 +1825,8 @@ async def import_msp_xml(
     dependencies=[Depends(RequirePermission("schedule.read"))],
 )
 async def export_schedule_csv(
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
     schedule_id: uuid.UUID = Query(..., description="Schedule to export"),
     service: ScheduleService = Depends(_get_service),
     session: SessionDep = None,
@@ -1790,13 +1834,15 @@ async def export_schedule_csv(
     """Export schedule activities as a CSV file.
 
     Columns: Activity Code, Name, WBS, Start, End, Duration, Progress, Float,
-    Critical, Predecessors.
+    Critical, Predecessors. Verifies the caller owns the parent project
+    (admins bypass).
     """
     from sqlalchemy import select
 
     from app.modules.schedule.models import ScheduleRelationship
 
-    # Verify schedule exists
+    # Verify schedule exists & caller owns the parent project
+    await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
     schedule = await service.get_schedule(schedule_id)
 
     # Fetch activities

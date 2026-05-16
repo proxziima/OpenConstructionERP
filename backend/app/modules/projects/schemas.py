@@ -157,6 +157,106 @@ def _validate_date_string(value: str | None, field_name: str) -> str | None:
     )
 
 
+def parse_flexible_date(value: str | None) -> "datetime | None":
+    """Parse a stored milestone/date string to a ``datetime`` for sorting.
+
+    The ``planned_date`` column is a free-form ``String`` that accepts ISO
+    (2026-03-15), European (15.03.2026) and US (03/15/2026) formats. A raw
+    string ``order_by`` (A-PROJ-06) and a string ``>=`` comparison
+    (A-DASH-03) therefore interleave formats wrongly. This converts any of
+    the supported formats to a comparable ``datetime``; unparseable / null
+    values return ``None`` so callers can sort them last.
+    """
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _normalise_currency(value: str | None) -> str | None:
+    """Normalise a currency code without hard ISO-4217 rejection.
+
+    This is a 20-language *global* product: currencies and markets are open
+    by design. A hard closed enum here would break legitimate non-listed
+    currencies and contradicts the explicit no-restriction contract in
+    ``test_project_schemas.py``. So we only *normalise* (strip + uppercase)
+    and apply a *soft* shape check: a non-empty currency that is not a
+    3-letter alpha code is rejected, because a value like ``"NOTACURRENCY"``
+    or ``"123"`` is a data-integrity error, not a regional variant. Empty
+    string stays empty (user has not chosen yet — no default bias).
+    """
+    if value is None:
+        return None
+    cleaned = value.strip().upper()
+    if cleaned == "":
+        return ""
+    if not _CURRENCY_CODE_RE.match(cleaned):
+        raise ValueError(
+            f"currency: '{value}' is not a 3-letter currency code "
+            "(e.g. EUR, USD, GBP, JPY). Leave empty if undecided."
+        )
+    return cleaned
+
+
+def _validate_money(value: str | None, field_name: str) -> str | None:
+    """Validate a monetary string field is a non-negative number.
+
+    Stored as a locale-independent decimal string (project model columns
+    are String for SQLite parity). A negative contract value or budget is
+    a data-integrity error regardless of region/currency, so this is a
+    hard reject — not a regional restriction. Empty string clears the
+    field (treated as None).
+    """
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if cleaned == "":
+        return None
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        amount = Decimal(cleaned)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(
+            f"{field_name}: '{value}' is not a valid number"
+        ) from exc
+    if amount < 0:
+        raise ValueError(f"{field_name} must be >= 0 (got {value})")
+    return cleaned
+
+
+def _validate_percentage(value: str | None, field_name: str) -> str | None:
+    """Validate a percentage string field is within 0–100.
+
+    Used for ``contingency_pct`` and milestone ``linked_payment_pct``.
+    Out-of-range percentages (e.g. 500%) corrupt progress-billing and
+    budget rollups, so this is a correctness bound, not a locale policy.
+    """
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if cleaned == "":
+        return None
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        pct = Decimal(cleaned)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(
+            f"{field_name}: '{value}' is not a valid number"
+        ) from exc
+    if pct < 0 or pct > 100:
+        raise ValueError(f"{field_name} must be between 0 and 100 (got {value})")
+    return cleaned
+
+
 # ── Create / Update ───────────────────────────────────────────────────────
 
 
@@ -181,8 +281,17 @@ class ProjectCreate(BaseModel):
         delta between what they sent and what was persisted. Rejecting
         loudly preserves the XSS guarantee and stops the data from being
         quietly rewritten.
+
+        A-PROJ-01: ``min_length=1`` runs *before* this after-validator, so a
+        whitespace-only name ("   ") passed length but trimmed to "" and was
+        stored empty. Re-assert non-emptiness post-trim so "   " gets the
+        same 422 an empty string already gets.
         """
         trimmed = v.strip()
+        if not trimmed:
+            raise ValueError(
+                "Project name must contain at least one non-whitespace character."
+            )
         if _HTML_TAG_RE.search(trimmed):
             raise ValueError(
                 "Project name contains HTML tags. Use plain text only."
@@ -297,6 +406,33 @@ class ProjectCreate(BaseModel):
     def _validate_dates(cls, v: str | None, info: Any) -> str | None:
         return _validate_date_string(v, info.field_name)
 
+    @field_validator("currency", mode="after")
+    @classmethod
+    def _normalise_currency(cls, v: str) -> str:
+        # A-PROJ-02: normalise (trim/upper) + soft shape check. NOT a
+        # closed ISO-4217 enum — this is a global product.
+        return _normalise_currency(v) or ""
+
+    @field_validator("region", "classification_standard", mode="after")
+    @classmethod
+    def _trim_region_std(cls, v: str) -> str:
+        # A-PROJ-02: region/classification_standard stay open (any market /
+        # custom standard) — we only strip surrounding whitespace so
+        # " DACH " and "DACH" don't fork into two distinct values.
+        return v.strip()
+
+    @field_validator("contract_value", "budget_estimate", mode="after")
+    @classmethod
+    def _validate_money_fields(cls, v: str | None, info: Any) -> str | None:
+        # A-PROJ-03: monetary fields must be non-negative numbers.
+        return _validate_money(v, info.field_name)
+
+    @field_validator("contingency_pct", mode="after")
+    @classmethod
+    def _validate_contingency(cls, v: str | None) -> str | None:
+        # A-PROJ-03: contingency is a 0–100 percentage.
+        return _validate_percentage(v, "contingency_pct")
+
 
 class ProjectUpdate(BaseModel):
     """Update project fields. All optional — only provided fields are updated."""
@@ -384,11 +520,36 @@ class ProjectUpdate(BaseModel):
         if v is None:
             return None
         trimmed = v.strip()
+        if not trimmed:
+            raise ValueError(
+                "Project name must contain at least one non-whitespace character."
+            )
         if _HTML_TAG_RE.search(trimmed):
             raise ValueError(
                 "Project name contains HTML tags. Use plain text only."
             )
         return trimmed
+
+    @field_validator("currency", mode="after")
+    @classmethod
+    def _normalise_currency(cls, v: str | None) -> str | None:
+        # A-PROJ-02: same soft normalisation as ProjectCreate.
+        return _normalise_currency(v)
+
+    @field_validator("region", "classification_standard", mode="after")
+    @classmethod
+    def _trim_region_std(cls, v: str | None) -> str | None:
+        return None if v is None else v.strip()
+
+    @field_validator("contract_value", "budget_estimate", mode="after")
+    @classmethod
+    def _validate_money_fields(cls, v: str | None, info: Any) -> str | None:
+        return _validate_money(v, info.field_name)
+
+    @field_validator("contingency_pct", mode="after")
+    @classmethod
+    def _validate_contingency(cls, v: str | None) -> str | None:
+        return _validate_percentage(v, "contingency_pct")
 
 
 # ── Response ──────────────────────────────────────────────────────────────
@@ -550,6 +711,12 @@ class MilestoneCreate(BaseModel):
     def _validate_actual_date(cls, v: str | None) -> str | None:
         return _validate_date_string(v, "actual_date")
 
+    @field_validator("linked_payment_pct")
+    @classmethod
+    def _validate_payment_pct(cls, v: str | None) -> str | None:
+        # A-PROJ-05: progress-billing percentage must be 0–100.
+        return _validate_percentage(v, "linked_payment_pct")
+
 
 class MilestoneUpdate(BaseModel):
     """Partial update for a milestone."""
@@ -580,6 +747,12 @@ class MilestoneUpdate(BaseModel):
     @classmethod
     def _validate_actual_date(cls, v: str | None) -> str | None:
         return _validate_date_string(v, "actual_date")
+
+    @field_validator("linked_payment_pct")
+    @classmethod
+    def _validate_payment_pct(cls, v: str | None) -> str | None:
+        # A-PROJ-05: progress-billing percentage must be 0–100.
+        return _validate_percentage(v, "linked_payment_pct")
 
 
 class MilestoneResponse(BaseModel):

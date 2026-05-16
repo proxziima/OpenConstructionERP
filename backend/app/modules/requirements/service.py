@@ -547,11 +547,18 @@ class RequirementsService:
     ) -> GateResult:
         """Run a quality gate on a requirement set.
 
-        Gates:
+        Gates form an ordered pipeline; each gate may only run once all
+        lower-numbered gates have been evaluated without a hard ``fail``:
+
             1 — Completeness: all requirements have entity+attribute+constraint
             2 — Consistency: no conflicting constraints for same entity+attribute
             3 — Coverage: requirements cover BOQ positions (linked_position_id)
             4 — Compliance: requirements align with project standard
+
+        Raises:
+            HTTPException 400: gate_number outside 1-4.
+            HTTPException 409: a prerequisite gate has not been run, or is
+                currently failing (E-REQ-009 sequence enforcement).
         """
         if gate_number not in GATE_NAMES:
             raise HTTPException(
@@ -560,6 +567,40 @@ class RequirementsService:
             )
 
         req_set = await self.get_set(set_id)
+
+        # ── Gate sequence / dependency enforcement (E-REQ-009) ───────────
+        # The four gates form a pipeline: 1 Completeness → 2 Consistency →
+        # 3 Coverage → 4 Compliance.  Running a downstream gate before its
+        # prerequisites have been evaluated produces a meaningless verdict
+        # (e.g. "Compliance: pass" on a structurally-incomplete set).  Gate
+        # N may only run once gates 1..N-1 have each been executed AND none
+        # of them ended in a hard ``fail`` — a failing upstream gate must be
+        # resolved (and re-run to a pass/warning) before the pipeline can
+        # advance.  This is enforced at the service layer so every caller
+        # (router, SDK, future schedulers) inherits the guard.
+        for prereq in range(1, gate_number):
+            prior = await self.gate_repo.get_latest_for_gate(set_id, prereq)
+            if prior is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Gate {gate_number} ({GATE_NAMES[gate_number]}) cannot run: "
+                        f"prerequisite gate {prereq} ({GATE_NAMES[prereq]}) "
+                        f"has not been evaluated yet. Run gates in order "
+                        f"1 → 2 → 3 → 4."
+                    ),
+                )
+            if prior.status == "fail":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Gate {gate_number} ({GATE_NAMES[gate_number]}) cannot run: "
+                        f"prerequisite gate {prereq} ({GATE_NAMES[prereq]}) "
+                        f"is failing. Resolve the gate {prereq} findings and "
+                        f"re-run it (to pass or warning) before continuing."
+                    ),
+                )
+
         requirements = await self.req_repo.all_for_set(set_id)
 
         gate_name = GATE_NAMES[gate_number]

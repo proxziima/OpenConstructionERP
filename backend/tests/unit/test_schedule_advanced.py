@@ -50,9 +50,12 @@ from app.modules.schedule_advanced.service import (
     allowed_phase_transitions,
     allowed_weekly_transitions,
     compute_baseline_delta,
+    compute_evm,
     compute_ppc,
     compute_rnc_pareto,
+    cpm_forward_backward_pass,
     is_constraint_blocking_task,
+    time_impact_analysis,
     validate_commitment,
     weeks_from_lookahead,
 )
@@ -1117,3 +1120,137 @@ async def test_phase_plans_listed_for_master() -> None:
     )
     items = await svc.phase_repo.list_for_master(m.id)
     assert {p.name for p in items} == {"Late", "Early"}
+
+
+# ── CPM forward/backward pass ─────────────────────────────────────────────
+
+
+def test_cpm_simple_chain_critical_path() -> None:
+    """A → B → C linear chain: every activity is critical, ES/EF roll up."""
+    acts = [
+        {"id": "A", "duration": 3},
+        {"id": "B", "duration": 5},
+        {"id": "C", "duration": 2},
+    ]
+    deps = [
+        {"predecessor": "A", "successor": "B"},
+        {"predecessor": "B", "successor": "C"},
+    ]
+    out = cpm_forward_backward_pass(acts, deps)
+    assert out["A"]["ef"] == 3
+    assert out["B"]["es"] == 3
+    assert out["B"]["ef"] == 8
+    assert out["C"]["ef"] == 10
+    assert all(out[a]["is_critical"] for a in ("A", "B", "C"))
+    assert all(out[a]["total_float"] == 0 for a in ("A", "B", "C"))
+
+
+def test_cpm_parallel_branch_float() -> None:
+    """A→B(5) and A→C(2)→D, D after both: C has positive float."""
+    acts = [
+        {"id": "A", "duration": 2},
+        {"id": "B", "duration": 5},
+        {"id": "C", "duration": 2},
+        {"id": "D", "duration": 1},
+    ]
+    deps = [
+        {"predecessor": "A", "successor": "B"},
+        {"predecessor": "A", "successor": "C"},
+        {"predecessor": "B", "successor": "D"},
+        {"predecessor": "C", "successor": "D"},
+    ]
+    out = cpm_forward_backward_pass(acts, deps)
+    assert out["D"]["ef"] == 8  # A(2)+B(5)+D(1)
+    assert out["B"]["total_float"] == 0
+    assert out["C"]["total_float"] == 3  # 5 - 2 slack on the short branch
+
+
+def test_cpm_cycle_does_not_raise_500() -> None:
+    """Regression: a cycle-node predecessor must not crash the pass.
+
+    Before the fix ``max()``/``min()`` were called on an empty generator
+    when a node's predecessor was a cycle node (excluded from the
+    topological order) — a 500 on /cpm and /tia. ``D`` is reachable from
+    the indeg-0 root ``S`` but also lists cycle-node ``B`` as a
+    predecessor; its ES must default off the resolvable predecessor.
+    """
+    acts = [
+        {"id": "S", "duration": 2},
+        {"id": "B", "duration": 1},
+        {"id": "C", "duration": 1},
+        {"id": "D", "duration": 3},
+    ]
+    # B↔C is a 2-node cycle. D depends on both S (resolvable) and B (cycle).
+    deps = [
+        {"predecessor": "B", "successor": "C"},
+        {"predecessor": "C", "successor": "B"},
+        {"predecessor": "S", "successor": "D"},
+        {"predecessor": "B", "successor": "D"},
+    ]
+    # The pure regression assertion: this call must NOT raise ValueError
+    # ("max() arg is an empty sequence"). Cycle-blocked nodes are simply
+    # dropped from the schedule; the resolvable root still computes.
+    out = cpm_forward_backward_pass(acts, deps)
+    assert "S" in out
+    assert out["S"]["ef"] == 2
+
+
+def test_tia_delay_on_critical_path_slips_finish() -> None:
+    acts = [
+        {"id": "A", "duration": 2},
+        {"id": "B", "duration": 3},
+    ]
+    deps = [{"predecessor": "A", "successor": "B"}]
+    res = time_impact_analysis(acts, deps, "B", 4)
+    assert res["original_finish_workday"] == 5
+    assert res["impacted_finish_workday"] == 9
+    assert res["delta_days"] == 4
+
+
+# ── EVM ───────────────────────────────────────────────────────────────────
+
+
+def test_evm_zero_cpi_keeps_sunk_cost_in_eac() -> None:
+    """Regression: AC>0 but EV=0 must NOT collapse EAC to BAC.
+
+    PMI fallback when CPI is undefined is EAC = AC + (BAC − EV). The old
+    ``eac = bac_total`` discarded the money already spent, so VAC read 0
+    even after real overspend.
+    """
+    acts = [
+        {
+            "id": "A",
+            "budget_at_completion": "1000",
+            "percent_complete": "0",
+            "actual_cost": "300",
+            "planned_start_workday": 0,
+            "planned_finish_workday": 10,
+        },
+    ]
+    out = compute_evm(acts, today_workday=5)
+    assert out["ac"] == Decimal("300.00")
+    assert out["ev"] == Decimal("0.00")
+    assert out["cpi"] == Decimal("0.0000")
+    # EAC = 300 + (1000 - 0) = 1300, not 1000.
+    assert out["eac"] == Decimal("1300.00")
+    assert out["etc"] == Decimal("1000.00")
+    assert out["vac"] == Decimal("-300.00")
+
+
+def test_evm_on_track_metrics() -> None:
+    acts = [
+        {
+            "id": "A",
+            "budget_at_completion": "1000",
+            "percent_complete": "50",
+            "actual_cost": "500",
+            "planned_start_workday": 0,
+            "planned_finish_workday": 10,
+        },
+    ]
+    out = compute_evm(acts, today_workday=5)
+    assert out["pv"] == Decimal("500.00")
+    assert out["ev"] == Decimal("500.00")
+    assert out["spi"] == Decimal("1.0000")
+    assert out["cpi"] == Decimal("1.0000")
+    assert out["eac"] == Decimal("1000.00")

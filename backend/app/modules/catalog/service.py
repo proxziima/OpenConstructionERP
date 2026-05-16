@@ -85,6 +85,17 @@ def _categorize_equipment(name: str) -> str:
     return "General Equipment"
 
 
+def _fmt_price(value: float) -> str:
+    """Serialise an aggregated price without lossy 2dp truncation (CAT-003).
+
+    ``f"{x:.2f}"`` on derived avg/min/max rates discards precision that
+    later ``adjust-prices`` factor passes then compound. Keep full
+    significant digits (``%.12g``) and trim trailing-zero noise only.
+    """
+    out = f"{float(value):.12g}"
+    return "0" if out in ("-0", "-0.0") else out
+
+
 def _categorize_resource(resource_type: str, name: str) -> str:
     """Categorize a resource based on its type and name."""
     if resource_type == "material":
@@ -301,9 +312,9 @@ class CatalogResourceService:
                 resource_type=comp_type,
                 category=category,
                 unit=comp_data["unit"],
-                base_price=f"{avg_rate:.2f}",
-                min_price=f"{min_rate:.2f}",
-                max_price=f"{max_rate:.2f}",
+                base_price=_fmt_price(avg_rate),
+                min_price=_fmt_price(min_rate),
+                max_price=_fmt_price(max_rate),
                 currency=currency,
                 usage_count=comp_data["count"],
                 source="cost_import",
@@ -422,9 +433,9 @@ class CatalogResourceService:
                     resource_type=resource_type,
                     category=category,
                     unit=comp["unit"],
-                    base_price=f"{avg_rate:.2f}",
-                    min_price=f"{min_rate:.2f}",
-                    max_price=f"{max_rate:.2f}",
+                    base_price=_fmt_price(avg_rate),
+                    min_price=_fmt_price(min_rate),
+                    max_price=_fmt_price(max_rate),
                     # Inherit currency from the parent CostItem when
                     # available. Empty (NOT NULL allows ``""``) when the
                     # parent has no currency stamped — the renderer

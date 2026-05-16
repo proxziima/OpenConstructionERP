@@ -122,6 +122,21 @@ class _StubRuleRepo(_BaseStubRepo):
             rows = [r for r in rows if r.resource_type == resource_type]
         return rows
 
+    async def list_rules(
+        self,
+        *,
+        portal_user_id: uuid.UUID | None = None,
+        resource_type: str | None = None,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> tuple[list[Any], int]:
+        rows = list(self.rows.values())
+        if portal_user_id is not None:
+            rows = [r for r in rows if r.portal_user_id == portal_user_id]
+        if resource_type is not None:
+            rows = [r for r in rows if r.resource_type == resource_type]
+        return rows[offset : offset + limit], len(rows)
+
     async def create(self, rule: Any) -> Any:
         return await self._store(rule)
 
@@ -595,6 +610,90 @@ async def test_enforce_rls_expired_rule_denied() -> None:
         expires_at=now_utc() - timedelta(seconds=1),
     )
     assert await svc.enforce_rls(user.id, "project", rid, "view") is False
+
+
+@pytest.mark.asyncio
+async def test_list_access_rules_admin_lists_all_and_filters() -> None:
+    """``list_access_rules`` must return rules across all users (durable
+    admin list), and honour the ``portal_user_id`` / ``resource_type``
+    filters. Regression for the Access-Rules tab being empty after reload.
+    """
+    svc = _make_service()
+    with _patch_bus():
+        ua, _, _ = await svc.invite_portal_user(
+            email="aa@example.com", role="client",
+        )
+        ub, _, _ = await svc.invite_portal_user(
+            email="bb@example.com", role="subcontractor",
+        )
+    pa, pb = uuid.uuid4(), uuid.uuid4()
+    doc = uuid.uuid4()
+    await svc.grant_access(ua.id, "project", pa, "view")
+    await svc.grant_access(ub.id, "project", pb, "comment")
+    await svc.grant_access(ub.id, "document", doc, "sign")
+
+    all_rules, total = await svc.list_access_rules()
+    assert total == 3
+    assert len(all_rules) == 3
+
+    only_b, total_b = await svc.list_access_rules(portal_user_id=ub.id)
+    assert total_b == 2
+    assert {r.portal_user_id for r in only_b} == {ub.id}
+
+    only_docs, total_docs = await svc.list_access_rules(
+        resource_type="document",
+    )
+    assert total_docs == 1
+    assert only_docs[0].resource_id == doc
+
+
+@pytest.mark.asyncio
+async def test_list_access_rules_pagination() -> None:
+    svc = _make_service()
+    with _patch_bus():
+        user, _, _ = await svc.invite_portal_user(
+            email="page@example.com", role="client",
+        )
+    for _ in range(5):
+        await svc.grant_access(user.id, "project", uuid.uuid4(), "view")
+    page1, total = await svc.list_access_rules(offset=0, limit=2)
+    page2, _ = await svc.list_access_rules(offset=2, limit=2)
+    assert total == 5
+    assert len(page1) == 2
+    assert len(page2) == 2
+    assert {r.id for r in page1}.isdisjoint({r.id for r in page2})
+
+
+@pytest.mark.asyncio
+async def test_enforce_rls_is_per_user_no_cross_tenant_read() -> None:
+    """Security boundary: a grant to subcontractor A must NEVER let
+    subcontractor B read A's resource by id.
+    """
+    svc = _make_service()
+    with _patch_bus():
+        sub_a, _, _ = await svc.invite_portal_user(
+            email="sub-a@example.com", role="subcontractor",
+        )
+        sub_b, _, _ = await svc.invite_portal_user(
+            email="sub-b@example.com", role="subcontractor",
+        )
+    package = uuid.uuid4()
+    await svc.grant_access(sub_a.id, "subcontract", package, "submit")
+
+    assert await svc.enforce_rls(
+        sub_a.id, "subcontract", package, "submit",
+    ) is True
+    # B has no rule on A's package — must be denied at every permission level.
+    assert await svc.enforce_rls(
+        sub_b.id, "subcontract", package, "view",
+    ) is False
+    assert await svc.enforce_rls(
+        sub_b.id, "subcontract", package, "submit",
+    ) is False
+    # And B sees none of A's accessible resources.
+    assert package not in await svc.list_accessible_resources(
+        sub_b.id, "subcontract",
+    )
 
 
 @pytest.mark.asyncio

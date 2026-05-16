@@ -171,8 +171,19 @@ class _StubSignatureRepo(_BaseStubRepo):
 
 
 class _StubWeatherRepo(_BaseStubRepo):
-    async def today_for_project(self, project_id: uuid.UUID) -> list[Any]:
-        return [r for r in self.rows.values() if r.project_id == project_id]
+    async def for_project_on_day(
+        self,
+        project_id: uuid.UUID,
+        day_start: datetime,
+        day_end: datetime,
+    ) -> list[Any]:
+        rows = [
+            r
+            for r in self.rows.values()
+            if r.project_id == project_id
+            and day_start <= r.captured_at < day_end
+        ]
+        return sorted(rows, key=lambda r: r.captured_at, reverse=True)
 
 
 class _StubGenericProjectRepo(_BaseStubRepo):
@@ -1266,3 +1277,143 @@ async def test_diary_register_subscribers_idempotent() -> None:
 
     register_subscribers()
     register_subscribers()
+
+
+# ── list_entries service method ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_entries_returns_diary_entries() -> None:
+    svc = _make_service()
+    diary = await svc.create_diary(_diary_payload(), user_id="u")
+    await svc.create_entry(
+        DiaryEntryCreate(
+            diary_id=diary.id,
+            entry_type="visitor",
+            entry_time=datetime(2026, 4, 10, 9, tzinfo=UTC),
+            title="Inspector",
+        )
+    )
+    await svc.create_entry(
+        DiaryEntryCreate(
+            diary_id=diary.id,
+            entry_type="delivery",
+            entry_time=datetime(2026, 4, 10, 11, tzinfo=UTC),
+            title="Concrete",
+        )
+    )
+    rows = await svc.list_entries(diary.id)
+    assert len(rows) == 2
+    assert {r.entry_type for r in rows} == {"visitor", "delivery"}
+
+
+@pytest.mark.asyncio
+async def test_list_entries_filters_by_entry_type() -> None:
+    svc = _make_service()
+    diary = await svc.create_diary(_diary_payload(), user_id="u")
+    await svc.create_entry(
+        DiaryEntryCreate(
+            diary_id=diary.id,
+            entry_type="visitor",
+            entry_time=datetime(2026, 4, 10, 9, tzinfo=UTC),
+            title="V",
+        )
+    )
+    await svc.create_entry(
+        DiaryEntryCreate(
+            diary_id=diary.id,
+            entry_type="delivery",
+            entry_time=datetime(2026, 4, 10, 10, tzinfo=UTC),
+            title="D",
+        )
+    )
+    rows = await svc.list_entries(diary.id, entry_type="delivery")
+    assert len(rows) == 1
+    assert rows[0].entry_type == "delivery"
+
+
+@pytest.mark.asyncio
+async def test_list_entries_unknown_diary_raises_404() -> None:
+    svc = _make_service()
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.list_entries(uuid.uuid4())
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_entries_empty_when_no_entries() -> None:
+    svc = _make_service()
+    diary = await svc.create_diary(_diary_payload(), user_id="u")
+    assert await svc.list_entries(diary.id) == []
+
+
+# ── weather_for_day service method ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_weather_for_day_scopes_to_calendar_day() -> None:
+    """A back-dated diary must see only its OWN day's readings."""
+    svc = _make_service()
+    on_day = await svc.create_weather(
+        WeatherRecordCreate(
+            project_id=PROJECT_ID,
+            captured_at=datetime(2026, 4, 10, 8, tzinfo=UTC),
+            source="manual",
+            temperature_c=Decimal("12.0"),
+        )
+    )
+    # A reading on a different day must NOT leak into 2026-04-10.
+    await svc.create_weather(
+        WeatherRecordCreate(
+            project_id=PROJECT_ID,
+            captured_at=datetime(2026, 4, 12, 8, tzinfo=UTC),
+            source="manual",
+            temperature_c=Decimal("20.0"),
+        )
+    )
+    rows = await svc.weather_for_day(PROJECT_ID, "2026-04-10")
+    assert [r.id for r in rows] == [on_day.id]
+
+
+@pytest.mark.asyncio
+async def test_weather_for_day_excludes_next_day_midnight() -> None:
+    """Half-open interval — a midnight reading belongs to the next day only."""
+    svc = _make_service()
+    await svc.create_weather(
+        WeatherRecordCreate(
+            project_id=PROJECT_ID,
+            captured_at=datetime(2026, 4, 11, 0, 0, tzinfo=UTC),
+            source="manual",
+            temperature_c=Decimal("9.0"),
+        )
+    )
+    assert await svc.weather_for_day(PROJECT_ID, "2026-04-10") == []
+    assert len(await svc.weather_for_day(PROJECT_ID, "2026-04-11")) == 1
+
+
+@pytest.mark.asyncio
+async def test_weather_for_day_defaults_to_today() -> None:
+    svc = _make_service()
+    today = datetime.now(UTC)
+    rec = await svc.create_weather(
+        WeatherRecordCreate(
+            project_id=PROJECT_ID,
+            captured_at=today,
+            source="manual",
+            temperature_c=Decimal("15.0"),
+        )
+    )
+    rows = await svc.weather_for_day(PROJECT_ID, None)
+    assert rec.id in [r.id for r in rows]
+
+
+@pytest.mark.asyncio
+async def test_weather_for_day_rejects_bad_date() -> None:
+    svc = _make_service()
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.weather_for_day(PROJECT_ID, "not-a-date")
+    assert exc.value.status_code == 422

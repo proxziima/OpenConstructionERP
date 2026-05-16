@@ -86,15 +86,22 @@ class CostModelService:
         self.cashflow_repo = CashFlowRepository(session)
 
     async def _get_project_currency(self, project_id: uuid.UUID) -> str:
-        """Get the currency from the project settings. Defaults to EUR."""
+        """Return the project's configured currency.
+
+        Currency is strictly data-driven — it comes from the project record
+        and nowhere else. When the project has no currency set (or the lookup
+        fails) we return an empty string rather than fabricating a default;
+        the UI is responsible for rendering a currency-less number instead of
+        silently mislabelling, e.g., USD costs as EUR.
+        """
         try:
             from app.modules.projects.repository import ProjectRepository
 
             repo = ProjectRepository(self.session)
             project = await repo.get_by_id(project_id)
-            return project.currency if project and project.currency else "EUR"
+            return project.currency if project and project.currency else ""
         except Exception:
-            return "EUR"
+            return ""
 
     # ── Snapshot operations ────────────────────────────────────────────────
 
@@ -299,8 +306,16 @@ class CostModelService:
     async def get_s_curve(self, project_id: uuid.UUID) -> SCurveData:
         """Build S-curve time series from EVM snapshots.
 
-        Returns cumulative planned, earned, and actual values per period,
-        ordered chronologically.
+        Each snapshot stores the standard EVM measures BCWS/BCWP/ACWP
+        (planned_cost / earned_value / actual_cost). By definition these are
+        *cumulative-to-date* values, and every other consumer in this module
+        (dashboard, EVM, what-if) treats them as absolute totals. The S-curve
+        therefore plots the snapshot values directly — re-summing them across
+        periods (the previous behaviour) double-counted and produced curves
+        that climbed far past BAC.
+
+        Snapshots are returned ``period`` ascending by the repository, so the
+        series is already chronologically ordered.
 
         Args:
             project_id: Target project.
@@ -310,22 +325,14 @@ class CostModelService:
         """
         snapshots, _ = await self.snapshot_repo.list_for_project(project_id, limit=1000)
 
-        cumulative_planned = 0.0
-        cumulative_earned = 0.0
-        cumulative_actual = 0.0
-
         periods: list[SCurvePeriod] = []
         for snap in snapshots:
-            cumulative_planned += _str_to_float(snap.planned_cost)
-            cumulative_earned += _str_to_float(snap.earned_value)
-            cumulative_actual += _str_to_float(snap.actual_cost)
-
             periods.append(
                 SCurvePeriod(
                     period=snap.period,
-                    planned=round(cumulative_planned, 2),
-                    earned=round(cumulative_earned, 2),
-                    actual=round(cumulative_actual, 2),
+                    planned=round(_str_to_float(snap.planned_cost), 2),
+                    earned=round(_str_to_float(snap.earned_value), 2),
+                    actual=round(_str_to_float(snap.actual_cost), 2),
                 )
             )
 
@@ -445,6 +452,7 @@ class CostModelService:
                     committed=round(committed, 2),
                     actual=round(actual, 2),
                     forecast=round(forecast, 2),
+                    variance=round(planned - forecast, 2),
                     variance_pct=_variance_pct(planned, forecast),
                 )
             )

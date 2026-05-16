@@ -71,9 +71,17 @@ def _compute_is_overdue(item: object) -> bool:
         return False
 
 
-def _to_response(item: object) -> TaskResponse:
+def _to_response(
+    item: object,
+    name_map: dict[str, str] | None = None,
+) -> TaskResponse:
     checklist = item.checklist or []  # type: ignore[attr-defined]
     responsible_id = str(item.responsible_id) if item.responsible_id else None  # type: ignore[attr-defined]
+    assigned_to_name = (
+        name_map.get(responsible_id)
+        if name_map is not None and responsible_id is not None
+        else None
+    )
     # Derive completed_at from updated_at when status is "completed" (the model
     # doesn't have a dedicated column, so we approximate).
     completed_at: str | None = None
@@ -98,7 +106,7 @@ def _to_response(item: object) -> TaskResponse:
         is_private=item.is_private,  # type: ignore[attr-defined]
         created_by=item.created_by,  # type: ignore[attr-defined]
         assigned_to=responsible_id,
-        assigned_to_name=None,  # Resolved by caller when user lookup is available
+        assigned_to_name=assigned_to_name,
         bim_element_ids=[
             str(x) for x in (getattr(item, "bim_element_ids", None) or [])
         ],
@@ -108,6 +116,19 @@ def _to_response(item: object) -> TaskResponse:
         completed_at=completed_at,
         is_overdue=_compute_is_overdue(item),
     )
+
+
+async def _to_response_resolved(
+    item: object,
+    service: TaskService,
+) -> TaskResponse:
+    """``_to_response`` plus a single-row assignee-name lookup.
+
+    Used by the single-item endpoints so a task assigned by UUID still
+    renders the assignee's display name (not just the raw id).
+    """
+    names = await service.resolve_assignee_names([item])  # type: ignore[list-item]
+    return _to_response(item, names)
 
 
 @router.get("/", response_model=list[TaskResponse])
@@ -175,7 +196,9 @@ async def list_tasks(
                 or needle in (t.description or "").lower()
                 or needle in (t.result or "").lower()
             ]
-        return [_to_response(t) for t in tasks_with_bim[offset : offset + limit]]
+        page = tasks_with_bim[offset : offset + limit]
+        names = await service.resolve_assignee_names(page)
+        return [_to_response(t, names) for t in page]
 
     tasks, _ = await service.list_tasks(
         project_id,
@@ -189,7 +212,8 @@ async def list_tasks(
         meeting_id=meeting_id,
         search=search,
     )
-    return [_to_response(t) for t in tasks]
+    names = await service.resolve_assignee_names(tasks)
+    return [_to_response(t, names) for t in tasks]
 
 
 @router.get("/my-tasks/", response_model=list[TaskResponse])
@@ -207,7 +231,8 @@ async def my_tasks(
         limit=limit,
         status_filter=status_filter,
     )
-    return [_to_response(t) for t in tasks]
+    names = await service.resolve_assignee_names(tasks)
+    return [_to_response(t, names) for t in tasks]
 
 
 @router.post("/", response_model=TaskResponse, status_code=201)
@@ -221,7 +246,7 @@ async def create_task(
     """Create a new task."""
     await verify_project_access(data.project_id, user_id, session)
     task = await service.create_task(data, user_id=user_id)
-    return _to_response(task)
+    return await _to_response_resolved(task, service)
 
 
 @router.get("/stats/", response_model=TaskStatsResponse)
@@ -782,7 +807,7 @@ async def get_task(
     """Get a single task. Private tasks are only visible to their creator."""
     task = await service.get_task(task_id, current_user_id=user_id)
     await verify_project_access(task.project_id, user_id, session)
-    return _to_response(task)
+    return await _to_response_resolved(task, service)
 
 
 @router.patch("/{task_id}", response_model=TaskResponse)
@@ -798,7 +823,7 @@ async def update_task(
     existing = await service.get_task(task_id, current_user_id=user_id)
     await verify_project_access(existing.project_id, user_id, session)
     task = await service.update_task(task_id, data, current_user_id=user_id)
-    return _to_response(task)
+    return await _to_response_resolved(task, service)
 
 
 @router.delete("/{task_id}", status_code=204)
@@ -829,7 +854,7 @@ async def complete_task(
     await verify_project_access(existing.project_id, user_id, session)
     result = body.result if body else None
     task = await service.complete_task(task_id, result=result, current_user_id=user_id)
-    return _to_response(task)
+    return await _to_response_resolved(task, service)
 
 
 @router.patch("/{task_id}/bim-links/", response_model=TaskResponse)
@@ -854,7 +879,7 @@ async def update_task_bim_links(
         body.bim_element_ids,
         current_user_id=user_id,
     )
-    return _to_response(task)
+    return await _to_response_resolved(task, service)
 
 
 # ── Vector / semantic memory endpoints ───────────────────────────────────

@@ -58,6 +58,10 @@ import {
   commitWeeklyPlan,
   closeWeeklyPlan,
   listCommitments,
+  createCommitment,
+  commitCommitment,
+  completeCommitment,
+  missCommitment,
   listBaselines,
   captureBaseline,
   baselineDelta,
@@ -71,6 +75,7 @@ import {
   type WeeklyStatus,
   type Commitment,
   type CommitmentStatus,
+  type RNCCategory,
   type Baseline,
   type BaselineDeltaEntry,
 } from './api';
@@ -1741,6 +1746,43 @@ function WeeklyTab({
     onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
   });
 
+  const [addCommitment, setAddCommitment] = useState(false);
+  const [missTarget, setMissTarget] = useState<Commitment | null>(null);
+
+  const invalidateCommitments = () =>
+    qc.invalidateQueries({
+      queryKey: ['schedule-advanced', 'commitments', weekPlanId],
+    });
+
+  const commitCommitmentMut = useMutation({
+    mutationFn: (id: string) => commitCommitment(id),
+    onSuccess: () => {
+      invalidateCommitments();
+      addToast({ type: 'success', title: t('schedule_advanced.commitment_made', { defaultValue: 'Commitment made' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const completeCommitmentMut = useMutation({
+    mutationFn: (id: string) => completeCommitment(id),
+    onSuccess: () => {
+      invalidateCommitments();
+      addToast({ type: 'success', title: t('schedule_advanced.commitment_completed', { defaultValue: 'Commitment completed' }) });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+  const missCommitmentMut = useMutation({
+    mutationFn: (vars: { id: string; category: RNCCategory; description: string }) =>
+      missCommitment(vars.id, { category: vars.category, description: vars.description }),
+    onSuccess: () => {
+      invalidateCommitments();
+      setMissTarget(null);
+      addToast({ type: 'success', title: t('schedule_advanced.commitment_missed', { defaultValue: 'Commitment marked missed' }) });
+    },
+    onError: (err) => {
+      addToast({ type: 'error', title: getErrorMessage(err) });
+    },
+  });
+
   if (loading) {
     return (
       <Card padding="md">
@@ -1860,10 +1902,19 @@ function WeeklyTab({
 
         {weekPlanId && (
           <Card padding="none">
-            <div className="border-b border-border-light px-4 py-2.5 bg-surface-secondary/50">
+            <div className="flex items-center justify-between border-b border-border-light px-4 py-2.5 bg-surface-secondary/50">
               <h3 className="text-sm font-semibold">
                 {t('schedule_advanced.commitments', { defaultValue: 'Commitments' })}
               </h3>
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={<Plus size={12} />}
+                onClick={() => setAddCommitment(true)}
+                disabled={currentWeek?.status === 'closed'}
+              >
+                {t('schedule_advanced.add_commitment', { defaultValue: 'Add commitment' })}
+              </Button>
             </div>
             {commitmentsLoading ? (
               <div className="p-4">
@@ -1892,6 +1943,10 @@ function WeeklyTab({
                 description={t('schedule_advanced.no_commitments_desc', {
                   defaultValue: 'Add commitments to this week to track progress.',
                 })}
+                action={{
+                  label: t('schedule_advanced.add_commitment', { defaultValue: 'Add commitment' }),
+                  onClick: () => setAddCommitment(true),
+                }}
               />
             ) : (
               <div className="overflow-x-auto">
@@ -1902,27 +1957,73 @@ function WeeklyTab({
                       <th className="px-4 py-2 text-right">{t('schedule_advanced.promised', { defaultValue: 'Promised' })}</th>
                       <th className="px-4 py-2 text-right">{t('schedule_advanced.actual', { defaultValue: 'Actual' })}</th>
                       <th className="px-4 py-2 text-left">{t('common.status', { defaultValue: 'Status' })}</th>
+                      <th className="px-4 py-2 text-right">{t('common.actions', { defaultValue: 'Actions' })}</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {commitments.map((c) => (
-                      <tr key={c.id} className="border-t border-border-light">
-                        <td className="px-4 py-2 truncate max-w-[200px]">
-                          {c.worker_or_crew || '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono text-xs">
-                          {String(c.promised_qty)} {c.unit}
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono text-xs">
-                          {c.actual_qty != null ? String(c.actual_qty) : '—'}
-                        </td>
-                        <td className="px-4 py-2">
-                          <Badge variant={COMMITMENT_VARIANT[c.status]} dot>
-                            {c.status}
-                          </Badge>
-                        </td>
-                      </tr>
-                    ))}
+                    {commitments.map((c) => {
+                      const canCommit = c.status === 'planned' || c.status === 'at_risk';
+                      const canResolve =
+                        c.status === 'committed' ||
+                        c.status === 'in_progress' ||
+                        c.status === 'at_risk';
+                      const busy =
+                        (commitCommitmentMut.isPending &&
+                          commitCommitmentMut.variables === c.id) ||
+                        (completeCommitmentMut.isPending &&
+                          completeCommitmentMut.variables === c.id);
+                      return (
+                        <tr key={c.id} className="border-t border-border-light">
+                          <td className="px-4 py-2 truncate max-w-[200px]">
+                            {c.worker_or_crew || '—'}
+                          </td>
+                          <td className="px-4 py-2 text-right font-mono text-xs">
+                            {String(c.promised_qty)} {c.unit}
+                          </td>
+                          <td className="px-4 py-2 text-right font-mono text-xs">
+                            {c.actual_qty != null ? String(c.actual_qty) : '—'}
+                          </td>
+                          <td className="px-4 py-2">
+                            <Badge variant={COMMITMENT_VARIANT[c.status]} dot>
+                              {c.status}
+                            </Badge>
+                          </td>
+                          <td className="px-4 py-2">
+                            <div className="flex justify-end gap-1">
+                              {canCommit && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  loading={busy}
+                                  onClick={() => commitCommitmentMut.mutate(c.id)}
+                                >
+                                  {t('schedule_advanced.commit', { defaultValue: 'Commit' })}
+                                </Button>
+                              )}
+                              {canResolve && (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    icon={<Check size={12} />}
+                                    loading={busy}
+                                    onClick={() => completeCommitmentMut.mutate(c.id)}
+                                    aria-label={t('schedule_advanced.complete', { defaultValue: 'Complete' })}
+                                  />
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => setMissTarget(c)}
+                                  >
+                                    {t('schedule_advanced.miss', { defaultValue: 'Miss' })}
+                                  </Button>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1970,7 +2071,221 @@ function WeeklyTab({
           </div>
         </dl>
       </Card>
+
+      {addCommitment && weekPlanId && (
+        <AddCommitmentModal
+          weekPlanId={weekPlanId}
+          onClose={() => setAddCommitment(false)}
+          onSaved={invalidateCommitments}
+        />
+      )}
+      <MissCommitmentDialog
+        commitment={missTarget}
+        onCancel={() => setMissTarget(null)}
+        onConfirm={(category, description) =>
+          missTarget &&
+          missCommitmentMut.mutate({ id: missTarget.id, category, description })
+        }
+        loading={missCommitmentMut.isPending}
+      />
     </div>
+  );
+}
+
+function AddCommitmentModal({
+  weekPlanId,
+  onClose,
+  onSaved,
+}: {
+  weekPlanId: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  const addToast = useToastStore((s) => s.addToast);
+  const [taskRef, setTaskRef] = useState('');
+  const [crew, setCrew] = useState('');
+  const [qty, setQty] = useState('');
+  const [unit, setUnit] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isUuid = (v: string) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      v.trim(),
+    );
+
+  const submit = async () => {
+    if (!isUuid(taskRef)) {
+      setError(
+        t('schedule_advanced.err_task_ref', {
+          defaultValue: 'A valid task reference (UUID) is required.',
+        }),
+      );
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      await createCommitment({
+        week_plan_id: weekPlanId,
+        task_ref: taskRef.trim(),
+        worker_or_crew: crew || undefined,
+        promised_qty: qty || undefined,
+        unit: unit || undefined,
+      });
+      addToast({
+        type: 'success',
+        title: t('schedule_advanced.commitment_created', { defaultValue: 'Commitment added' }),
+      });
+      onSaved();
+      onClose();
+    } catch (err) {
+      addToast({ type: 'error', title: getErrorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <ModalShell
+      title={t('schedule_advanced.add_commitment', { defaultValue: 'Add commitment' })}
+      subtitle={t('schedule_advanced.add_commitment_subtitle', {
+        defaultValue:
+          'A weekly promise made by a trade foreman. Link it to the task it delivers and the promised quantity.',
+      })}
+      onClose={onClose}
+      onSubmit={submit}
+      busy={busy}
+      disabled={!taskRef.trim()}
+    >
+      {error && (
+        <div className="rounded-md border border-semantic-error/30 bg-semantic-error-bg/40 px-3 py-2 text-sm text-semantic-error">
+          {error}
+        </div>
+      )}
+      <div>
+        <label className={labelCls}>
+          {t('schedule_advanced.task_ref', { defaultValue: 'Task reference (UUID)' })} *
+        </label>
+        <input
+          value={taskRef}
+          onChange={(e) => setTaskRef(e.target.value)}
+          className={inputCls}
+          placeholder="00000000-0000-0000-0000-000000000000"
+          autoFocus
+        />
+      </div>
+      <div>
+        <label className={labelCls}>{t('schedule_advanced.crew', { defaultValue: 'Crew' })}</label>
+        <input
+          value={crew}
+          onChange={(e) => setCrew(e.target.value)}
+          className={inputCls}
+          placeholder={t('schedule_advanced.crew_placeholder', { defaultValue: 'e.g. Concrete crew A' })}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className={labelCls}>{t('schedule_advanced.promised', { defaultValue: 'Promised' })}</label>
+          <input
+            type="number"
+            min={0}
+            value={qty}
+            onChange={(e) => setQty(e.target.value)}
+            className={inputCls}
+          />
+        </div>
+        <div>
+          <label className={labelCls}>{t('schedule_advanced.unit', { defaultValue: 'Unit' })}</label>
+          <input
+            value={unit}
+            onChange={(e) => setUnit(e.target.value)}
+            className={inputCls}
+            placeholder="m2, m3, lm…"
+          />
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+const RNC_CATEGORIES: RNCCategory[] = [
+  'manpower',
+  'material',
+  'equipment',
+  'info',
+  'weather',
+  'predecessor',
+  'changes',
+  'quality',
+  'other',
+];
+
+function MissCommitmentDialog({
+  commitment,
+  onCancel,
+  onConfirm,
+  loading,
+}: {
+  commitment: Commitment | null;
+  onCancel: () => void;
+  onConfirm: (category: RNCCategory, description: string) => void;
+  loading: boolean;
+}) {
+  const { t } = useTranslation();
+  const [category, setCategory] = useState<RNCCategory>('manpower');
+  const [description, setDescription] = useState('');
+
+  useEffect(() => {
+    if (commitment) {
+      setCategory('manpower');
+      setDescription('');
+    }
+  }, [commitment]);
+
+  if (!commitment) return null;
+
+  return (
+    <ModalShell
+      title={t('schedule_advanced.miss_commitment_title', { defaultValue: 'Mark commitment missed' })}
+      subtitle={t('schedule_advanced.miss_commitment_subtitle', {
+        defaultValue:
+          'Last Planner® requires a documented Reason-for-Non-Completion. This feeds the RNC Pareto for root-cause analysis.',
+      })}
+      onClose={onCancel}
+      onSubmit={() => onConfirm(category, description)}
+      busy={loading}
+    >
+      <div>
+        <label className={labelCls}>
+          {t('schedule_advanced.rnc_category', { defaultValue: 'Reason category' })} *
+        </label>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value as RNCCategory)}
+          className={inputCls}
+        >
+          {RNC_CATEGORIES.map((cat) => (
+            <option key={cat} value={cat}>
+              {t(`schedule_advanced.rnc.${cat}`, { defaultValue: cat })}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className={labelCls}>{t('common.description', { defaultValue: 'Description' })}</label>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={3}
+          className={clsx(inputCls, 'h-auto py-2')}
+          placeholder={t('schedule_advanced.rnc_desc_placeholder', {
+            defaultValue: 'What blocked completion?',
+          })}
+        />
+      </div>
+    </ModalShell>
   );
 }
 

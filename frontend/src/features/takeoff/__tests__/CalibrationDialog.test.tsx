@@ -33,9 +33,14 @@ describe('deriveScale', () => {
     expect(formatScaleRatio(scale)).toBe('1:50');
   });
 
-  it('falls back to 1 px/unit on zero input', () => {
-    expect(deriveScale(0, 5).pixelsPerUnit).toBe(1);
-    expect(deriveScale(500, 0).pixelsPerUnit).toBe(1);
+  it('returns an INVALID scale (never a silent 1:1) on bad input', () => {
+    // D-TKC-010: the old 1 px = 1 m fallback turned a 28 346 px line
+    // into "28 346 m". Bad calibration must be explicitly invalid so
+    // downstream conversions yield nothing and the user re-calibrates.
+    for (const s of [deriveScale(0, 5), deriveScale(500, 0), deriveScale(-1, 5)]) {
+      expect(s.pixelsPerUnit).toBe(0);
+      expect(s.invalid).toBe(true);
+    }
   });
 });
 

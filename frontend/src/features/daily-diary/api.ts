@@ -225,9 +225,15 @@ export function diaryDashboard(projectId: string): Promise<DiaryDashboard> {
 
 /* ── Weather ───────────────────────────────────────────────────────────── */
 
-export function weatherToday(projectId: string): Promise<WeatherRecord[]> {
+export function weatherToday(
+  projectId: string,
+  day?: string,
+): Promise<WeatherRecord[]> {
+  const qs = new URLSearchParams();
+  qs.set('project_id', projectId);
+  if (day) qs.set('day', day);
   return apiGet<WeatherRecord[]>(
-    `/v1/daily-diary/weather/today?project_id=${encodeURIComponent(projectId)}`,
+    `/v1/daily-diary/weather/today?${qs.toString()}`,
   );
 }
 
@@ -245,6 +251,12 @@ export function createWeather(data: {
 }
 
 /* ── Entries ───────────────────────────────────────────────────────────── */
+
+export function listEntries(diaryId: string): Promise<DiaryEntry[]> {
+  return apiGet<DiaryEntry[]>(
+    `/v1/daily-diary/diaries/${encodeURIComponent(diaryId)}/entries`,
+  );
+}
 
 export function createEntry(data: {
   diary_id: string;

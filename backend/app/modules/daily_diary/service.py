@@ -775,6 +775,30 @@ class DailyDiaryService:
         )
         return await self.weather_repo.create(record)  # type: ignore[return-value]
 
+    async def weather_for_day(
+        self,
+        project_id: uuid.UUID,
+        day: str | None = None,
+    ) -> list[WeatherRecord]:
+        """Weather records for one calendar day (UTC), newest first.
+
+        ``day`` is ``YYYY-MM-DD``; ``None`` means the current UTC day.
+        """
+        if day is None:
+            target = datetime.now(UTC).date()
+        else:
+            try:
+                target = datetime.strptime(day, "%Y-%m-%d").date()
+            except ValueError as exc:
+                raise HTTPException(422, f"Invalid day: {exc}") from exc
+        day_start = datetime(
+            target.year, target.month, target.day, tzinfo=UTC
+        )
+        day_end = day_start + timedelta(days=1)
+        return await self.weather_repo.for_project_on_day(
+            project_id, day_start, day_end
+        )
+
     async def get_weather(self, weather_id: uuid.UUID) -> WeatherRecord:
         record = await self.weather_repo.get_by_id(weather_id)
         if record is None:
@@ -847,6 +871,18 @@ class DailyDiaryService:
                 )
             )
         return await self.entry_repo.bulk_create(entries)
+
+    async def list_entries(
+        self,
+        diary_id: uuid.UUID,
+        *,
+        entry_type: str | None = None,
+    ) -> list[DiaryEntry]:
+        """List a diary's entries (chronological). Validates the diary exists."""
+        await self.get_diary(diary_id)
+        return await self.entry_repo.list_for_diary(
+            diary_id, entry_type=entry_type
+        )
 
     async def get_entry(self, entry_id: uuid.UUID) -> DiaryEntry:
         entry = await self.entry_repo.get_by_id(entry_id)
@@ -1209,13 +1245,15 @@ class DailyDiaryService:
             meta = e.metadata_ or {}
             if not isinstance(meta, dict):
                 continue
-            l = int(meta.get("labour_count", 0) or 0)
-            eq = int(meta.get("equipment_count", 0) or 0)
-            labour += l
-            equipment += eq
+            entry_labour = int(meta.get("labour_count", 0) or 0)
+            entry_equipment = int(meta.get("equipment_count", 0) or 0)
+            labour += entry_labour
+            equipment += entry_equipment
             company = meta.get("company")
-            if company and l:
-                by_company[str(company)] = by_company.get(str(company), 0) + l
+            if company and entry_labour:
+                by_company[str(company)] = (
+                    by_company.get(str(company), 0) + entry_labour
+                )
         return {
             "diary_id": diary_id,
             "project_id": diary.project_id,

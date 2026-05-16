@@ -36,6 +36,20 @@ def _get_service(session: SessionDep) -> RiskService:
     return RiskService(session)
 
 
+def _as_float(value: object, default: float = 0.0) -> float:
+    """‌⁠‍Parse a string/None numeric column to float without raising.
+
+    Numeric values are stored as SQLite-friendly strings; legacy or
+    imported rows can hold ``""`` (DB-level numeric defaults were
+    intentionally removed). A single unparseable row must not 500 the
+    whole list endpoint.
+    """
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 def _risk_to_response(item: object) -> RiskResponse:
     """‌⁠‍Build a RiskResponse from a RiskItem ORM object."""
     return RiskResponse(
@@ -45,17 +59,21 @@ def _risk_to_response(item: object) -> RiskResponse:
         title=item.title,  # type: ignore[attr-defined]
         description=item.description,  # type: ignore[attr-defined]
         category=item.category,  # type: ignore[attr-defined]
-        probability=float(item.probability),  # type: ignore[attr-defined]
-        impact_cost=float(item.impact_cost),  # type: ignore[attr-defined]
+        probability=_as_float(item.probability, 0.5),  # type: ignore[attr-defined]
+        impact_cost=_as_float(item.impact_cost),  # type: ignore[attr-defined]
         impact_schedule_days=item.impact_schedule_days,  # type: ignore[attr-defined]
         impact_severity=item.impact_severity,  # type: ignore[attr-defined]
-        risk_score=float(item.risk_score),  # type: ignore[attr-defined]
+        risk_score=_as_float(item.risk_score),  # type: ignore[attr-defined]
+        probability_score=getattr(item, "probability_score", None),
+        impact_score_cost=getattr(item, "impact_score_cost", None),
+        impact_score_time=getattr(item, "impact_score_time", None),
+        risk_tier=getattr(item, "risk_tier", None),
         status=item.status,  # type: ignore[attr-defined]
         mitigation_strategy=item.mitigation_strategy,  # type: ignore[attr-defined]
         contingency_plan=item.contingency_plan,  # type: ignore[attr-defined]
         owner_name=item.owner_name,  # type: ignore[attr-defined]
         owner_user_id=getattr(item, "owner_user_id", None),
-        response_cost=float(item.response_cost),  # type: ignore[attr-defined]
+        response_cost=_as_float(item.response_cost),  # type: ignore[attr-defined]
         currency=item.currency,  # type: ignore[attr-defined]
         metadata=getattr(item, "metadata_", {}),  # type: ignore[attr-defined]
         created_at=item.created_at,  # type: ignore[attr-defined]

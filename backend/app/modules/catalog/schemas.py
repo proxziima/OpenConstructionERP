@@ -41,6 +41,35 @@ class CatalogResourceCreate(BaseModel):
     specifications: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _check_price_band(self) -> "CatalogResourceCreate":
+        """CAT-001: enforce price-band integrity.
+
+        A resource with ``min_price > max_price`` (or ``base_price``
+        outside ``[min_price, max_price]``) makes every downstream
+        price-range filter and "is rate within band" check meaningless.
+        This is a data-integrity invariant, not a regional/currency
+        policy, so it is a hard reject.
+
+        A band is only checked when it is *meaningful*: both ``min_price``
+        and ``max_price`` must be > 0. The model defaults them to 0,
+        which is the documented "no band specified" sentinel — leaving
+        them at 0 keeps single-price resources (the common case) valid.
+        """
+        has_band = self.min_price > 0 and self.max_price > 0
+        if has_band:
+            if self.min_price > self.max_price:
+                raise ValueError(
+                    f"min_price ({self.min_price}) must not exceed "
+                    f"max_price ({self.max_price})"
+                )
+            if not (self.min_price <= self.base_price <= self.max_price):
+                raise ValueError(
+                    f"base_price ({self.base_price}) must lie within "
+                    f"[min_price={self.min_price}, max_price={self.max_price}]"
+                )
+        return self
+
 
 # ── Response ──────────────────────────────────────────────────────────────
 

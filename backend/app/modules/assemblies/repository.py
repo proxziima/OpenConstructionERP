@@ -174,12 +174,24 @@ class ComponentRepository:
         return components
 
     async def update_fields(self, component_id: uuid.UUID, **fields: object) -> None:
-        """Update specific fields on a component."""
-        stmt = update(Component).where(Component.id == component_id).values(**fields)
+        """Update specific fields on a component.
+
+        ``synchronize_session="evaluate"`` makes SQLAlchemy reconcile
+        the bulk UPDATE with *only* the matching ORM instance in this
+        session's identity map (the WHERE is always the primary key, so
+        the criteria evaluate purely in Python — no extra round-trip).
+        This replaces the previous ``session.expire_all()``, which
+        invalidated every loaded entity mid-request and was the root
+        cause of the scattered MissingGreenlet defensive fallbacks.
+        """
+        stmt = (
+            update(Component)
+            .where(Component.id == component_id)
+            .values(**fields)
+            .execution_options(synchronize_session="evaluate")
+        )
         await self.session.execute(stmt)
         await self.session.flush()
-        # Expire cached ORM instances so the next get_by_id re-reads from DB
-        self.session.expire_all()
 
     async def delete(self, component_id: uuid.UUID) -> None:
         """Delete a single component."""

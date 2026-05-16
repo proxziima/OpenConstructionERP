@@ -502,10 +502,27 @@ export function commitCommitment(id: string): Promise<Commitment> {
   );
 }
 
-export function completeCommitment(id: string): Promise<Commitment> {
+export function completeCommitment(
+  id: string,
+  actualQty?: string,
+): Promise<Commitment> {
   return apiPost<Commitment>(
     `/v1/schedule-advanced/commitments/${id}/complete`,
-    {},
+    actualQty != null && actualQty !== '' ? { actual_qty: actualQty } : {},
+  );
+}
+
+/**
+ * Mark a commitment missed. The backend requires a paired
+ * Reason-for-Non-Completion (LPS RNC) so ``category`` is mandatory.
+ */
+export function missCommitment(
+  id: string,
+  rnc: { category: RNCCategory; description?: string; root_cause_notes?: string },
+): Promise<Commitment> {
+  return apiPost<Commitment>(
+    `/v1/schedule-advanced/commitments/${id}/miss`,
+    { commitment_id: id, ...rnc },
   );
 }
 

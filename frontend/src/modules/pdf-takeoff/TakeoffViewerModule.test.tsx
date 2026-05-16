@@ -9,6 +9,8 @@ import {
   polygonPerimeterPixels,
   formatMeasurement,
   deriveScale,
+  presetScale,
+  ratioFromScale,
   COMMON_SCALES,
 } from './data/scale-helpers';
 
@@ -90,8 +92,8 @@ describe('scale-helpers', () => {
   });
 
   describe('formatMeasurement', () => {
-    it('should format small values with 3 decimals', () => {
-      expect(formatMeasurement(0.123, 'm')).toBe('0.123 m');
+    it('should format sub-unit values with 4 decimals', () => {
+      expect(formatMeasurement(0.123, 'm')).toBe('0.1230 m');
     });
 
     it('should format medium values with 2 decimals', () => {
@@ -102,9 +104,18 @@ describe('scale-helpers', () => {
       expect(formatMeasurement(1234.5, 'm')).toBe('1234.5 m');
     });
 
-    it('should suppress zero (degenerate measurements render as empty)', () => {
+    it('suppresses only genuinely degenerate values (0 / negative / NaN)', () => {
       expect(formatMeasurement(0, 'm')).toBe('');
-      expect(formatMeasurement(0.005, 'm²')).toBe('');
+      expect(formatMeasurement(-1, 'm')).toBe('');
+      expect(formatMeasurement(NaN, 'm')).toBe('');
+    });
+
+    // D-TKC-007: a real 9 mm distance / 80 cm² patch must stay VISIBLE
+    // with enough precision, not collapse to '' or '0 m'.
+    it('shows small-but-real quantities instead of hiding them', () => {
+      expect(formatMeasurement(0.009, 'm')).toBe('0.0090 m');
+      expect(formatMeasurement(0.008, 'm²')).toBe('0.0080 m²');
+      expect(formatMeasurement(0.0004, 'm')).toBe('0.00040 m');
     });
   });
 
@@ -115,9 +126,51 @@ describe('scale-helpers', () => {
       expect(scale.unitLabel).toBe('m');
     });
 
-    it('should handle zero inputs gracefully', () => {
-      const scale = deriveScale(0, 2);
-      expect(scale.pixelsPerUnit).toBe(1);
+    // D-TKC-010: must NOT silently fall back to 1 px = 1 m — that
+    // inflated a 28 346 px line to "28 346 m". An invalid reference
+    // yields an explicitly invalid scale so downstream maths → 0.
+    it('returns an invalid scale (never 1:1) for bad inputs', () => {
+      for (const s of [deriveScale(0, 2), deriveScale(100, 0), deriveScale(-5, 2), deriveScale(NaN, 2)]) {
+        expect(s.pixelsPerUnit).toBe(0);
+        expect(s.invalid).toBe(true);
+      }
+      // Downstream conversion stays safe (no grossly inflated reading).
+      expect(toRealDistance(28346, deriveScale(0, 2))).toBe(0);
+      expect(formatMeasurement(toRealDistance(28346, deriveScale(0, 2)), 'm')).toBe('');
+    });
+  });
+
+  // D-TKC-029: pin the 72-DPI / PDF-point invariant the preset scale
+  // buttons rely on. A 1:100 preset must give ≈28.3465 px/m and a
+  // round-trip through ratioFromScale must recover the ratio.
+  describe('presetScale (72 DPI PDF-point invariant)', () => {
+    it('1:100 yields ≈28.3465 pixels per metre', () => {
+      const s = presetScale(100);
+      expect(s.pixelsPerUnit).toBeCloseTo(28.3465, 3);
+      expect(s.unitLabel).toBe('m');
+    });
+
+    it('a 10 m square drawn at 1:100 reads 100 m²', () => {
+      const s = presetScale(100);
+      const sidePx = 10 * s.pixelsPerUnit; // 10 m on paper
+      const sq = [
+        { x: 0, y: 0 },
+        { x: sidePx, y: 0 },
+        { x: sidePx, y: sidePx },
+        { x: 0, y: sidePx },
+      ];
+      expect(toRealArea(polygonAreaPixels(sq), s)).toBeCloseTo(100, 4);
+    });
+
+    it('ratioFromScale round-trips every common preset', () => {
+      for (const { ratio } of COMMON_SCALES) {
+        expect(ratioFromScale(presetScale(ratio))).toBe(ratio);
+      }
+    });
+
+    it('rejects a non-positive ratio with an invalid scale', () => {
+      expect(presetScale(0).invalid).toBe(true);
+      expect(presetScale(-50).invalid).toBe(true);
     });
   });
 

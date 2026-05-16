@@ -641,13 +641,23 @@ async def project_dashboard(
     }
 
     # ── BOQ / Budget ─────────────────────────────────────────────────────────
+    # A-DASH-05: every monetary field is a fixed 2-decimal string and
+    # consumed_pct a fixed 1-decimal string, so the default ("empty
+    # project") and computed branches encode numbers identically — no
+    # more "0" vs "0.0" vs "52.1" typing skew for the frontend parser.
+    def _money(x: float) -> str:  # noqa: ANN001
+        return f"{round(float(x or 0.0), 2):.2f}"
+
+    def _pct(x: float) -> str:  # noqa: ANN001
+        return f"{round(float(x or 0.0), 1):.1f}"
+
     budget_section: dict = {
-        "original": "0",
-        "revised": "0",
-        "committed": "0",
-        "actual": "0",
-        "forecast": "0",
-        "consumed_pct": "0",
+        "original": _money(0),
+        "revised": _money(0),
+        "committed": _money(0),
+        "actual": _money(0),
+        "forecast": _money(0),
+        "consumed_pct": _pct(0),
         "warning_level": "normal",
     }
     boq_count = 0
@@ -692,17 +702,46 @@ async def project_dashboard(
         planned_total = float(budget_row.planned or 0) if budget_row else 0.0
         actual_total = float(budget_row.actual or 0) if budget_row else 0.0
 
+        # A-DASH-02: the BOQ total is the estimate baseline ("original").
+        # The 5D cost-model BudgetLine.planned is a *separate* figure (in
+        # seed data it is exactly half the BOQ total), so using it as the
+        # "revised" budget made revised always 0.5×original and doubled
+        # the reported consumed %. There is no formal budget-revision
+        # entity in the data model, so with no revision the revised budget
+        # equals the original, and consumed % is actual / original.
         original = boq_total_value if boq_total_value > 0 else planned_total
-        revised = planned_total if planned_total > 0 else boq_total_value
+        revised = original
         forecast = revised if revised > 0 else original
 
+        # A-DASH-04: committed = real purchase-order commitments (sum of
+        # non-draft/cancelled PO totals), not a fabricated 0.8×actual. Same
+        # source as procurement_section.total_committed; degrades to 0 if
+        # the procurement module/table is absent.
+        committed_total = 0.0
+        try:
+            from app.modules.procurement.models import PurchaseOrder
+
+            committed_total = float(
+                (
+                    await session.execute(
+                        select(func.sum(cast(PurchaseOrder.amount_total, Float))).where(
+                            PurchaseOrder.project_id == project_id,
+                            PurchaseOrder.status.notin_(["draft", "cancelled"]),
+                        )
+                    )
+                ).scalar_one()
+                or 0.0
+            )
+        except Exception:
+            logger.debug("Dashboard: committed PO sum unavailable", exc_info=True)
+
         budget_section = {
-            "original": str(round(original, 2)),
-            "revised": str(round(revised, 2)),
-            "committed": str(round(actual_total * 0.8, 2)) if actual_total > 0 else "0",
-            "actual": str(round(actual_total, 2)),
-            "forecast": str(round(forecast, 2)),
-            "consumed_pct": str(round(actual_total / revised * 100, 1) if revised > 0 else 0),
+            "original": _money(original),
+            "revised": _money(revised),
+            "committed": _money(committed_total),
+            "actual": _money(actual_total),
+            "forecast": _money(forecast),
+            "consumed_pct": _pct(actual_total / revised * 100 if revised > 0 else 0),
             "warning_level": (
                 "critical"
                 if revised > 0 and actual_total > revised
@@ -713,9 +752,9 @@ async def project_dashboard(
         }
     except Exception:
         if boq_total_value > 0:
-            budget_section["original"] = str(boq_total_value)
-            budget_section["revised"] = str(boq_total_value)
-            budget_section["forecast"] = str(boq_total_value)
+            budget_section["original"] = _money(boq_total_value)
+            budget_section["revised"] = _money(boq_total_value)
+            budget_section["forecast"] = _money(boq_total_value)
 
     # ── Schedule ───────────────────────────────────────────────────────────
     schedule_section: dict = {
@@ -792,21 +831,33 @@ async def project_dashboard(
     # Next milestone
     try:
         from app.modules.projects.models import ProjectMilestone
+        from app.modules.projects.schemas import parse_flexible_date
 
-        today_str = date.today().isoformat()
-        milestone_result = await session.execute(
-            select(ProjectMilestone.name, ProjectMilestone.planned_date)
-            .where(
-                ProjectMilestone.project_id == project_id,
-                ProjectMilestone.status.in_(["pending", "in_progress"]),
-                ProjectMilestone.planned_date >= today_str,
+        # A-DASH-03: planned_date is a free-form String column (ISO / EU
+        # DD.MM.YYYY / US MM/DD/YYYY). The previous string ``>= today_str``
+        # filter + string order_by never selected non-ISO dates and even
+        # mis-ordered valid ISO ones. Pull pending/in-progress milestones
+        # and pick the soonest *future* one by parsed date in Python.
+        today = datetime.combine(date.today(), datetime.min.time())
+        ms_rows = (
+            await session.execute(
+                select(ProjectMilestone.name, ProjectMilestone.planned_date).where(
+                    ProjectMilestone.project_id == project_id,
+                    ProjectMilestone.status.in_(["pending", "in_progress"]),
+                )
             )
-            .order_by(ProjectMilestone.planned_date)
-            .limit(1)
-        )
-        ms_row = milestone_result.one_or_none()
-        if ms_row:
-            schedule_section["next_milestone"] = {"name": ms_row[0], "date": ms_row[1]}
+        ).all()
+        upcoming: list[tuple[datetime, str, str]] = []
+        for ms_name, ms_date in ms_rows:
+            parsed = parse_flexible_date(ms_date)
+            if parsed is not None and parsed >= today:
+                upcoming.append((parsed, ms_name, ms_date))
+        if upcoming:
+            upcoming.sort(key=lambda t: t[0])
+            schedule_section["next_milestone"] = {
+                "name": upcoming[0][1],
+                "date": upcoming[0][2],
+            }
     except Exception:
         logger.debug("Milestone query failed", exc_info=True)
 
@@ -1612,6 +1663,29 @@ async def analytics_overview(
     total_planned = sum(p for p, _ in budget_map.values())
     total_actual = sum(a for _, a in budget_map.values())
 
+    # A-DASH-01: each project carries its own currency (EUR/GBP/USD/AED…).
+    # A single scalar total mixes them into a financially meaningless
+    # number. Group planned/actual by the project's currency so the
+    # frontend can render per-currency subtotals; ``multi_currency`` flags
+    # when the flat scalar must not be shown as a single headline figure.
+    currency_of: dict[str, str] = {str(p.id): (p.currency or "") for p in all_projects}
+    by_currency: dict[str, dict[str, float]] = {}
+    for pid_str, (planned_v, actual_v) in budget_map.items():
+        cur = currency_of.get(pid_str) or "UNKNOWN"
+        bucket = by_currency.setdefault(cur, {"planned": 0.0, "actual": 0.0})
+        bucket["planned"] += planned_v
+        bucket["actual"] += actual_v
+    totals_by_currency = [
+        {
+            "currency": cur,
+            "total_planned": round(v["planned"], 2),
+            "total_actual": round(v["actual"], 2),
+            "total_variance": round(v["planned"] - v["actual"], 2),
+        }
+        for cur, v in sorted(by_currency.items())
+    ]
+    multi_currency = len(by_currency) > 1
+
     # Projects with budget
     projects_with_budget = len(budget_map)
 
@@ -1664,9 +1738,14 @@ async def analytics_overview(
     return {
         "total_projects": proj_count,
         "projects_with_budget": projects_with_budget,
+        # Legacy flat scalars kept for backward compatibility. When
+        # ``multi_currency`` is true these mix currencies and must NOT be
+        # rendered as a single headline figure — use ``totals_by_currency``.
         "total_planned": round(total_planned, 2),
         "total_actual": round(total_actual, 2),
         "total_variance": round(total_planned - total_actual, 2),
+        "multi_currency": multi_currency,
+        "totals_by_currency": totals_by_currency,
         "over_budget_count": over_budget_count,
         "projects": projects_data,
     }
@@ -1894,14 +1973,25 @@ async def list_milestones(
     from sqlalchemy import select
 
     from app.modules.projects.models import ProjectMilestone
+    from app.modules.projects.schemas import parse_flexible_date
 
-    stmt = (
-        select(ProjectMilestone)
-        .where(ProjectMilestone.project_id == project_id)
-        .order_by(ProjectMilestone.planned_date)
-    )
+    stmt = select(ProjectMilestone).where(ProjectMilestone.project_id == project_id)
     result = await session.execute(stmt)
     milestones = list(result.scalars().all())
+
+    # A-PROJ-06: planned_date is a free-form String accepting ISO / EU
+    # (DD.MM.YYYY) / US (MM/DD/YYYY). A SQL string order_by interleaves
+    # the formats wrongly, so sort chronologically in Python by the
+    # parsed date. Undated milestones sort last (datetime.max), then by
+    # created_at for a stable order.
+    from datetime import datetime as _dt
+
+    milestones.sort(
+        key=lambda m: (
+            parse_flexible_date(m.planned_date) or _dt.max,
+            m.created_at,
+        )
+    )
     return [MilestoneResponse.model_validate(m) for m in milestones]
 
 

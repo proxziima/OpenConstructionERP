@@ -32,6 +32,7 @@ import { getErrorMessage } from '@/shared/lib/api';
 import {
   listPortalUsers,
   listDocumentAccessLog,
+  listAccessRules,
   invitePortalUser,
   resendInvite,
   suspendPortalUser,
@@ -93,11 +94,6 @@ export function PortalPage() {
     email: string;
   } | null>(null);
 
-  // Access rules are per-user — we keep them in component state because the
-  // backend exposes only "grant" + "revoke", not a list endpoint. UI tracks
-  // grants made during this session.
-  const [sessionRules, setSessionRules] = useState<AccessRule[]>([]);
-
   const usersQ = useQuery({
     queryKey: ['portal', 'users', statusFilter],
     queryFn: () =>
@@ -115,6 +111,12 @@ export function PortalPage() {
         limit: 200,
       }),
     enabled: tab === 'audit_log' || !!selectedUser,
+  });
+
+  const rulesQ = useQuery({
+    queryKey: ['portal', 'access-rules'],
+    queryFn: () => listAccessRules({ limit: 500 }),
+    enabled: tab === 'access_rules',
   });
 
   const filteredUsers = useMemo(() => {
@@ -145,7 +147,8 @@ export function PortalPage() {
 
   const isLoading =
     (tab === 'users' && usersQ.isLoading) ||
-    (tab === 'audit_log' && auditQ.isLoading);
+    (tab === 'audit_log' && auditQ.isLoading) ||
+    (tab === 'access_rules' && rulesQ.isLoading);
 
   // Surface fetch failures explicitly. Without this, a failed users/audit
   // request falls through to the "No portal users yet" empty state, which
@@ -156,7 +159,9 @@ export function PortalPage() {
       ? usersQ.error
       : tab === 'audit_log'
         ? auditQ.error
-        : null;
+        : tab === 'access_rules'
+          ? rulesQ.error
+          : null;
 
   return (
     <div className="space-y-5">
@@ -299,6 +304,7 @@ export function PortalPage() {
               onClick: () => {
                 if (tab === 'users') void usersQ.refetch();
                 else if (tab === 'audit_log') void auditQ.refetch();
+                else if (tab === 'access_rules') void rulesQ.refetch();
               },
             }}
           />
@@ -310,12 +316,9 @@ export function PortalPage() {
           />
         ) : tab === 'access_rules' ? (
           <AccessRuleTable
-            rows={sessionRules}
+            rows={rulesQ.data?.items ?? []}
             users={usersQ.data?.items ?? []}
             onGrant={() => setGrantOpen(true)}
-            onRevoke={(ruleId) =>
-              setSessionRules((rules) => rules.filter((r) => r.id !== ruleId))
-            }
           />
         ) : (
           <AuditLogTable rows={filteredAudit} users={usersQ.data?.items ?? []} />
@@ -355,7 +358,6 @@ export function PortalPage() {
         <GrantAccessModal
           users={usersQ.data?.items ?? []}
           onClose={() => setGrantOpen(false)}
-          onGranted={(rule) => setSessionRules((r) => [rule, ...r])}
         />
       )}
     </div>
@@ -512,12 +514,10 @@ function AccessRuleTable({
   rows,
   users,
   onGrant,
-  onRevoke,
 }: {
   rows: AccessRule[];
   users: PortalUser[];
   onGrant: () => void;
-  onRevoke: (ruleId: string) => void;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -530,9 +530,8 @@ function AccessRuleTable({
 
   const revokeMut = useMutation({
     mutationFn: (ruleId: string) => revokeAccess(ruleId),
-    onSuccess: (_, ruleId) => {
-      onRevoke(ruleId);
-      qc.invalidateQueries({ queryKey: ['portal'] });
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['portal', 'access-rules'] });
       addToast({
         type: 'success',
         title: t('portal.access_revoked', { defaultValue: 'Access rule revoked' }),
@@ -545,7 +544,7 @@ function AccessRuleTable({
     return (
       <EmptyState
         icon={<ShieldCheck size={22} />}
-        title={t('portal.empty_rules', { defaultValue: 'No access rules granted in this session' })}
+        title={t('portal.empty_rules', { defaultValue: 'No access rules granted yet' })}
         description={t('portal.empty_rules_desc', {
           defaultValue:
             'Grant a portal user view / comment / submit / sign permission on a specific document, project or development.',
@@ -1093,13 +1092,12 @@ function InviteModal({
 function GrantAccessModal({
   users,
   onClose,
-  onGranted,
 }: {
   users: PortalUser[];
   onClose: () => void;
-  onGranted: (rule: AccessRule) => void;
 }) {
   const { t } = useTranslation();
+  const qc = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
   const [form, setForm] = useState({
     portal_user_id: users[0]?.id ?? '',
@@ -1118,12 +1116,12 @@ function GrantAccessModal({
         permission: form.permission,
         expires_at: form.expires_at || null,
       }),
-    onSuccess: (rule) => {
+    onSuccess: () => {
       addToast({
         type: 'success',
         title: t('portal.access_granted', { defaultValue: 'Access granted' }),
       });
-      onGranted(rule);
+      qc.invalidateQueries({ queryKey: ['portal', 'access-rules'] });
       onClose();
     },
     onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),

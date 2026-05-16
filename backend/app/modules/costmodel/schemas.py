@@ -206,7 +206,7 @@ class DashboardResponse(BaseModel):
     spi: float = 0.0
     cpi: float = 0.0
     status: str = "on_budget"
-    currency: str = "EUR"
+    currency: str = ""
 
 
 class SCurvePeriod(BaseModel):
@@ -248,6 +248,7 @@ class BudgetCategoryRow(BaseModel):
     committed: float = 0.0
     actual: float = 0.0
     forecast: float = 0.0
+    variance: float = Field(0.0, description="planned - forecast (absolute currency)")
     variance_pct: float = 0.0
 
 
@@ -344,4 +345,4 @@ class VarianceResponse(BaseModel):
     red_line: float = Field(
         5.0, description="Absolute % threshold that flips the KPI to red"
     )
-    currency: str = "EUR"
+    currency: str = ""

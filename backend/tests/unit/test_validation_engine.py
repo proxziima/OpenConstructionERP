@@ -234,3 +234,118 @@ class TestValidationEngine:
         registry.register(AlwaysFailRule())
         report = await engine.validate(data={}, rule_sets=["test"])
         assert 0 < report.score < 1.0
+
+
+# ── Score / status / engine-error integrity (E-VAL-007/008/018) ────────────
+
+
+class _CrashingRule(ValidationRule):
+    rule_id = "test.crashes"
+    name = "Crashing Rule"
+    standard = "test_crash"
+    severity = Severity.ERROR
+    category = RuleCategory.QUALITY
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        raise ValueError("boom — un-parseable input")
+
+
+class _OnePerPositionDescRule(ValidationRule):
+    """ERROR rule, one result per position — mirrors PositionHasDescription."""
+
+    rule_id = "test.desc"
+    name = "Has Description"
+    standard = "test_boq2"
+    severity = Severity.ERROR
+    category = RuleCategory.COMPLETENESS
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        out: list[RuleResult] = []
+        for pos in context.data.get("positions", []):
+            ok = bool((pos.get("description") or "").strip())
+            out.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=ok,
+                    message="OK" if ok else "missing desc",
+                    element_ref=pos.get("id"),
+                )
+            )
+        return out
+
+
+class TestScoreHonesty:
+    @pytest.mark.asyncio
+    async def test_single_hard_error_among_many_caps_score(self):
+        """E-VAL-007: one ERROR on 20 perfect positions must NOT read ~0.99."""
+        registry = RuleRegistry()
+        registry.register(_OnePerPositionDescRule())
+        engine = ValidationEngine(registry)
+
+        positions = [{"id": str(i), "description": "ok"} for i in range(20)]
+        positions[0]["description"] = ""  # one hard error
+        report = await engine.validate(
+            data={"positions": positions}, rule_sets=["test_boq2"]
+        )
+        assert report.status == ValidationStatus.ERRORS
+        assert len(report.errors) == 1
+        # The naive per-result weighted ratio would be ~0.9926. The cap must
+        # pull it well below "looks fine".
+        assert report.score < 0.5
+        assert report.score > 0.0  # still discriminates from "all broken"
+
+    @pytest.mark.asyncio
+    async def test_engine_error_does_not_become_compliance_error(self):
+        """E-VAL-018: a rule crash is diagnostic, not a blocking ERROR."""
+        registry = RuleRegistry()
+        registry.register(AlwaysPassRule())
+        registry.register(_CrashingRule())
+        engine = ValidationEngine(registry)
+
+        report = await engine.validate(data={}, rule_sets=["test", "test_crash"])
+        # The crash row exists but is bucketed separately.
+        assert len(report.engine_errors) == 1
+        assert report.engine_errors[0].is_engine_error is True
+        assert report.engine_errors[0].category == RuleCategory.DIAGNOSTIC
+        # It must NOT flip status to ERRORS nor count as a compliance error.
+        assert len(report.errors) == 0
+        assert report.has_errors is False
+        assert report.status == ValidationStatus.PASSED
+        # ... nor drag the quality score (only the passing rule counts).
+        assert report.score == 1.0
+
+    @pytest.mark.asyncio
+    async def test_only_engine_errors_is_skipped_not_passed(self):
+        registry = RuleRegistry()
+        registry.register(_CrashingRule())
+        engine = ValidationEngine(registry)
+        report = await engine.validate(data={}, rule_sets=["test_crash"])
+        assert report.status == ValidationStatus.SKIPPED
+        assert report.score == 1.0
+        assert report.summary()["counts"]["engine_errors"] == 1
+
+
+class TestEmptyDataHandling:
+    @pytest.mark.asyncio
+    async def test_empty_boq_is_skipped_not_passed(self):
+        """E-VAL-008: an empty BOQ must not look '100% green'."""
+        from app.core.validation.engine import (
+            rule_registry as builtin_registry,
+        )
+        from app.core.validation.engine import (
+            validation_engine,
+        )
+        from app.core.validation.rules import register_builtin_rules
+
+        if not builtin_registry.get_rule("boq_quality.position_has_quantity"):
+            register_builtin_rules()
+
+        report = await validation_engine.validate(
+            data={"positions": []}, rule_sets=["boq_quality"]
+        )
+        assert report.status == ValidationStatus.SKIPPED
+        assert report.score == 1.0
+        assert len(report.results) == 0

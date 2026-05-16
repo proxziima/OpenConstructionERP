@@ -15,6 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field
 # ── Component schemas ────────────────────────────────────────────────────────
 
 
+# Upper bound for any single component numeric (factor / quantity /
+# unit_cost / bid_factor). 1e12 is far beyond any real estimating value
+# (a trillion units / a trillion-currency unit rate) yet keeps every
+# pairwise/triple product finite in float and Decimal, so a component
+# total can never silently overflow to ``inf`` and serialise as ``null``.
+_NUM_MAX: float = 1e12
+
+
 # Allowed resource_type values. Kept as a Literal-ish string so the DB
 # storage stays a simple varchar (FE/BE share a string contract; we don't
 # want a Postgres ENUM that needs a migration every time we add a kind).
@@ -44,15 +52,25 @@ class ComponentCreate(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
+    # ``_NUM_MAX`` bounds factor / quantity / unit_cost so their product
+    # can never overflow to float ``inf`` (1e12 ** 3 = 1e36, finite in
+    # both float and Decimal). ``allow_inf_nan=False`` makes Pydantic
+    # reject the raw ``NaN`` / ``Infinity`` JSON literals Starlette's
+    # json.loads otherwise accepts — a clean 422 instead of a silently
+    # null-serialised total (ASM-002 / ASM-003). ``ge=0.0`` enforces the
+    # domain rule that a recipe factor / quantity cannot be negative
+    # (ASM-004); 0 stays legal for a disabled / optional line.
     cost_item_id: UUID | None = None
     catalog_resource_id: UUID | None = None
     description: str = Field(default="", max_length=500)
     name: str | None = Field(default=None, max_length=500, exclude=True)
-    factor: float = Field(default=1.0)
-    quantity: float = Field(default=1.0)
+    factor: float = Field(default=1.0, ge=0.0, le=_NUM_MAX, allow_inf_nan=False)
+    quantity: float = Field(default=1.0, ge=0.0, le=_NUM_MAX, allow_inf_nan=False)
     unit: str = Field(..., min_length=1, max_length=20)
-    unit_cost: float = Field(default=0.0, ge=0.0)
-    unit_rate: float | None = Field(default=None, ge=0.0, exclude=True)
+    unit_cost: float = Field(default=0.0, ge=0.0, le=_NUM_MAX, allow_inf_nan=False)
+    unit_rate: float | None = Field(
+        default=None, ge=0.0, le=_NUM_MAX, allow_inf_nan=False, exclude=True
+    )
     resource_type: str | None = Field(default=None, max_length=20)
     metadata: dict[str, Any] | None = None
 
@@ -75,10 +93,10 @@ class ComponentUpdate(BaseModel):
     cost_item_id: UUID | None = None
     catalog_resource_id: UUID | None = None
     description: str | None = Field(default=None, max_length=500)
-    factor: float | None = None
-    quantity: float | None = None
+    factor: float | None = Field(default=None, ge=0.0, le=_NUM_MAX, allow_inf_nan=False)
+    quantity: float | None = Field(default=None, ge=0.0, le=_NUM_MAX, allow_inf_nan=False)
     unit: str | None = Field(default=None, min_length=1, max_length=20)
-    unit_cost: float | None = Field(default=None, ge=0.0)
+    unit_cost: float | None = Field(default=None, ge=0.0, le=_NUM_MAX, allow_inf_nan=False)
     resource_type: str | None = Field(default=None, max_length=20)
     sort_order: int | None = None
     metadata: dict[str, Any] | None = None
@@ -154,7 +172,17 @@ class AssemblyUpdate(BaseModel):
 
 
 class AssemblyResponse(BaseModel):
-    """Assembly returned from the API."""
+    """Assembly returned from the API.
+
+    Contract note (ASM-005): ``total_rate`` is the **unfactored base
+    rate** — ``sum(component totals) * bid_factor`` only. It deliberately
+    does NOT bake in any ``regional_factors`` entry, because an assembly
+    holds many region coefficients at once and there is no single
+    "current" region at the catalog level. The regional premium is
+    applied at ``POST /{id}/apply-to-boq`` time against the chosen
+    ``region``. Consumers that need a region-adjusted figure must
+    multiply ``total_rate`` by ``regional_factors[region]`` themselves.
+    """
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -210,9 +238,19 @@ class ApplyToBOQRequest(BaseModel):
     """Request body for applying an assembly to a BOQ as a new position."""
 
     boq_id: UUID
-    quantity: float = Field(..., gt=0.0)
+    quantity: float = Field(..., gt=0.0, le=_NUM_MAX, allow_inf_nan=False)
     ordinal: str = Field(default="", max_length=50, description="Position ordinal; auto-generated if empty")
     region: str | None = Field(default=None, description="Region key for regional factor lookup")
+    # An assembly priced in one currency dropped into a BOQ of another
+    # currency silently corrupts the bill (the number is treated as the
+    # BOQ's currency downstream). By default we refuse the mismatch with
+    # a clear 409; the caller must consciously opt in (and the position
+    # then carries a loud currency_mismatch warning in its metadata).
+    allow_currency_mismatch: bool = Field(
+        default=False,
+        description="Permit applying an assembly whose currency differs "
+        "from the target project's currency (records a warning).",
+    )
 
 
 class CloneAssemblyRequest(BaseModel):

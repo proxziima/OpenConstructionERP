@@ -67,10 +67,14 @@ export interface CreateEquipmentPayload {
   year?: number;
   ownership?: Ownership;
   status?: EquipmentStatus;
+  location_lat?: number;
+  location_lng?: number;
   hour_meter?: number;
   odometer_km?: number;
   purchase_date?: string;
   purchase_value?: number;
+  useful_life_years?: number;
+  residual_value?: number;
   currency?: string;
   notes?: string;
 }

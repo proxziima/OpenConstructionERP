@@ -102,6 +102,139 @@ def _fmt_percent(value: float) -> str:
     return f"{value:.0%}"
 
 
+# Sentinel returned by ``_to_number`` when a value cannot be interpreted as a
+# number *at all* (vs. ``None``/missing, which the caller may treat as zero).
+_NOT_A_NUMBER = object()
+
+# Whitespace that French / fr-CH / many EU locales use as a thousands group
+# separator: ASCII space, NBSP (U+00A0), NARROW NBSP (U+202F).
+_GROUP_WHITESPACE = "   \t"
+
+
+def _to_number(value: Any) -> float | object | None:
+    """Locale-tolerant numeric coercion shared by every numeric rule.
+
+    The data layer is supposed to store/transport numbers locale-independent
+    (the architecture guide: "stored/transported numbers locale-independent and only
+    formatted at view"). In practice GAEB/Excel imports and some API callers
+    still hand us locale-formatted *strings* (German ``"1.234,56"``, French
+    ``"1 234,56"``, plain ``"185184.0"``, with optional trailing units like
+    ``"0,24 m"``). Calling ``float()`` on those raises ``ValueError``; the
+    engine then turns one formatting issue into a synthetic compliance ERROR
+    per crashed rule (E-I18N-004). This helper is the single place that
+    understands those formats so a rule never crashes on a legal number.
+
+    Returns:
+        * ``None`` if ``value`` is ``None`` (missing — caller decides default).
+        * a ``float`` if the value is/became a finite number.
+        * :data:`_NOT_A_NUMBER` if the value is present but un-parseable as a
+          number (caller must treat this as "not a number", never crash).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):  # bool is an int subclass — reject explicitly
+        return _NOT_A_NUMBER
+    if isinstance(value, (int, float)):
+        f = float(value)
+        # Reject NaN/Infinity — they would silently poison comparisons.
+        return f if f == f and f not in (float("inf"), float("-inf")) else _NOT_A_NUMBER
+    if isinstance(value, Decimal):
+        try:
+            return float(value) if value.is_finite() else _NOT_A_NUMBER
+        except (InvalidOperation, ValueError):
+            return _NOT_A_NUMBER
+    if not isinstance(value, str):
+        return _NOT_A_NUMBER
+
+    text = value.strip()
+    if not text:
+        return _NOT_A_NUMBER
+
+    # Strip a leading sign, remember it, work on the magnitude.
+    sign = 1.0
+    if text[0] in "+-":
+        if text[0] == "-":
+            sign = -1.0
+        text = text[1:].strip()
+
+    # Drop a trailing unit / annotation (``"3.0 m"``, ``"0,24 m"``,
+    # ``"150,00 EUR"``). Keep only the leading numeric run plus its
+    # group/decimal separators.
+    m = re.match(r"[0-9][0-9.,   \t]*", text)
+    if not m:
+        return _NOT_A_NUMBER
+    numeric = m.group(0).strip(_GROUP_WHITESPACE)
+    # Collapse whitespace thousands separators (fr ``1 234,56``).
+    for ws in _GROUP_WHITESPACE:
+        numeric = numeric.replace(ws, "")
+    if not numeric:
+        return _NOT_A_NUMBER
+
+    has_dot = "." in numeric
+    has_comma = "," in numeric
+
+    if has_dot and has_comma:
+        # Both present → the *last-occurring* separator is the decimal point
+        # (de ``1.234,56`` → comma decimal; us ``1,234.56`` → dot decimal).
+        if numeric.rfind(",") > numeric.rfind("."):
+            numeric = numeric.replace(".", "").replace(",", ".")
+        else:
+            numeric = numeric.replace(",", "")
+    elif has_comma:
+        # Only commas. ``1,234,567`` (>1 comma, no decimal) is unambiguous
+        # US/UK thousands grouping. A *single* comma is the German/EU decimal
+        # separator (``0,24``, ``2,5``, ``150,00``) — US thousands ``1,234``
+        # virtually always carries a ``.`` decimal part too, which is the
+        # both-present branch above, so a lone comma is safely a decimal.
+        if numeric.count(",") > 1:
+            numeric = numeric.replace(",", "")  # 1,234,567 → 1234567
+        else:
+            numeric = numeric.replace(",", ".")  # 1,5 / 12,50 / 0,24 → decimal
+    elif has_dot:
+        # A *single* dot with no comma is always a canonical decimal point
+        # (``3.0``, ``0.24``, ``185184.0``) — never reinterpret it, that is
+        # the source-of-truth storage format. Only multi-dot strings
+        # (``1.234.567``) are unambiguously German thousands grouping.
+        if numeric.count(".") > 1:
+            numeric = numeric.replace(".", "")
+
+    try:
+        return sign * float(numeric)
+    except ValueError:
+        return _NOT_A_NUMBER
+
+
+def _median(values: list[float]) -> float:
+    """True statistical median.
+
+    For an even-length list this is the mean of the two central elements
+    (``statistics.median`` semantics) — not ``sorted[n // 2]`` which is the
+    *upper*-middle element and skews threshold-based anomaly detection on
+    small even samples (E-VAL-013).
+    """
+    s = sorted(values)
+    n = len(s)
+    if n == 0:
+        return 0.0
+    mid = n // 2
+    if n % 2 == 1:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2.0
+
+
+def _num(value: Any, default: float | None = 0.0) -> float | None:
+    """Convenience wrapper: parse ``value`` or fall back to ``default``.
+
+    Used by rules that want "missing or unparseable → treated as
+    ``default``" semantics (the historical ``float(x or 0)`` behaviour) but
+    locale-aware and crash-free.
+    """
+    parsed = _to_number(value)
+    if parsed is None or parsed is _NOT_A_NUMBER:
+        return default
+    return parsed  # type: ignore[return-value]
+
+
 # ── BOQ Quality Rules (Universal) ──────────────────────────────────────────
 
 
@@ -118,7 +251,12 @@ class PositionHasQuantity(ValidationRule):
         results: list[RuleResult] = []
         for pos in _get_leaf_positions(context):
             qty = pos.get("quantity", 0)
-            passed = qty is not None and float(qty) > 0
+            qty_num = _to_number(qty)
+            passed = (
+                qty_num is not None
+                and qty_num is not _NOT_A_NUMBER
+                and qty_num > 0  # type: ignore[operator]
+            )
             if passed:
                 message = _ok(locale)
                 suggestion = None
@@ -160,7 +298,12 @@ class PositionHasUnitRate(ValidationRule):
         results: list[RuleResult] = []
         for pos in _get_leaf_positions(context):
             rate = pos.get("unit_rate", 0)
-            passed = rate is not None and float(rate) > 0
+            rate_num = _to_number(rate)
+            passed = (
+                rate_num is not None
+                and rate_num is not _NOT_A_NUMBER
+                and rate_num > 0  # type: ignore[operator]
+            )
             if passed:
                 message = _ok(locale)
                 suggestion = None
@@ -282,17 +425,25 @@ class UnitRateInRange(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         positions = _get_positions(context)
-        rates = [float(p.get("unit_rate", 0)) for p in positions if p.get("unit_rate")]
+        rates: list[float] = []
+        for p in positions:
+            raw = p.get("unit_rate")
+            if not raw:
+                continue
+            parsed = _to_number(raw)
+            if parsed is None or parsed is _NOT_A_NUMBER:
+                continue
+            rates.append(parsed)  # type: ignore[arg-type]
         if len(rates) < 3:
             return []
 
-        rates_sorted = sorted(rates)
-        median = rates_sorted[len(rates_sorted) // 2]
+        median = _median(rates)
         threshold = median * 5  # Flag if >5x median
 
         results: list[RuleResult] = []
         for pos in positions:
-            rate = float(pos.get("unit_rate", 0)) if pos.get("unit_rate") else 0
+            raw_rate = pos.get("unit_rate")
+            rate = _num(raw_rate, default=0.0) or 0.0 if raw_rate else 0.0
             if rate <= 0:
                 continue
             passed = rate <= threshold
@@ -573,10 +724,12 @@ class GAEBEinheitspreisSanity(ValidationRule):
             if rate is None:
                 # Missing rate is covered by PositionHasUnitRate; skip to keep signals orthogonal
                 continue
-            try:
-                rate_val = float(rate)
-            except (TypeError, ValueError):
+            parsed_rate = _to_number(rate)
+            if parsed_rate is None or parsed_rate is _NOT_A_NUMBER:
+                # Non-numeric / unparseable rate is a formatting issue, not a
+                # GAEB pricing violation — keep signals orthogonal.
                 continue
+            rate_val: float = parsed_rate  # type: ignore[assignment]
             passed = rate_val > 0
             if passed:
                 message = _ok(locale)
@@ -788,8 +941,11 @@ class NegativeValues(ValidationRule):
         for pos in _get_positions(context):
             qty = pos.get("quantity")
             rate = pos.get("unit_rate")
-            qty_val = float(qty) if qty is not None else 0
-            rate_val = float(rate) if rate is not None else 0
+            # Unparseable / non-numeric is a *formatting* issue, not a
+            # negative value — treat as 0 so a locale string never masquerades
+            # as a compliance ERROR (E-I18N-004).
+            qty_val = _num(qty, default=0.0) or 0.0
+            rate_val = _num(rate, default=0.0) or 0.0
             passed = qty_val >= 0 and rate_val >= 0
             if passed:
                 message = _ok(locale)
@@ -840,8 +996,8 @@ class UnrealisticRate(ValidationRule):
         locale = _get_locale(context)
         results: list[RuleResult] = []
         for pos in _get_positions(context):
-            rate = float(pos.get("unit_rate", 0)) if pos.get("unit_rate") is not None else 0
-            total = float(pos.get("total", 0)) if pos.get("total") is not None else 0
+            rate = _num(pos.get("unit_rate"), default=0.0) or 0.0
+            total = _num(pos.get("total"), default=0.0) or 0.0
             rate_ok = rate <= self.RATE_THRESHOLD
             total_ok = total <= self.TOTAL_THRESHOLD
             passed = rate_ok and total_ok
@@ -892,7 +1048,12 @@ class TotalMismatch(ValidationRule):
     category = RuleCategory.CONSISTENCY
     description = "Computed total (quantity × unit_rate) must match stored total within tolerance"
 
-    TOLERANCE = 0.01
+    # Absolute floor (one currency minor unit — absorbs IEEE-754 noise like
+    # 0.1 * 0.2 == 0.020000000000000004) plus a magnitude-aware relative
+    # term so a systematic sub-cent drift on large-value positions is no
+    # longer invisible (E-VAL-014).
+    ABS_TOLERANCE = 0.01
+    REL_TOLERANCE = 1e-6
 
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
@@ -904,12 +1065,30 @@ class TotalMismatch(ValidationRule):
             # Skip positions where any of the three values is missing
             if qty is None or rate is None or stored_total is None:
                 continue
-            qty_val = float(qty)
-            rate_val = float(rate)
-            stored_val = float(stored_total)
+            qty_p = _to_number(qty)
+            rate_p = _to_number(rate)
+            stored_p = _to_number(stored_total)
+            # A formatting issue must not masquerade as a consistency ERROR
+            # (E-I18N-004) — skip rather than crash/false-flag.
+            if (
+                qty_p is None
+                or qty_p is _NOT_A_NUMBER
+                or rate_p is None
+                or rate_p is _NOT_A_NUMBER
+                or stored_p is None
+                or stored_p is _NOT_A_NUMBER
+            ):
+                continue
+            qty_val: float = qty_p  # type: ignore[assignment]
+            rate_val: float = rate_p  # type: ignore[assignment]
+            stored_val: float = stored_p  # type: ignore[assignment]
             computed = qty_val * rate_val
             diff = abs(computed - stored_val)
-            passed = diff <= self.TOLERANCE
+            tolerance = max(
+                self.ABS_TOLERANCE,
+                abs(stored_val) * self.REL_TOLERANCE,
+            )
+            passed = diff <= tolerance
             if passed:
                 message = _ok(locale)
                 suggestion = None
@@ -941,6 +1120,7 @@ class TotalMismatch(ValidationRule):
                         "computed_total": computed,
                         "stored_total": stored_val,
                         "difference": diff,
+                        "tolerance": tolerance,
                     },
                     suggestion=suggestion,
                 )
@@ -1071,7 +1251,10 @@ class RateVsBenchmark(ValidationRule):
             rate = pos.get("unit_rate")
             if rate is None:
                 continue
-            rate_val = float(rate)
+            parsed = _to_number(rate)
+            if parsed is None or parsed is _NOT_A_NUMBER:
+                continue  # Formatting issue — not a benchmark violation
+            rate_val: float = parsed  # type: ignore[assignment]
             if rate_val <= 0:
                 continue
             unit = (pos.get("unit") or "").strip().lower()
@@ -1201,15 +1384,16 @@ class CostConcentration(ValidationRule):
         for pos in positions:
             pos_total = pos.get("total")
             if pos_total is None:
-                # Fallback: compute from quantity × unit_rate
+                # Fallback: compute from quantity × unit_rate (locale-tolerant;
+                # an unparseable value contributes 0 rather than crashing).
                 qty = pos.get("quantity")
                 rate = pos.get("unit_rate")
                 if qty is not None and rate is not None:
-                    val = float(qty) * float(rate)
+                    val = (_num(qty, default=0.0) or 0.0) * (_num(rate, default=0.0) or 0.0)
                 else:
                     val = 0.0
             else:
-                val = float(pos_total)
+                val = _num(pos_total, default=0.0) or 0.0
             totals.append((pos, val))
             grand_total += val
 
@@ -1945,7 +2129,11 @@ class DPGFPricingComplete(ValidationRule):
         positions = _get_positions(context)
         if not positions:
             return []
-        priced = sum(1 for p in positions if p.get("unit_rate") and float(p["unit_rate"]) > 0)
+        priced = sum(
+            1
+            for p in positions
+            if p.get("unit_rate") and (_num(p["unit_rate"], default=0.0) or 0.0) > 0
+        )
         total = len(positions)
         ratio = priced / total if total > 0 else 0
         passed = ratio >= 0.80
@@ -2482,6 +2670,12 @@ class CurrencyConsistency(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         positions = _get_positions(context)
+        if not positions:
+            # An empty BOQ has nothing to be consistent about. Emitting a
+            # *passing* row here is what made an empty estimate look "100%
+            # green" instead of SKIPPED (E-VAL-008) — return nothing so the
+            # engine's no-results → SKIPPED branch can fire.
+            return []
         currencies: set[str] = set()
         for pos in positions:
             ccy = (pos.get("currency") or "").strip().upper()
@@ -2533,6 +2727,10 @@ class MeasurementConsistency(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         positions = _get_positions(context)
+        if not positions:
+            # See CurrencyConsistency — no positions means nothing to check;
+            # a passing row here defeats the SKIPPED status (E-VAL-008).
+            return []
         has_metric = False
         has_imperial = False
         for pos in positions:

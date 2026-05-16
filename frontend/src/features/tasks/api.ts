@@ -15,24 +15,34 @@ export type TaskType = BuiltinTaskType | (string & {});
 export type TaskStatus = 'draft' | 'open' | 'in_progress' | 'completed';
 export type TaskPriority = 'low' | 'normal' | 'high' | 'urgent';
 
+/** Checklist item shape — mirrors the backend `ChecklistItemEntry`
+ *  schema exactly (`{id, text, completed}`). The backend never emits
+ *  `label`/`checked`, so consuming those keys silently yields 0%
+ *  progress. */
 export interface ChecklistItem {
-  id: string;
-  label: string;
-  checked: boolean;
+  id: string | null;
+  text: string;
+  completed: boolean;
 }
 
 export interface Task {
   id: string;
   project_id: string;
   title: string;
-  description: string;
+  /** Nullable on the wire — `TaskResponse.description` is `str | None`. */
+  description: string | null;
   task_type: TaskType;
   status: TaskStatus;
   priority: TaskPriority;
+  /** Canonical assignee column on the backend. `assigned_to` is a
+   *  read-only alias the API also returns. */
+  responsible_id: string | null;
   assigned_to: string | null;
   assigned_to_name: string | null;
   due_date: string | null;
   checklist: ChecklistItem[];
+  /** Server-computed checklist completion (0.0 - 100.0). */
+  checklist_progress: number;
   created_by: string | null;
   meeting_id: string | null;
   metadata: Record<string, unknown>;
@@ -42,13 +52,19 @@ export interface Task {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** Server-computed: status != completed AND due_date strictly before
+   *  today (UTC). Authoritative — do NOT recompute client-side, the
+   *  naive `new Date(due_date) < new Date()` flags same-day tasks. */
+  is_overdue: boolean;
 }
 
 export interface TaskFilters {
   project_id?: string;
   task_type?: TaskType | '';
   status?: TaskStatus | '';
-  assigned_to?: string;
+  /** Filter by assignee UUID. Maps to the backend `responsible_id`
+   *  query param. */
+  responsible_id?: string;
 }
 
 export interface CreateTaskPayload {
@@ -75,9 +91,15 @@ export interface UpdateTaskPayload {
   task_type?: TaskType;
   status?: TaskStatus;
   priority?: TaskPriority;
-  assigned_to?: string | null;
+  /** Backend column is `responsible_id`. The old `assigned_to` key was
+   *  silently ignored by the Pydantic `TaskUpdate` model, so assignee
+   *  edits never persisted. */
+  responsible_id?: string | null;
   due_date?: string | null;
-  checklist?: { label: string; checked: boolean }[];
+  /** Free-form metadata (e.g. `{ assignee_name }` for typed, non-UUID
+   *  assignees). Sent so editing a task doesn't wipe a typed name. */
+  metadata?: Record<string, unknown>;
+  checklist?: { id?: string | null; text: string; completed: boolean }[];
 }
 
 /* ── API Functions ─────────────────────────────────────────────────────── */
@@ -87,9 +109,22 @@ export async function fetchTasks(filters?: TaskFilters): Promise<Task[]> {
   if (filters?.project_id) params.set('project_id', filters.project_id);
   if (filters?.task_type) params.set('type', filters.task_type);
   if (filters?.status) params.set('status', filters.status);
-  if (filters?.assigned_to) params.set('assigned_to', filters.assigned_to);
+  if (filters?.responsible_id) params.set('responsible_id', filters.responsible_id);
   const qs = params.toString();
   return apiGet<Task[]>(`/v1/tasks/${qs ? `?${qs}` : ''}`);
+}
+
+/**
+ * Tasks assigned to (or created by) the current user, across all
+ * projects. The backend resolves the user from the JWT `sub` claim, so
+ * this is the correct "My Tasks" source — the client cannot reliably
+ * self-filter because it doesn't carry the user UUID.
+ */
+export async function fetchMyTasks(status?: TaskStatus): Promise<Task[]> {
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  const qs = params.toString();
+  return apiGet<Task[]>(`/v1/tasks/my-tasks/${qs ? `?${qs}` : ''}`);
 }
 
 export async function createTask(data: CreateTaskPayload): Promise<Task> {

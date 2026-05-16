@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiPatch } from '@/shared/lib/api';
+import { apiGet, apiPost, apiPatch, apiDelete } from '@/shared/lib/api';
 
 export interface DashboardData {
   total_budget: number;
@@ -52,6 +52,7 @@ export interface BudgetCategorySummary {
   committed: number;
   actual: number;
   forecast: number;
+  /** planned - forecast, absolute currency (sent by backend). */
   variance: number;
   variance_pct: number;
 }
@@ -86,6 +87,11 @@ export interface EVMData {
   time_elapsed_pct: number;
   schedule_progress_pct: number;
   status: string;
+  /**
+   * True when SPI was clamped to a safe range because the PV proxy is
+   * unreliable (e.g. project not started yet). Treat SPI as indicative only.
+   */
+  spi_capped: boolean;
 }
 
 export interface WhatIfAdjustments {
@@ -128,6 +134,8 @@ export const costModelApi = {
     apiPost<Snapshot>(`/v1/costmodel/projects/${projectId}/5d/snapshots/`, data),
   getSnapshots: (projectId: string) =>
     apiGet<Snapshot[]>(`/v1/costmodel/projects/${projectId}/5d/snapshots/`),
+  deleteSnapshot: (projectId: string, snapshotId: string) =>
+    apiDelete(`/v1/costmodel/projects/${projectId}/5d/snapshots/${snapshotId}`),
   generateCashFlow: (projectId: string) =>
     apiPost(`/v1/costmodel/projects/${projectId}/5d/generate-cash-flow/`, {}),
   getEVM: (projectId: string) =>

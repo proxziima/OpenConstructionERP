@@ -69,6 +69,7 @@ import {
   polygonPerimeterPixels,
   formatMeasurement,
   deriveScale,
+  presetScale,
   formatScaleRatio,
 } from './data/scale-helpers';
 import {
@@ -107,6 +108,22 @@ const isAnnotationTool = (tool: MeasureTool): tool is AnnotationToolType =>
 /** Check if a measurement type is an annotation type */
 const isAnnotationType = (type: string): boolean =>
   (ANNOTATION_TOOLS as string[]).includes(type);
+
+/**
+ * Quantize a measured quantity for persistence to a BOQ position.
+ *
+ * Previously this rounded to 2 dp (`Math.round(v*100)/100`), which
+ * silently destroyed precision the backend itself preserves: BOQ line
+ * storage quantizes to **4 dp** (`_MONEY_QUANTUM = Decimal("0.0001")`),
+ * so a 0.0345 m² patch or a 12.3456 m run lost real digits *before* it
+ * ever reached the server (D-TKC-022). Round to the same 4 dp quantum
+ * so the frontend never pre-truncates below backend storage fidelity;
+ * display-side rounding stays separate (read-only, lossless on store).
+ */
+const boqQuantity = (value: number): number => {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(value * 1e4) / 1e4;
+};
 
 interface Point {
   x: number;
@@ -1137,11 +1154,15 @@ export default function TakeoffViewerModule({
           const existing = prev.find((m) => m.type === 'count' && m.label === countLabel && m.page === currentPage);
           if (existing) {
             pushUndo({ kind: 'add_count_point', measurementId: existing.id, point, wasNew: false, previousMeasurement: { ...existing, points: [...existing.points] } });
-            return prev.map((m) =>
-              m.id === existing.id
-                ? { ...m, points: [...m.points, point], value: m.points.length + 1 }
-                : m,
-            );
+            return prev.map((m) => {
+              if (m.id !== existing.id) return m;
+              // Derive value from the *appended* array, never
+              // `m.points.length + 1`: under React 18 StrictMode /
+              // batched concurrent updates the pre-append length can be
+              // stale and desync value from points.length (D-TKC-023).
+              const nextPoints = [...m.points, point];
+              return { ...m, points: nextPoints, value: nextPoints.length };
+            });
           }
           const newId = `m_${Date.now()}`;
           const newMeasurement: Measurement = {
@@ -1763,7 +1784,7 @@ export default function TakeoffViewerModule({
           ordinal: `TK.${String(ordinalCounter++).padStart(3, '0')}`,
           description: m.annotation || `${m.type}: ${m.label}`,
           unit: unitMap[m.unit] ?? m.unit,
-          quantity: Math.round(m.value * 100) / 100,
+          quantity: boqQuantity(m.value),
           unit_rate: 0,
         };
         await boqApi.addPosition(posData);
@@ -1900,7 +1921,7 @@ export default function TakeoffViewerModule({
     setLinkingInProgress(true);
     try {
       const sourceLabel = `Takeoff: ${measurement.annotation || measurement.type} (page ${measurement.page})`;
-      const newQty = Math.round(measurement.value * 100) / 100;
+      const newQty = boqQuantity(measurement.value);
       const canonicalUnit = normalizeUnit(measurement.unit);
       const existingMeta = (position.metadata ?? {}) as Record<string, unknown>;
 
@@ -1976,7 +1997,7 @@ export default function TakeoffViewerModule({
       const nextNum = (takeoffOrdinals.length ? Math.max(...takeoffOrdinals) : 0) + 1;
       const ordinal = `TK.${String(nextNum).padStart(3, '0')}`;
 
-      const newQty = Math.round(measurement.value * 100) / 100;
+      const newQty = boqQuantity(measurement.value);
       const canonicalUnit = normalizeUnit(measurement.unit);
       const description = measurement.annotation
         || t('takeoff.position_default_desc', {
@@ -2207,8 +2228,9 @@ export default function TakeoffViewerModule({
           // Re-create the count measurement.  Use the previousMeasurement
           // snapshot plus the new point, or build a minimal one.
           const base = op.previousMeasurement ?? null;
+          const restoredPoints = base ? [...base.points, op.point] : [op.point];
           const restored: Measurement = base
-            ? { ...base, points: [...base.points, op.point], value: base.points.length + 1 }
+            ? { ...base, points: restoredPoints, value: restoredPoints.length }
             : {
                 id: op.measurementId,
                 type: 'count',
@@ -2223,11 +2245,11 @@ export default function TakeoffViewerModule({
           setMeasurements((prev) => [...prev, restored]);
         } else {
           setMeasurements((prev) =>
-            prev.map((m) =>
-              m.id === op.measurementId
-                ? { ...m, points: [...m.points, op.point], value: m.points.length + 1 }
-                : m,
-            ),
+            prev.map((m) => {
+              if (m.id !== op.measurementId) return m;
+              const nextPoints = [...m.points, op.point];
+              return { ...m, points: nextPoints, value: nextPoints.length };
+            }),
           );
         }
         break;
@@ -3096,7 +3118,7 @@ export default function TakeoffViewerModule({
                 {COMMON_SCALES.slice(0, 4).map((s) => (
                   <button
                     key={s.label}
-                    onClick={() => setScale({ pixelsPerUnit: 72 / (0.0254 * s.ratio), unitLabel: 'm' })}
+                    onClick={() => setScale(presetScale(s.ratio))}
                     className="text-[10px] px-1.5 py-0.5 rounded-sm bg-surface-secondary hover:bg-oe-blue hover:text-white text-content-secondary transition-all font-medium"
                   >
                     {s.label}

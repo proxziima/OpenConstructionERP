@@ -12,6 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.documents.models import Document, ProjectPhoto, Sheet
 
+# Columns a client is allowed to sort the document list by. Everything
+# else (dunder attributes like ``__class__`` that ``getattr`` happily
+# returns, relationship/hybrid attributes, and the internal server-side
+# ``file_path`` column) is rejected so an attacker can neither crash the
+# query (``__class__.desc()`` → 500, A-DOC-07) nor use ``file_path`` as
+# an ordering oracle on the storage layout (A-DOC-08).
+SORTABLE_DOCUMENT_COLUMNS: frozenset[str] = frozenset(
+    {"name", "created_at", "updated_at", "category", "file_size", "version"}
+)
+
 
 class DocumentRepository:
     """‌⁠‍Data access for Document models."""
@@ -84,9 +94,12 @@ class DocumentRepository:
         count_stmt = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(count_stmt)).scalar_one()
 
-        # Sorting
+        # Sorting — only a documented whitelist of columns is honoured.
+        # An unknown / dunder / sensitive ``sort_by`` falls back to
+        # ``created_at desc`` instead of 500-ing (A-DOC-07) or leaking
+        # the internal ``file_path`` column ordering (A-DOC-08).
         order_clause = None
-        if sort_by:
+        if sort_by and sort_by in SORTABLE_DOCUMENT_COLUMNS:
             col = getattr(Document, sort_by, None)
             if col is not None:
                 order_clause = col.desc() if sort_order == "desc" else col.asc()

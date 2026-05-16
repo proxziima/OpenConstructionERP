@@ -89,6 +89,12 @@ class RiskResponse(BaseModel):
     impact_schedule_days: int = 0
     impact_severity: str = "medium"
     risk_score: float = 0.0
+    # 5x5 PMBOK matrix scoring — computed server-side from probability +
+    # impact_severity. The frontend heatmap depends on these being present.
+    probability_score: int | None = None
+    impact_score_cost: int | None = None
+    impact_score_time: int | None = None
+    risk_tier: str | None = None
     status: str = "identified"
     mitigation_strategy: str = ""
     contingency_plan: str = ""

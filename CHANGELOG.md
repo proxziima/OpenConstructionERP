@@ -5,6 +5,31 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] — 2026-05-16 · Backlog triage, Planning/Field-Ops audit, clean-install fix, per-country demo data
+
+### Clean install
+
+- Fresh database now creates all module tables: `create_all` ran off a hand-maintained import list that omitted 18 modules (service, resources, equipment, portal, daily_diary, schedule_advanced, crm, contracts, variations, bid_management, qms, hse_advanced, carbon, bi_dashboards, subcontractors, supplier_catalogs, property_dev, compliance_docs) — those whole sections 500'd ("no such table") on any fresh install. Module models are now discovered dynamically; adding a module needs no edit.
+
+### Correctness
+
+- Planning + Field Operations deep audit (10 modules): schedule 8 cross-tenant IDOR endpoints + working-day calendar + Gantt duration; schedule-advanced CPM 500-on-cycle + EVM sunk-cost + read-only Weekly commitments; tasks assignee-not-persisted + checklist-progress-0% + illegal status transitions + completion event/audit; 5d budget variance + hardcoded EUR ×2 + S-curve double-cumulation; risk dead heatmap + impact-level mismatch + numeric-parse 500; daily-diary missing entries endpoint + calendar day-click + wrong-day weather; equipment >500-fleet drawer + dropped depreciation/geo fields; resources timezone double-offset + invisible live bookings + spurious 409; service permanently-empty Tickets + WO-create 422 + hardcoded EUR; portal ticket-create 422 + own-ticket scoping + durable access rules.
+- Variations: every list endpoint was dead (`UnmappedInstanceError` — a mapped attribute stored as a class attribute became an instance descriptor); 8 repositories fixed.
+- Bid management: bid-package list was unusable (frontend `limit=200` vs backend `le=100` → 422); cap raised to 500 (no silent truncation).
+- Remediation backlog (125 items) triaged at root: documents IDOR / path-traversal / unsafe sort, BOQ currency rounding + markup base + recalculate-rates 500 + >1000-position rollup, assemblies import 500 / overflow / negative factor / formula engine, validation score scale + empty-BOQ-as-passed + ReDoS in `must_match`, projects/dashboard/catalog money & date integrity, takeoff/CAD aggregation honesty, requirements gate sequencing, bim_requirements project authz + explicit XXE.
+- i18n locales: 3949 duplicate-key build errors removed (first-wins dedup), canonical translations preserved; fixes silent runtime translation shadowing.
+- Cost matching: restored the 3-letter→ISO-alpha-2 country remap (`country_filter_for`) — US/GB/CA rates were silently excluded from every match.
+
+### Demo data
+
+- Paris demo project re-based to France's DPGF standard (was German DIN 276); region, validation rule set and per-lot classification corrected per country.
+- Demo seed is exactly 4 country-correct projects — Berlin (DIN 276 / EUR), Dubai (MasterFormat / AED), Paris (DPGF / EUR), US Medical (MasterFormat / USD); no test/smoke data shipped.
+
+### Verification
+
+- Backend 5562 unit tests passing, frontend type-check clean, zero regressions.
+- Live browser walkthrough: 62 pages across every sidebar section, real tab clicks + screenshots, 0 API/JS errors.
+
 ## [3.1.0] — 2026-05-15 · Deep logic + correctness sweep (23 modules, 10 waves)
 
 A 10-wave root-cause pass across the operational/commercial modules. Full unit

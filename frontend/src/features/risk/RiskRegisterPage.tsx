@@ -54,7 +54,13 @@ function getProbLabels(t: (key: string, opts?: Record<string, unknown>) => strin
     '0.1': t('risk.probability_very_low', { defaultValue: 'Very Low‌⁠‍' }),
   };
 }
-const IMPACT_LEVELS = ['low', 'medium', 'high', 'critical'];
+// Must mirror the backend `/matrix/` canonical impact axis exactly
+// (service.py builds 5 levels: very_low..critical). Dropping `very_low`
+// here silently hid every risk the backend bucketed into that column.
+const IMPACT_LEVELS = ['very_low', 'low', 'medium', 'high', 'critical'];
+const IMPACT_LABEL_FALLBACK: Record<string, string> = {
+  very_low: 'Very Low', low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical',
+};
 
 const selectCls = 'h-8 rounded-lg border border-border bg-surface-primary px-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue transition-colors pr-7 appearance-none cursor-pointer';
 
@@ -69,13 +75,17 @@ function matrixColor(prob: string, impact: string) {
   const probNum = parseFloat(prob);
   const probValid = Number.isFinite(probNum) ? probNum : 0;
   // Guard against unknown impact values — default to 0 (not 1) so the cell is marked neutral
-  // instead of silently treated as low-risk.
-  const impactMap: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 };
+  // instead of silently treated as low-risk. Levels 1-5 mirror the backend
+  // canonical impact axis (very_low..critical).
+  const impactMap: Record<string, number> = {
+    very_low: 1, low: 2, medium: 3, high: 4, critical: 5,
+  };
   const impactNum = impactMap[impact] ?? 0;
+  // score range: 0.1*1=0.1 .. 0.9*5=4.5
   const score = probValid * impactNum;
   if (score === 0) return 'bg-surface-secondary text-content-quaternary';
-  if (score >= 2.0) return 'bg-red-500/80 text-white';
-  if (score >= 1.2) return 'bg-orange-400/80 text-white';
+  if (score >= 2.7) return 'bg-red-500/80 text-white';
+  if (score >= 1.5) return 'bg-orange-400/80 text-white';
   if (score >= 0.6) return 'bg-yellow-400/80 text-gray-900';
   return 'bg-green-400/70 text-gray-900';
 }
@@ -98,7 +108,7 @@ function RiskMatrix({ cells }: { cells: MatrixCell[] }) {
           <thead>
             <tr>
               <th className="p-1 text-left text-content-tertiary w-20">{t('risk.probability', { defaultValue: 'Probability‌⁠‍' })}</th>
-              {IMPACT_LEVELS.map((i) => <th key={i} className="p-1 text-center text-content-tertiary capitalize">{t(`risk.impact_${i}`, { defaultValue: i })}</th>)}
+              {IMPACT_LEVELS.map((i) => <th key={i} className="p-1 text-center text-content-tertiary">{t(`risk.impact_${i}`, { defaultValue: IMPACT_LABEL_FALLBACK[i] ?? i })}</th>)}
             </tr>
           </thead>
           <tbody>

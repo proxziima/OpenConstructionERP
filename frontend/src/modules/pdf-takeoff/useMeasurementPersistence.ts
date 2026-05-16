@@ -97,9 +97,64 @@ export function getDocumentIndex(): string[] {
   }
 }
 
+/* ── Unit canonicalization ───────────────────────────────────────────── */
+
+/**
+ * Map the display-glyph unit the viewer emits (`m²` / `m³` via the
+ * superscript U+00B2 / U+00B3) to the canonical BOQ unit string
+ * (`m2` / `m3`).
+ *
+ * Even though the backend now accepts the superscript form verbatim
+ * (D-TKC-001 backend pairing), cross-module quantity sync — bim_hub
+ * `_sync_boq_quantity_from_links`, BOQ linking, the catalogue/cost
+ * matchers — keys on the canonical `m`/`m2`/`m3`/`pcs` vocabulary.
+ * Persisting the canonical form keeps the server copy aligned with the
+ * Export-to-BOQ / link-to-position paths (which already canonicalize),
+ * and {@link displayUnit} restores the glyph on round-trip so the UI is
+ * unchanged.
+ */
+function canonicalUnit(unit: string): string {
+  switch (unit) {
+    case 'm²':
+      return 'm2';
+    case 'm³':
+      return 'm3';
+    default:
+      return unit || 'm';
+  }
+}
+
+/** Inverse of {@link canonicalUnit}: restore the superscript display
+ *  glyph from the canonical stored unit so a server round-trip renders
+ *  identically to a freshly-drawn measurement. */
+function displayUnit(unit: string): string {
+  switch (unit) {
+    case 'm2':
+      return 'm²';
+    case 'm3':
+      return 'm³';
+    default:
+      return unit;
+  }
+}
+
 /* ── Convert between frontend Measurement and backend API format ─────── */
 
-function toApiFormat(m: Measurement, projectId: string, documentId: string): MeasurementCreate {
+function toApiFormat(
+  m: Measurement,
+  projectId: string,
+  documentId: string,
+  scale?: ScaleConfig,
+): MeasurementCreate {
+  // Area measurements carry the polygon area in `m.value`; volume
+  // measurements carry the area separately in `m.area`. Persist the
+  // canonical dimension fields so bim_hub quantity sync / BOQ linking
+  // can pick the right quantity instead of guessing from the unit
+  // string alone (D-TKC-031).
+  const areaValue =
+    m.type === 'area' ? m.value : m.type === 'volume' ? (m.area ?? null) : null;
+  const ppu =
+    scale && scale.pixelsPerUnit > 0 ? scale.pixelsPerUnit : null;
   return {
     project_id: projectId,
     document_id: documentId,
@@ -110,17 +165,21 @@ function toApiFormat(m: Measurement, projectId: string, documentId: string): Mea
     annotation: m.annotation || m.label || null,
     points: m.points,
     measurement_value: m.value || null,
-    measurement_unit: m.unit || 'm',
+    measurement_unit: canonicalUnit(m.unit),
     depth: m.depth ?? null,
     volume: m.type === 'volume' ? m.value : null,
+    perimeter: m.type === 'polyline' ? m.value : null,
     count_value: m.type === 'count' ? Math.round(m.value) : null,
-    scale_pixels_per_unit: null,
+    // Send the calibration so the server-side recompute can verify the
+    // client value against the raw geometry (Audit B8) instead of
+    // trusting it blindly.
+    scale_pixels_per_unit: ppu,
     linked_boq_position_id: m.linkedPositionId ?? null,
     metadata: {
       text: m.text,
       width: m.width,
       height: m.height,
-      area: m.area,
+      area: areaValue ?? undefined,
       frontend_id: m.id,
       linked_boq_id: m.linkedBoqId,
       linked_position_ordinal: m.linkedPositionOrdinal,
@@ -137,13 +196,18 @@ function fromApiFormat(r: MeasurementResponse): Measurement {
     type: r.type as Measurement['type'],
     points: r.points as Point[],
     value: r.measurement_value ?? r.count_value ?? 0,
-    unit: r.measurement_unit,
+    unit: displayUnit(r.measurement_unit),
     label: r.annotation || '',
     annotation: r.annotation || '',
     page: r.page,
     group: r.group_name,
     depth: r.depth ?? undefined,
-    area: (meta.area as number) ?? undefined,
+    // Prefer the dedicated metadata.area; fall back to the canonical
+    // server `volume`/`measurement_value` so an area survives even when
+    // it was persisted before the dedicated field existed (D-TKC-031).
+    area:
+      (meta.area as number) ??
+      (r.type === 'area' ? r.measurement_value ?? undefined : undefined),
     text: (meta.text as string) ?? undefined,
     color: r.group_color || undefined,
     width: (meta.width as number) ?? undefined,
@@ -263,7 +327,7 @@ export function useMeasurementPersistence({
       try {
         const toCreate = serverMeasurements
           .filter((m) => !m.serverId)
-          .map((m) => toApiFormat(m, projectId, fileName));
+          .map((m) => toApiFormat(m, projectId, fileName, scale));
 
         if (toCreate.length > 0) {
           const created = await takeoffApi.bulkCreate(toCreate);
@@ -289,7 +353,7 @@ export function useMeasurementPersistence({
     return () => {
       if (serverSyncRef.current) clearTimeout(serverSyncRef.current);
     };
-  }, [fileName, projectId, measurements, setMeasurements]);
+  }, [fileName, projectId, measurements, setMeasurements, scale.pixelsPerUnit]);
 
   const saveNow = useCallback(() => {
     if (!fileName) return;

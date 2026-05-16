@@ -49,6 +49,7 @@ import {
   isCategoricalAggFn,
   canAggregateColumn,
   formatCount,
+  rollupParentValue,
   AGG_FUNCTIONS as SUPPORTED_AGG_FUNCTIONS,
 } from './aggregation';
 import {
@@ -1495,10 +1496,17 @@ function PivotTab({ sessionId, describe, thresholdRules, setThresholdRules }: Pi
                           {groupBy.slice(1).map((col) => <td key={col} className="px-3 py-2 text-content-tertiary">—</td>)}
                           <td className="px-3 py-2 text-right font-semibold tabular-nums">{parentCount.toLocaleString()}</td>
                           {aggCols.map((col) => {
-                            const subtotal = children.reduce((s, g) => s + (g.results[col] ?? 0), 0);
+                            // Roll up with the SAME aggregation the user
+                            // picked (count-weighted mean for avg, min of
+                            // mins, …) so the parent reconciles with its
+                            // children and the global Total (D-TKC-008).
+                            // `null` => not derivable (count_unique): show
+                            // an explicit dash instead of a wrong number.
+                            const rolled = rollupParentValue(children, col, aggFn);
+                            const subtotal = rolled ?? 0;
                             const bar = computeDataBar(subtotal, maxByAgg.get(col) ?? 0);
                             const rule = findRuleForColumn(thresholdRules, col);
-                            const zone = resolveThresholdColor(subtotal, rule);
+                            const zone = rolled == null ? null : resolveThresholdColor(subtotal, rule);
                             const style = zone ? applyRuleToBar(subtotal, rule) : null;
                             return (
                               <td
@@ -1524,7 +1532,23 @@ function PivotTab({ sessionId, describe, thresholdRules, setThresholdRules }: Pi
                                     ...(style ? { backgroundColor: style.bar, opacity: 0.35 } : {}),
                                   }}
                                 />
-                                <span className="relative">{isCategoricalAggFn(aggFn) ? formatCount(subtotal) : formatNumber(subtotal)}</span>
+                                <span
+                                  className="relative"
+                                  title={
+                                    rolled == null
+                                      ? t('explorer.rollup_not_additive', {
+                                          defaultValue:
+                                            'Distinct counts cannot be combined across groups — expand to see per-group values.',
+                                        })
+                                      : undefined
+                                  }
+                                >
+                                  {rolled == null
+                                    ? '—'
+                                    : isCategoricalAggFn(aggFn)
+                                    ? formatCount(subtotal)
+                                    : formatNumber(subtotal)}
+                                </span>
                               </td>
                             );
                           })}

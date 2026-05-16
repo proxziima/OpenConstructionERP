@@ -372,7 +372,15 @@ async def list_tickets(
             project_id, offset=offset, limit=limit,
         )
     else:
-        items = []
+        # No contract/project scope ⇒ tenant-wide dispatcher view. Previously
+        # this returned [] which left the default /service Tickets tab
+        # permanently empty (and the WO-create ticket picker blank).
+        items, _ = await service.ticket_repo.list_all(
+            offset=offset,
+            limit=limit,
+            status=status_filter,
+            priority=priority,
+        )
     return [ServiceTicketResponse.model_validate(it) for it in items]
 
 

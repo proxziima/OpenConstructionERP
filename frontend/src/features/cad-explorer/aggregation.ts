@@ -181,6 +181,68 @@ export function computeClientPivot(
   return { groups, totals, total_count: rows.length };
 }
 
+/**
+ * Roll a hierarchical pivot *parent* cell up from its child groups
+ * using the SAME aggregation semantics the user picked — not an
+ * unconditional sum.
+ *
+ * The previous parent cell always summed children
+ * (`Σ children.results[col]`), so with `aggFn='avg'` it showed the
+ * meaningless *sum of group averages* (children 2.0 + 3.0 → parent 5.0)
+ * and never reconciled with the global Total row (D-TKC-008).
+ *
+ * Correct rollups:
+ *   - `sum`    → Σ child values                 (additive)
+ *   - `count`  → Σ child values                 (additive)
+ *   - `avg`    → count-weighted mean
+ *                Σ(value·count) / Σ(count)       (== global avg)
+ *   - `min`    → min of child mins
+ *   - `max`    → max of child maxes
+ *   - `count_unique` → NOT recomputable from group summaries (distinct
+ *                values may overlap across groups); returns `null` so
+ *                the cell renders an explicit "—" instead of a wrong
+ *                number.
+ *
+ * @returns the rolled-up value, or `null` when it cannot be derived
+ *          from group summaries (caller renders a dash).
+ */
+export function rollupParentValue(
+  children: readonly AggregateGroup[],
+  col: string,
+  aggFn: string,
+): number | null {
+  if (children.length === 0) return 0;
+  const vals = children.map((g) => g.results[col] ?? 0);
+  switch (aggFn) {
+    case 'sum':
+    case 'count':
+      return vals.reduce((s, v) => s + v, 0);
+    case 'min':
+      return Math.min(...vals);
+    case 'max':
+      return Math.max(...vals);
+    case 'avg': {
+      let num = 0;
+      let den = 0;
+      for (const g of children) {
+        const c = g.count ?? 0;
+        num += (g.results[col] ?? 0) * c;
+        den += c;
+      }
+      return den > 0 ? num / den : 0;
+    }
+    case 'count_unique':
+      // Distinct counts are not additive across groups and the raw
+      // rows are not available at the rollup site — refuse to invent a
+      // number.
+      return null;
+    default:
+      // Unknown fn: be permissive, fall back to sum (matches the
+      // historical behaviour for anything we don't special-case).
+      return vals.reduce((s, v) => s + v, 0);
+  }
+}
+
 /** Format an integer count for display in a pivot cell. No decimals,
  *  always locale-aware thousand separators — e.g. `1,234` or `1 234`. */
 export function formatCount(n: number | null | undefined): string {

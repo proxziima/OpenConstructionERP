@@ -59,6 +59,22 @@ def _get_service(session: SessionDep) -> CatalogResourceService:
     return CatalogResourceService(session)
 
 
+def _fmt_price(value: float) -> str:
+    """Serialise a price without lossy fixed-2dp truncation (CAT-003).
+
+    Prices are stored as ``String(50)``. The previous code wrote
+    ``round(x, 2)`` on every adjustment, so applying a factor N times
+    compounded a sub-cent error per step and ``factor`` then ``1/factor``
+    never restored the original. We keep full IEEE-754 precision and use
+    ``repr``-grade formatting (``%.12g``) so round-trips stay stable while
+    trailing-zero noise is still trimmed for display.
+    """
+    # %.12g keeps enough significant digits to survive repeated
+    # multiply/divide cycles, then normalise -0.0 → 0.
+    out = f"{value:.12g}"
+    return "0" if out in ("-0", "-0.0") else out
+
+
 # ── Region-to-GitHub mapping ─────────────────────────────────────────────
 
 REGION_MAP: dict[str, str] = {
@@ -191,9 +207,11 @@ async def import_catalog_from_github(
                 resource_type=(row.get("type") or "material").strip().lower(),
                 category=(row.get("category") or "General").strip(),
                 unit=(row.get("unit") or "unit").strip()[:20],
-                base_price=str(round(float(row.get("price_avg") or 0), 2)),
-                min_price=str(round(float(row.get("price_min") or 0), 2)),
-                max_price=str(round(float(row.get("price_max") or 0), 2)),
+                # CAT-003: preserve source precision; do not truncate to
+                # 2dp on import (compounds with later adjust-prices passes).
+                base_price=_fmt_price(float(row.get("price_avg") or 0)),
+                min_price=_fmt_price(float(row.get("price_min") or 0)),
+                max_price=_fmt_price(float(row.get("price_max") or 0)),
                 currency=(row.get("currency") or "").strip(),
                 usage_count=int(float(row.get("usage_count") or 0)),
                 source="github_import",
@@ -313,15 +331,46 @@ async def adjust_prices(
         result = await session.execute(stmt)
         resources = list(result.scalars().all())
 
+        adjusted_ids: list[str] = []
         for res in resources:
             try:
-                res.base_price = str(round(float(res.base_price) * factor, 2))
-                res.min_price = str(round(float(res.min_price) * factor, 2))
-                res.max_price = str(round(float(res.max_price) * factor, 2))
+                # CAT-003: keep full precision internally. Stored as
+                # String(50); previously each write was truncated to 2dp
+                # so repeated factor passes drifted (and factor→1/factor
+                # never restored the original). ``_fmt_price`` trims only
+                # trailing-zero noise, not significant digits.
+                res.base_price = _fmt_price(float(res.base_price) * factor)
+                res.min_price = _fmt_price(float(res.min_price) * factor)
+                res.max_price = _fmt_price(float(res.max_price) * factor)
+                adjusted_ids.append(str(res.id))
             except (ValueError, TypeError):
                 pass
 
         await session.flush()
+
+        # CAT-002: a bulk price change must notify subscribers so
+        # assemblies / BOQ snapshots derived from these resources can
+        # refresh — consistent with the costs.item.updated → assemblies
+        # flow. Best-effort: never fail the request on a publish error.
+        try:
+            from app.core.events import event_bus
+
+            event_bus.publish_detached(
+                "catalog.resources.updated",
+                {
+                    "count": len(adjusted_ids),
+                    "resource_ids": adjusted_ids,
+                    "factor": factor,
+                    "filters": {
+                        "resource_type": resource_type,
+                        "category": category,
+                        "region": region,
+                    },
+                },
+                source_module="oe_catalog",
+            )
+        except Exception:
+            logger.debug("catalog.resources.updated publish skipped", exc_info=True)
 
     logger.info(
         "Adjusted %d resource prices by factor %.4f (type=%s, category=%s, region=%s)",

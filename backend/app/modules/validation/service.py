@@ -108,6 +108,7 @@ class ValidationModuleService:
                 "element_ref": r.element_ref,
                 "details": r.details or {},
                 "suggestion": r.suggestion,
+                "is_engine_error": r.is_engine_error,
             }
             for r in engine_report.results
         ]
@@ -177,9 +178,11 @@ class ValidationModuleService:
                     "element_ref": r.element_ref,
                     "details": r.details or {},
                     "suggestion": r.suggestion,
+                    "is_engine_error": r.is_engine_error,
                 }
                 for r in engine_report.results
             ],
+            "engine_error_count": len(engine_report.engine_errors),
         }
 
     # ── Rule sets ─────────────────────────────────────────────────────────

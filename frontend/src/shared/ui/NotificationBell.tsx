@@ -467,14 +467,43 @@ export function NotificationBell() {
                     {rows.map((notification) => {
                       const config = getIconConfig(notification.icon_category);
                       const TypeIcon = config.icon;
-                      const title = t(notification.title_key, {
-                        defaultValue: notification.title_default || notification.title_key,
-                        ...(notification.body_context as Record<string, unknown>),
-                      });
-                      const body = notification.body_key
-                        ? t(notification.body_key, {
+                      /* Root cause of CRAWL-NOTIFBELL: a notification row
+                         whose `title_key`/`body_key` is null or a non-string
+                         (a malformed/legacy DB row, or a future backend
+                         shape change) was passed straight into i18next's
+                         `t()`. i18next internally does `key.split(...)`, so a
+                         null key throws a TypeError that escapes render and
+                         is caught by the route ErrorBoundary — the bell
+                         "crashes the page" on any route. Coerce the key to a
+                         safe string and fall back to the human-readable
+                         default text, and tolerate a null `body_context`
+                         (object spread of null is fine, but be explicit). */
+                      const titleKey =
+                        typeof notification.title_key === 'string' &&
+                        notification.title_key
+                          ? notification.title_key
+                          : '';
+                      const bodyKey =
+                        typeof notification.body_key === 'string' &&
+                        notification.body_key
+                          ? notification.body_key
+                          : '';
+                      const ctx =
+                        notification.body_context &&
+                        typeof notification.body_context === 'object'
+                          ? (notification.body_context as Record<string, unknown>)
+                          : {};
+                      const title = titleKey
+                        ? t(titleKey, {
+                            defaultValue:
+                              notification.title_default || titleKey,
+                            ...ctx,
+                          })
+                        : notification.title_default || '';
+                      const body = bodyKey
+                        ? t(bodyKey, {
                             defaultValue: notification.body_default,
-                            ...(notification.body_context as Record<string, unknown>),
+                            ...ctx,
                           })
                         : notification.body_default;
                       const deleting =

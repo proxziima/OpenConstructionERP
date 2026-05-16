@@ -1,10 +1,56 @@
 /** Pixel-to-real-world scale conversion helpers */
 
 export interface ScaleConfig {
-  /** Pixels per real-world unit (e.g. pixels per meter) */
+  /** Pixels per real-world unit (e.g. pixels per meter).
+   *  ``0`` denotes an *un-derivable* calibration (bad / missing
+   *  reference) — never a silent 1:1 fallback (see {@link deriveScale}).
+   *  All consumers (`toRealDistance`, `toRealArea`, `ratioFromScale`)
+   *  treat ``<= 0`` as "no scale" and yield 0 / "—" rather than a
+   *  grossly inflated reading. */
   pixelsPerUnit: number;
   /** Display unit label */
   unitLabel: string;
+  /** ``true`` when the scale could not be derived from the supplied
+   *  reference (zero / negative pixel or real length). The viewer uses
+   *  this to refuse measurements and re-prompt the user instead of
+   *  recording wildly wrong quantities (D-TKC-010). */
+  invalid?: boolean;
+}
+
+/**
+ * PDF base render resolution, in dots per inch.
+ *
+ * The whole preset-scale maths hinges on this single invariant: stored
+ * measurement points are in **PDF user units** (1 pt = 1/72 inch),
+ * because the canvas captures `(clientX - rect.left) / zoom` and the
+ * canvas CSS width is `pdfWidth * zoom` at base render scale 1.0.
+ * Therefore a `1:ratio` paper scale resolves to
+ * `PDF_POINTS_PER_INCH / (METERS_PER_INCH * ratio)` pixels per metre.
+ *
+ * Centralised + named (was a bare `72` inline) so the invariant has
+ * exactly one definition and a regression test can pin it (D-TKC-029).
+ */
+export const PDF_POINTS_PER_INCH = 72;
+
+/** 1 inch in metres — the metric/imperial bridge used by preset scales. */
+export const METERS_PER_INCH = 0.0254;
+
+/**
+ * Resolve an architectural `1:ratio` paper scale into a {@link ScaleConfig}.
+ *
+ * Single source of truth for the preset buttons. By definition an
+ * architectural ratio maps paper distance to *metric* real-world
+ * distance, so the unit label is always metres (imperial drawings are
+ * handled by two-click calibration, not paper presets — D-TKC-016).
+ */
+export function presetScale(ratio: number): ScaleConfig {
+  if (!Number.isFinite(ratio) || ratio <= 0) {
+    return { pixelsPerUnit: 0, unitLabel: 'm', invalid: true };
+  }
+  return {
+    pixelsPerUnit: PDF_POINTS_PER_INCH / (METERS_PER_INCH * ratio),
+    unitLabel: 'm',
+  };
 }
 
 /** Common architectural scales */
@@ -77,12 +123,18 @@ export function polygonPerimeterPixels(
 }
 
 /** Format a measurement value with appropriate precision.
- *  Degenerate (sub-0.01) values render as the empty string instead of
- *  "0 m²", so half-finished polygons / annotations don't litter the
- *  panel and on-canvas labels with misleading zero readouts. */
+ *
+ *  Only genuinely degenerate values (non-finite, zero, negative) render
+ *  as the empty string — those come from half-finished polygons /
+ *  two-identical-points and would otherwise litter the panel with a
+ *  misleading "0 m²".  Real but *small* quantities (a 9 mm joint, an
+ *  80 cm² patch) must stay visible with enough significant digits
+ *  rather than being collapsed to zero or hidden (D-TKC-007): an
+ *  estimator measuring small details still needs to read the number. */
 export function formatMeasurement(value: number, unit: string): string {
-  if (value < 0.01) return '';
-  if (value < 1) return `${value.toFixed(3)} ${unit}`;
+  if (!Number.isFinite(value) || value <= 0) return '';
+  if (value < 0.001) return `${value.toPrecision(2)} ${unit}`;
+  if (value < 1) return `${value.toFixed(4)} ${unit}`;
   if (value < 100) return `${value.toFixed(2)} ${unit}`;
   return `${value.toFixed(1)} ${unit}`;
 }
@@ -95,8 +147,17 @@ export function deriveScale(
   pixelLength: number,
   realLength: number,
 ): ScaleConfig {
-  if (realLength <= 0 || pixelLength <= 0) {
-    return { pixelsPerUnit: 1, unitLabel: 'm' };
+  if (
+    !Number.isFinite(realLength) ||
+    !Number.isFinite(pixelLength) ||
+    realLength <= 0 ||
+    pixelLength <= 0
+  ) {
+    // Do NOT fall back to a silent 1 px = 1 m: that turned a 28 346 px
+    // line into "28 346 m" with no indication. Return an explicitly
+    // invalid scale so downstream maths yields nothing and the viewer
+    // forces the user to recalibrate (D-TKC-010).
+    return { pixelsPerUnit: 0, unitLabel: 'm', invalid: true };
   }
   return {
     pixelsPerUnit: pixelLength / realLength,
@@ -137,8 +198,9 @@ export function fromMeters(meters: number, unit: CalibrationUnit): number {
  */
 export function ratioFromScale(scale: ScaleConfig): number {
   if (scale.pixelsPerUnit <= 0) return 0;
-  // ppu = 72 / (0.0254 * ratio)  →  ratio = 72 / (ppu * 0.0254)
-  const raw = 72 / (scale.pixelsPerUnit * 0.0254);
+  // ppu = PPI / (M_PER_IN * ratio)  →  ratio = PPI / (ppu * M_PER_IN)
+  // Same invariant as presetScale(), inverted — kept single-sourced.
+  const raw = PDF_POINTS_PER_INCH / (scale.pixelsPerUnit * METERS_PER_INCH);
   return Math.max(1, Math.round(raw));
 }
 

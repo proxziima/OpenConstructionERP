@@ -24,8 +24,27 @@ _classifier = FormatClassifier()
 
 
 def _get_parser(format_name: str) -> Any:
-    """‌⁠‍Return the appropriate parser instance for a detected format."""
-    if format_name == "IDS":
+    """‌⁠‍Return the appropriate parser instance for a detected format.
+
+    The :class:`FormatClassifier` can emit *generic* labels for content it
+    recognises only loosely (``GenericXML``, ``MVD``, ``ArchiCAD`` for any
+    non-IDS XML; ``GenericJSON`` for non-BIMQ JSON; ``PlainText`` for a
+    ``.txt`` that isn't a Revit shared-parameter file).  Previously every
+    such label fell through to a blanket ``ValueError`` → HTTP 422, even
+    when the payload was a perfectly valid generic requirements export
+    (E-XMOD-019).  We now route those to the closest content-compatible
+    parser as a best effort:
+
+    * any XML  → :class:`IDSParser` (namespace-tolerant; degrades to a
+      "no specifications found" warning rather than a hard error),
+    * any JSON → :class:`BIMQParser` (handles ``concept_tree``/``elements``
+      and bare requirement arrays),
+    * plain text → :class:`RevitSPParser` (tab-separated parameter rows).
+
+    A genuinely unknown label still raises ``ValueError`` so the caller can
+    surface an actionable message.
+    """
+    if format_name == "IDS" or format_name in ("GenericXML", "MVD", "ArchiCAD"):
         from app.modules.bim_requirements.parsers.ids_parser import IDSParser
 
         return IDSParser()
@@ -37,16 +56,20 @@ def _get_parser(format_name: str) -> Any:
         from app.modules.bim_requirements.parsers.excel_parser import ExcelCSVParser
 
         return ExcelCSVParser()
-    elif format_name == "RevitSP":
+    elif format_name in ("RevitSP", "PlainText"):
         from app.modules.bim_requirements.parsers.revit_sp_parser import RevitSPParser
 
         return RevitSPParser()
-    elif format_name == "BIMQ":
+    elif format_name in ("BIMQ", "GenericJSON"):
         from app.modules.bim_requirements.parsers.bimq_parser import BIMQParser
 
         return BIMQParser()
     else:
-        raise ValueError(f"No parser available for format: {format_name}")
+        raise ValueError(
+            f"No parser available for format: {format_name}. "
+            f"Supported: IDS XML, COBie/BIMQ Excel, generic Excel/CSV, "
+            f"Revit shared parameters (.txt), BIMQ JSON."
+        )
 
 
 class BIMRequirementService:
@@ -117,6 +140,21 @@ class BIMRequirementService:
                 pass
 
         if not parse_result.success:
+            # A rejected XXE / DTD / entity-expansion payload is a *malicious
+            # input* (400), not an unprocessable-but-honest file (422). The
+            # IDS parser tags these with field="xml_security" (E-SEC-016).
+            security_errors = [
+                e
+                for e in parse_result.errors
+                if e.get("field") == "xml_security"
+            ]
+            if security_errors:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=security_errors[0].get(
+                        "msg", "XML rejected for security reasons."
+                    ),
+                )
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(

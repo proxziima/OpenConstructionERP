@@ -132,12 +132,23 @@ class WeatherRecordRepository(_BaseRepository):
         result = await self.session.execute(stmt)
         return list(result.scalars().all()), total
 
-    async def today_for_project(self, project_id: uuid.UUID) -> list[WeatherRecord]:
+    async def for_project_on_day(
+        self,
+        project_id: uuid.UUID,
+        day_start: datetime,
+        day_end: datetime,
+    ) -> list[WeatherRecord]:
+        """Weather records captured within ``[day_start, day_end)``.
+
+        Bounds are a half-open UTC interval so a record captured at exactly
+        midnight of the next day is not double-counted into both days.
+        """
         stmt = (
             select(WeatherRecord)
             .where(WeatherRecord.project_id == project_id)
+            .where(WeatherRecord.captured_at >= day_start)
+            .where(WeatherRecord.captured_at < day_end)
             .order_by(WeatherRecord.captured_at.desc())
-            .limit(24)
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

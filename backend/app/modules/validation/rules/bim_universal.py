@@ -49,7 +49,10 @@ WALL_HAS_THICKNESS = BIMElementRule(
         "cannot be used for takeoff or costing."
     ),
     element_filter={"element_type_startswith": ["wall", "ifcwall"]},
-    require_any_of_quantities=["thickness_m", "thickness", "width_m", "width"],
+    # MUST be a number > 0 — a presence-only check let thickness_m=0 (or the
+    # non-numeric string "0,24") pass and defeated the takeoff/costing
+    # guarantee the rule name makes (E-BIM-010).
+    require_any_positive_quantity=["thickness_m", "thickness", "width_m", "width"],
 )
 
 STRUCTURAL_HAS_MATERIAL = BIMElementRule(
@@ -98,7 +101,8 @@ DOOR_HAS_DIMENSIONS = BIMElementRule(
     ),
     element_filter={"element_type_startswith": ["door", "ifcdoor"]},
     require_any_of_properties=["width", "width_m", "overall_width"],
-    require_any_of_quantities=["width", "width_m", "height", "height_m"],
+    # Dimensions must be positive numbers, not merely present (E-BIM-010).
+    require_any_positive_quantity=["width", "width_m", "height", "height_m"],
 )
 
 WINDOW_HAS_DIMENSIONS = BIMElementRule(
@@ -111,7 +115,8 @@ WINDOW_HAS_DIMENSIONS = BIMElementRule(
     ),
     element_filter={"element_type_startswith": ["window", "ifcwindow"]},
     require_any_of_properties=["width", "width_m", "overall_width"],
-    require_any_of_quantities=["width", "width_m", "height", "height_m"],
+    # Dimensions must be positive numbers, not merely present (E-BIM-010).
+    require_any_positive_quantity=["width", "width_m", "height", "height_m"],
 )
 
 MEP_HAS_SYSTEM = BIMElementRule(

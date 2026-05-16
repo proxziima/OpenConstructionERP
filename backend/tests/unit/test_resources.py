@@ -1691,3 +1691,225 @@ async def test_import_timecards_reports_invalid_rows() -> None:
     # Error rows preserve the row index
     error_indexes = {e["row"] for e in result["errors"]}
     assert error_indexes == {1, 2, 3}
+
+
+# ── Regression: dashboard surfaces a *running proposed* assignment ───────
+
+
+@pytest.mark.asyncio
+async def test_dashboard_includes_running_proposed_assignment() -> None:
+    """A proposed assignment whose window is live right now used to fall
+    into a dead zone — not "active" (status filter excluded proposed) and
+    not "upcoming" (start_at is in the past) — so the drawer could never
+    show its Confirm/Decline buttons. It must now appear under active.
+    """
+    svc = _make_service()
+    r = _make_resource(svc)
+    now = datetime.now(UTC)
+    running_proposed = SimpleNamespace(
+        id=uuid.uuid4(),
+        resource_id=r.id,
+        project_id=PROJECT_ID,
+        task_id=None,
+        work_order_id=None,
+        start_at=now - timedelta(hours=2),
+        end_at=now + timedelta(hours=6),
+        allocation_percent=100,
+        status="proposed",
+        cost_rate=Decimal("0"),
+        currency="",
+        notes="",
+        created_by=None,
+        metadata_={},
+        created_at=now,
+        updated_at=now,
+    )
+    svc.assignment_repo.rows[running_proposed.id] = running_proposed
+    payload = await svc.resource_dashboard(r.id)
+    active_ids = {a.id for a in payload["active_assignments"]}
+    upcoming_ids = {a.id for a in payload["upcoming_assignments"]}
+    assert running_proposed.id in active_ids
+    assert running_proposed.id not in upcoming_ids
+
+
+@pytest.mark.asyncio
+async def test_dashboard_future_proposed_still_upcoming() -> None:
+    """A proposed assignment that has not started yet stays in upcoming."""
+    svc = _make_service()
+    r = _make_resource(svc)
+    now = datetime.now(UTC)
+    future = SimpleNamespace(
+        id=uuid.uuid4(),
+        resource_id=r.id,
+        project_id=PROJECT_ID,
+        task_id=None,
+        work_order_id=None,
+        start_at=now + timedelta(days=3),
+        end_at=now + timedelta(days=4),
+        allocation_percent=100,
+        status="proposed",
+        cost_rate=Decimal("0"),
+        currency="",
+        notes="",
+        created_by=None,
+        metadata_={},
+        created_at=now,
+        updated_at=now,
+    )
+    svc.assignment_repo.rows[future.id] = future
+    payload = await svc.resource_dashboard(r.id)
+    assert future.id in {a.id for a in payload["upcoming_assignments"]}
+    assert future.id not in {a.id for a in payload["active_assignments"]}
+
+
+# ── Regression: notes-only PATCH on an overlapping row is not 409'd ──────
+
+
+@pytest.mark.asyncio
+async def test_update_assignment_notes_only_skips_conflict_check() -> None:
+    """Editing only the notes of an assignment that already overlaps a
+    sibling at 100% must succeed. The edit modal always resends
+    start/end/alloc, so the old "key present in payload" trigger
+    spuriously blocked the save with a 409.
+    """
+    svc = _make_service()
+    r = _make_resource(svc)
+    from app.modules.resources.schemas import AssignmentUpdate
+
+    start = datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
+    end = datetime(2026, 6, 1, 17, 0, tzinfo=UTC)
+    common = {
+        "resource_id": r.id,
+        "start_at": start,
+        "end_at": end,
+        "allocation_percent": 100,
+        "status": "confirmed",
+        "project_id": PROJECT_ID,
+        "task_id": None,
+        "work_order_id": None,
+        "cost_rate": Decimal("0"),
+        "currency": "",
+        "notes": "",
+        "created_by": None,
+        "metadata_": {},
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    target = SimpleNamespace(id=uuid.uuid4(), **common)
+    sibling = SimpleNamespace(id=uuid.uuid4(), **common)
+    svc.assignment_repo.rows[target.id] = target
+    svc.assignment_repo.rows[sibling.id] = sibling
+
+    updated = await svc.update_assignment(
+        target.id,
+        AssignmentUpdate(
+            notes="just a note tweak",
+            start_at=start,
+            end_at=end,
+            allocation_percent=100,
+        ),
+    )
+    assert updated.notes == "just a note tweak"
+
+
+@pytest.mark.asyncio
+async def test_update_assignment_real_reschedule_still_conflict_checked() -> None:
+    """Genuinely moving an assignment so it overlaps a 100% sibling must
+    still raise — the fix must not weaken over-allocation protection.
+    """
+    svc = _make_service()
+    r = _make_resource(svc)
+    from app.modules.resources.schemas import AssignmentUpdate
+
+    sibling = SimpleNamespace(
+        id=uuid.uuid4(),
+        resource_id=r.id,
+        start_at=datetime(2026, 6, 2, 8, 0, tzinfo=UTC),
+        end_at=datetime(2026, 6, 2, 17, 0, tzinfo=UTC),
+        allocation_percent=100,
+        status="confirmed",
+        project_id=PROJECT_ID,
+        task_id=None,
+        work_order_id=None,
+        cost_rate=Decimal("0"),
+        currency="",
+        notes="",
+        created_by=None,
+        metadata_={},
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    target = SimpleNamespace(
+        id=uuid.uuid4(),
+        resource_id=r.id,
+        start_at=datetime(2026, 6, 5, 8, 0, tzinfo=UTC),
+        end_at=datetime(2026, 6, 5, 17, 0, tzinfo=UTC),
+        allocation_percent=100,
+        status="confirmed",
+        project_id=PROJECT_ID,
+        task_id=None,
+        work_order_id=None,
+        cost_rate=Decimal("0"),
+        currency="",
+        notes="",
+        created_by=None,
+        metadata_={},
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    svc.assignment_repo.rows[sibling.id] = sibling
+    svc.assignment_repo.rows[target.id] = target
+
+    with pytest.raises(ResourceConflictError):
+        await svc.update_assignment(
+            target.id,
+            AssignmentUpdate(
+                start_at=datetime(2026, 6, 2, 9, 0, tzinfo=UTC),
+                end_at=datetime(2026, 6, 2, 12, 0, tzinfo=UTC),
+            ),
+        )
+
+
+# ── Coverage: find_candidates delegates to the repo matcher ─────────────
+
+
+@pytest.mark.asyncio
+async def test_find_candidates_delegates_to_repository() -> None:
+    """find_candidates was previously uncovered. It must forward its
+    arguments to the repository's availability matcher and return its
+    result verbatim.
+    """
+    svc = _make_service()
+    skill = uuid.uuid4()
+    sentinel = _make_resource(svc, "CAND-1")
+    captured: dict[str, Any] = {}
+
+    async def _fake(
+        *,
+        skill_ids: list[uuid.UUID],
+        start: datetime,
+        end: datetime,
+        exclude_ids: list[uuid.UUID] | None = None,
+        limit: int = 100,
+    ) -> list[Any]:
+        captured.update(
+            skill_ids=skill_ids,
+            start=start,
+            end=end,
+            exclude_ids=exclude_ids,
+            limit=limit,
+        )
+        return [sentinel]
+
+    svc.assignment_repo.find_available_resources = _fake  # type: ignore[assignment]
+    start = datetime(2026, 7, 1, 8, 0, tzinfo=UTC)
+    end = datetime(2026, 7, 1, 17, 0, tzinfo=UTC)
+    out = await svc.find_candidates(
+        [skill], start, end, exclude_ids=[sentinel.id], limit=5
+    )
+    assert out == [sentinel]
+    assert captured["skill_ids"] == [skill]
+    assert captured["start"] == start
+    assert captured["end"] == end
+    assert captured["exclude_ids"] == [sentinel.id]
+    assert captured["limit"] == 5

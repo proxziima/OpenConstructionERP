@@ -276,12 +276,19 @@ async def diary_pdf_stub(
 async def weather_today(
     session: SessionDep,
     project_id: uuid.UUID = Query(...),
+    day: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("daily_diary.read")),
     service: DailyDiaryService = Depends(_get_service),
 ) -> list[WeatherRecordResponse]:
+    """Weather records for a single calendar day (defaults to today, UTC).
+
+    ``day`` must be a ``YYYY-MM-DD`` string; the diary UI passes the
+    currently-viewed diary's date so a back-dated diary shows *its* weather
+    rather than the most-recent reading of any date.
+    """
     await verify_project_access(project_id, user_id, session)
-    items = await service.weather_repo.today_for_project(project_id)
+    items = await service.weather_for_day(project_id, day)
     return [WeatherRecordResponse.model_validate(i) for i in items]
 
 
@@ -368,6 +375,25 @@ async def create_entry(
     await verify_project_access(diary.project_id, user_id, session)
     entry = await service.create_entry(data)
     return DiaryEntryResponse.model_validate(entry)
+
+
+@router.get(
+    "/diaries/{diary_id}/entries",
+    response_model=list[DiaryEntryResponse],
+)
+async def list_entries(
+    diary_id: uuid.UUID,
+    session: SessionDep,
+    entry_type: str | None = Query(default=None),
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("daily_diary.read")),
+    service: DailyDiaryService = Depends(_get_service),
+) -> list[DiaryEntryResponse]:
+    """List all entries for a diary, chronologically (entry_time asc)."""
+    diary = await service.get_diary(diary_id)
+    await verify_project_access(diary.project_id, user_id, session)
+    entries = await service.list_entries(diary_id, entry_type=entry_type)
+    return [DiaryEntryResponse.model_validate(e) for e in entries]
 
 
 @router.post(

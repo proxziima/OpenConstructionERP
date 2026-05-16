@@ -171,6 +171,13 @@ class AccessRuleResponse(BaseModel):
     updated_at: datetime
 
 
+class AccessRuleList(BaseModel):
+    """Paginated list of access rules for the internal-admin surface."""
+
+    items: list[AccessRuleResponse] = Field(default_factory=list)
+    total: int = 0
+
+
 # ── Notifications ─────────────────────────────────────────────────────────
 
 
@@ -304,6 +311,7 @@ class PortalChangeOrderList(BaseModel):
 
 __all__ = [
     "AccessRuleCreate",
+    "AccessRuleList",
     "AccessRuleResponse",
     "DocumentAccessLogCreate",
     "DocumentAccessLogEntry",

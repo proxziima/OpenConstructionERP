@@ -1855,21 +1855,36 @@ async def get_group_elements(
                 seen.add(k)
                 all_cols.append(k)
 
-    # Compute totals for numeric columns
+    # Compute totals for numeric columns.
+    #
+    # D-TKC-030 — the v1.9.0 code flagged a column numeric the moment
+    # ONE cell parsed as a float, then silently skipped every
+    # non-parseable cell. A column like ``["200", "300mm", "250"]``
+    # produced ``450`` presented as a quantity total (the "300mm" row
+    # vanished). We now require the column to be PREDOMINANTLY numeric
+    # (>50 % of its non-null cells parse) before totalling, and report
+    # how many cells were excluded so a contaminated total is visible.
     totals: dict[str, float] = {}
+    totals_excluded: dict[str, int] = {}
     for col in all_cols:
         numeric_sum = 0.0
-        is_numeric = False
+        numeric_count = 0
+        non_null_count = 0
         for el in matching:
             val = el.get(col)
-            if val is not None:
-                try:
-                    numeric_sum += float(val)
-                    is_numeric = True
-                except (ValueError, TypeError):
-                    pass
-        if is_numeric:
+            if val is None:
+                continue
+            non_null_count += 1
+            try:
+                numeric_sum += float(val)
+                numeric_count += 1
+            except (ValueError, TypeError):
+                pass
+        if numeric_count and numeric_count > non_null_count * 0.5:
             totals[col] = round(numeric_sum, 4)
+            excluded = non_null_count - numeric_count
+            if excluded:
+                totals_excluded[col] = excluded
 
     return {
         "group_key": body.group_key,
@@ -1877,6 +1892,7 @@ async def get_group_elements(
         "columns": all_cols,
         "elements": matching[:500],  # Limit to 500 elements for performance
         "totals": totals,
+        "totals_excluded_non_numeric": totals_excluded,
         "truncated": len(matching) > 500,
     }
 
@@ -1976,8 +1992,36 @@ async def create_boq_from_cad_qto(
     db_session.add(boq)
     await db_session.flush()
 
-    # Create positions from groups
+    # D-TKC-012 — canonical UoM per measurable dimension.
+    #
+    # The v1.9.0 code set ``unit`` to the literal column name
+    # ("volume"/"area"/"length") when no ``unit_label`` was configured,
+    # and only ever transferred the FIRST of volume/area/length to the
+    # BOQ — silently dropping the other two quantities (they survived
+    # only inside ``metadata.cad_sums``). We now:
+    #
+    #   * map each measurable column to a real UoM (volume→m3,
+    #     area→m2, length→m) and never leak the column name as a unit;
+    #   * emit a SEPARATE position for every measurable dimension that
+    #     has a non-zero sum, so area & length are no longer lost;
+    #   * fall back to a single count ("pcs") position only when the
+    #     group has no measurable geometric quantity at all.
+    _COL_TO_UOM = {"volume": "m3", "area": "m2", "length": "m"}
+
+    def _resolve_uom(col_name: str) -> str:
+        """Real UoM for a measurable column.
+
+        Honour an explicit ``unit_label`` if the operator configured
+        one (e.g. "cuyd"), otherwise fall back to the canonical metric
+        token — NEVER the bare column name.
+        """
+        label = str(unit_labels.get(col_name, "")).strip()
+        if label:
+            return label
+        return _COL_TO_UOM.get(col_name, col_name)
+
     position_count = 0
+    sort_seq = 0
     for idx, group in enumerate(groups):
         # Skip empty groups
         sums = group.get("sums", {})
@@ -1996,35 +2040,72 @@ async def create_boq_from_cad_qto(
                 parts.append(cleaned)
         description = " — ".join(parts) if parts else group.get("key", f"Group {idx + 1}")
 
-        # Determine best unit and quantity (volume > area > length > count)
-        unit = "pcs"
-        quantity = float(count)
-        for col_name in ["volume", "area", "length"]:
-            if col_name in sums and sums[col_name] > 0:
-                unit = unit_labels.get(col_name, col_name)
-                quantity = round(sums[col_name], 4)
-                break
+        # One position per measurable dimension with a non-zero sum.
+        measurable: list[tuple[str, float]] = []
+        for col_name in ("volume", "area", "length"):
+            raw = sums.get(col_name, 0)
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                val = 0.0
+            if val > 0:
+                measurable.append((col_name, round(val, 4)))
 
-        ordinal = f"{idx + 1:03d}"
-
-        position = Position(
-            boq_id=boq.id,
-            ordinal=ordinal,
-            description=description,
-            unit=unit,
-            quantity=str(quantity),
-            unit_rate="0",
-            total="0",
-            source="cad_import",
-            sort_order=idx,
-            metadata_={
-                "cad_source": "cad_qto",
-                "cad_count": count,
-                "cad_sums": sums,
-            },
-        )
-        db_session.add(position)
-        position_count += 1
+        if measurable:
+            for sub_idx, (col_name, quantity) in enumerate(measurable):
+                # Stable, collision-free ordinal even when one group
+                # produces several positions ("003" / "003.2" / …).
+                ordinal = (
+                    f"{idx + 1:03d}"
+                    if sub_idx == 0
+                    else f"{idx + 1:03d}.{sub_idx + 1}"
+                )
+                desc = (
+                    description
+                    if len(measurable) == 1
+                    else f"{description} ({col_name})"
+                )
+                position = Position(
+                    boq_id=boq.id,
+                    ordinal=ordinal,
+                    description=desc,
+                    unit=_resolve_uom(col_name),
+                    quantity=str(quantity),
+                    unit_rate="0",
+                    total="0",
+                    source="cad_import",
+                    sort_order=sort_seq,
+                    metadata_={
+                        "cad_source": "cad_qto",
+                        "cad_count": count,
+                        "cad_sums": sums,
+                        "cad_dimension": col_name,
+                    },
+                )
+                db_session.add(position)
+                position_count += 1
+                sort_seq += 1
+        else:
+            # No measurable geometry — a genuine count position.
+            position = Position(
+                boq_id=boq.id,
+                ordinal=f"{idx + 1:03d}",
+                description=description,
+                unit="pcs",
+                quantity=str(float(count)),
+                unit_rate="0",
+                total="0",
+                source="cad_import",
+                sort_order=sort_seq,
+                metadata_={
+                    "cad_source": "cad_qto",
+                    "cad_count": count,
+                    "cad_sums": sums,
+                },
+            )
+            db_session.add(position)
+            position_count += 1
+            sort_seq += 1
 
     await db_session.flush()
 
@@ -2305,6 +2386,20 @@ async def cad_data_describe(
             col_info["max"] = round(max(numeric_vals), 4)
             col_info["mean"] = round(_mean(numeric_vals), 4)
             col_info["sum"] = round(sum(numeric_vals), 4)
+            # D-TKC-025 — a column is treated as numeric at >50 %
+            # parseable, then min/max/mean/sum use ONLY the numeric
+            # subset. Silently excluding the non-numeric rows makes the
+            # reported sum/mean misrepresent the column. Surface how
+            # many values were dropped so the figure is honest.
+            excluded = non_null_count - len(numeric_vals)
+            col_info["numeric_count"] = len(numeric_vals)
+            col_info["excluded_non_numeric"] = excluded
+            if excluded:
+                col_info["stats_note"] = (
+                    f"min/max/mean/sum computed over {len(numeric_vals)} "
+                    f"numeric value(s); {excluded} non-numeric value(s) "
+                    f"excluded"
+                )
         else:
             # Find the most common value
             freq: dict[str, int] = {}
@@ -2551,19 +2646,36 @@ async def cad_data_value_counts(
 
     # Count values
     freq: dict[str, int] = {}
+    null_count = 0
     for el in elements:
         raw = el.get(body.column)
-        key = str(raw) if raw is not None else "(null)"
+        if raw is None:
+            null_count += 1
+            key = "(null)"
+        else:
+            key = str(raw)
         freq[key] = freq.get(key, 0) + 1
 
     total = len(elements)
+    non_null_total = total - null_count
     sorted_values = sorted(freq.items(), key=lambda kv: kv[1], reverse=True)
 
+    # D-TKC-026 — the percentage base is len(elements) (all rows incl.
+    # the "(null)" bucket), which differs from pandas
+    # value_counts(dropna=True). Both bases are now reported per row:
+    # ``percentage`` (over all rows, back-compat) and
+    # ``percentage_of_non_null`` (pandas-like, dropna semantics) so the
+    # caller can choose without the denominator being ambiguous.
     values = [
         {
             "value": val,
             "count": cnt,
             "percentage": round(cnt / total * 100, 1) if total else 0,
+            "percentage_of_non_null": (
+                0
+                if val == "(null)" or not non_null_total
+                else round(cnt / non_null_total * 100, 1)
+            ),
         }
         for val, cnt in sorted_values[: body.limit]
     ]
@@ -2571,6 +2683,8 @@ async def cad_data_value_counts(
     return {
         "column": body.column,
         "total": total,
+        "null_count": null_count,
+        "non_null_total": non_null_total,
         "values": values,
     }
 
@@ -2618,7 +2732,24 @@ async def cad_data_elements(
                 status_code=400,
                 detail=f"Unknown filter column: '{filter_column}'. Available: {sorted(all_columns)}",
             )
-        elements = [el for el in elements if str(el.get(filter_column, "")) == filter_value]
+
+        # D-TKC-018 — numeric-aware equality. The v1.9.0 code did
+        # ``str(el.get(col, "")) == filter_value`` so a filter value of
+        # "3" never matched a stored ``3.0`` and "3.1" never matched
+        # ``3.10`` — the user got an empty result with no hint. We try
+        # a numeric comparison first (when BOTH the cell and the typed
+        # value parse as numbers) and only fall back to the exact
+        # string comparison otherwise.
+        fv_is_num = _is_numeric(filter_value)
+        fv_num = _to_float(filter_value) if fv_is_num else None
+
+        def _matches(el: dict) -> bool:
+            raw = el.get(filter_column)
+            if fv_is_num and raw is not None and _is_numeric(raw):
+                return _to_float(raw) == fv_num
+            return str(raw if raw is not None else "") == filter_value
+
+        elements = [el for el in elements if _matches(el)]
 
     # --- Sort ---
     if sort_by is not None:
@@ -2629,14 +2760,23 @@ async def cad_data_elements(
             )
         reverse = sort_order == "desc"
 
-        def _sort_key(el: dict) -> tuple:
+        # D-TKC-009 — a column that mixes numbers and strings (very
+        # common in real CAD/IFC exports: ``[12, 'N/A', 7]``) used to
+        # 500 with "TypeError: '<' not supported between float and
+        # str" because the old key returned ``(0, float)`` for numbers
+        # and ``(0, str)`` for strings — Python then compared float vs
+        # str on the tuple tie. We now bucket by type first so values
+        # of different types never get compared to each other:
+        #   bucket 0 = numbers (sorted numerically)
+        #   bucket 1 = strings (sorted lexically, case-insensitive)
+        #   bucket 2 = None / missing (always last)
+        def _sort_key(el: dict) -> tuple[int, float, str]:
             v = el.get(sort_by)
             if v is None:
-                # None sorts last regardless of direction
-                return (1, "")
+                return (2, 0.0, "")
             if _is_numeric(v):
-                return (0, _to_float(v))
-            return (0, str(v).lower())
+                return (0, _to_float(v), "")
+            return (1, 0.0, str(v).lower())
 
         elements = sorted(elements, key=_sort_key, reverse=reverse)
 
@@ -2752,13 +2892,29 @@ async def cad_data_aggregate(
     result_groups.sort(key=lambda g: tuple(g["key"].get(c, "") for c in body.group_by))
 
     # --- Compute totals across all elements ---
+    # D-TKC-011 — for ``sum``/``count`` the totals row IS the sum of
+    # the per-group rows, but for ``avg``/``min``/``max`` it is a
+    # GLOBAL statistic over every element and does NOT reconcile with
+    # any combination of the group rows. Presenting it bare as "Total"
+    # implies additivity. We compute it the same way but explicitly
+    # label, per column, whether the figure is additive or a global
+    # statistic so the UI can render it honestly ("Overall avg" vs
+    # "Total").
     totals: dict[str, float] = {}
+    totals_semantics: dict[str, str] = {}
     for col, func in body.aggregations.items():
         totals[col] = _aggregate(elements, col, func)
+        fl = func.lower()
+        totals_semantics[col] = (
+            "additive"
+            if fl in ("sum", "count")
+            else "global_statistic"
+        )
 
     return {
         "groups": result_groups,
         "totals": totals,
+        "totals_semantics": totals_semantics,
         "total_count": len(elements),
     }
 

@@ -147,7 +147,7 @@ async def list_packages(
     user_id: CurrentUserId,
     project_id: uuid.UUID = Query(...),
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=100),
+    limit: int = Query(default=50, ge=1, le=500),
     status_filter: str | None = Query(default=None, alias="status"),
     _perm: None = Depends(RequirePermission("bid_management.read")),
 ) -> list[BidPackageResponse]:

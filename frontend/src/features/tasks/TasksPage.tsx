@@ -36,6 +36,7 @@ import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import {
   fetchTasks,
+  fetchMyTasks,
   createTask,
   updateTask,
   completeTask,
@@ -138,6 +139,31 @@ function saveCustomStatuses(statuses: CustomStatus[]): void {
 }
 
 const BUILTIN_STATUSES: TaskStatus[] = ['draft', 'open', 'in_progress', 'completed'];
+
+/**
+ * Allowed status transitions — kept in lockstep with the backend state
+ * machine (`backend/app/modules/tasks/service.py:_TASK_STATUS_TRANSITIONS`).
+ * The dropdown only offers the current status plus its legal targets so
+ * the UI never produces a transition the server rejects with HTTP 400.
+ */
+const STATUS_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
+  draft: ['open'],
+  open: ['in_progress', 'completed', 'draft'],
+  in_progress: ['completed', 'open'],
+  completed: ['open', 'in_progress'],
+};
+
+/** Built-in status options to show for a task currently in `current`:
+ *  the current value itself plus every legal next state. */
+function STATUS_OPTIONS_FOR(current: string): TaskStatus[] {
+  const cur = current as TaskStatus;
+  const targets = STATUS_TRANSITIONS[cur] ?? [];
+  const known = BUILTIN_STATUSES.includes(cur);
+  // For an unknown/custom current status keep the full built-in list so
+  // the user can move the task back onto a standard track.
+  const base = known ? [cur, ...targets] : [...BUILTIN_STATUSES];
+  return Array.from(new Set(base));
+}
 
 /** Get the color class for any task type, including custom categories. */
 function getTypeColor(taskType: string, customCategories: CustomCategory[]): string {
@@ -485,14 +511,16 @@ const TaskCard = React.memo(function TaskCard({
 }) {
   const { t } = useTranslation();
 
-  const isOverdue =
-    task.due_date &&
-    task.status !== 'completed' &&
-    new Date(task.due_date) < new Date();
+  // Authoritative overdue flag is computed server-side (string date
+  // compare in UTC, "due today" is NOT overdue). The old client-side
+  // `new Date(due_date) < new Date()` flagged same-day tasks as overdue.
+  const isOverdue = task.is_overdue;
 
   const checklistTotal = task.checklist?.length ?? 0;
-  const checklistDone = task.checklist?.filter((c) => c.checked).length ?? 0;
-  const checklistPercent = checklistTotal > 0 ? Math.round((checklistDone / checklistTotal) * 100) : 0;
+  const checklistDone =
+    task.checklist?.filter((c) => c.completed).length ?? 0;
+  const checklistPercent =
+    checklistTotal > 0 ? Math.round((checklistDone / checklistTotal) * 100) : 0;
 
   const pb = PRIORITY_BADGE[task.priority as TaskPriority] ?? PRIORITY_BADGE.normal;
 
@@ -617,6 +645,11 @@ const TaskCard = React.memo(function TaskCard({
               <Button variant="ghost" size="sm" onClick={() => onComplete(task.id)} className="!p-0.5 text-green-600 hover:text-green-700 h-auto" title={t('tasks.mark_complete', { defaultValue: 'Complete' })}>
                 <CheckCircle2 size={10} />
               </Button>
+              {/* Only offer transitions the backend state machine accepts
+                  (see service._TASK_STATUS_TRANSITIONS). Offering illegal
+                  targets just produces a 400 + optimistic rollback that
+                  reads as "drag/dropdown does nothing". Custom statuses
+                  have no server-side guard so they're always allowed. */}
               <select
                 value={task.status}
                 onChange={(e) => onStatusChange(task.id, e.target.value as TaskStatus)}
@@ -624,10 +657,16 @@ const TaskCard = React.memo(function TaskCard({
                 aria-label={t('tasks.change_status', { defaultValue: 'Change status' })}
                 className="text-[9px] py-0 px-0.5 rounded border border-border-light bg-surface-secondary text-content-tertiary focus:outline-none focus:ring-1 focus:ring-oe-blue h-4"
               >
-                <option value="draft">{t('tasks.status_draft', { defaultValue: 'Draft' })}</option>
-                <option value="open">{t('tasks.status_open', { defaultValue: 'Open' })}</option>
-                <option value="in_progress">{t('tasks.status_in_progress', { defaultValue: 'In Progress' })}</option>
-                <option value="completed">{t('tasks.status_completed', { defaultValue: 'Completed' })}</option>
+                {STATUS_OPTIONS_FOR(task.status).map((s) => (
+                  <option key={s} value={s}>
+                    {t(`tasks.status_${s}`, {
+                      defaultValue: s
+                        .split('_')
+                        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+                        .join(' '),
+                    })}
+                  </option>
+                ))}
                 {customStatuses.map((cs) => (
                   <option key={cs.name} value={cs.name}>{cs.label}</option>
                 ))}
@@ -636,9 +675,11 @@ const TaskCard = React.memo(function TaskCard({
           ) : (
             <CheckCircle2 size={10} className="text-green-500" />
           )}
-          <Button variant="ghost" size="sm" onClick={() => onEdit(task)} className="!p-0.5 text-content-quaternary hover:text-oe-blue h-auto">
-            <Pencil size={10} />
-          </Button>
+          {task.status !== 'completed' && (
+            <Button variant="ghost" size="sm" onClick={() => onEdit(task)} className="!p-0.5 text-content-quaternary hover:text-oe-blue h-auto" title={t('common.edit', { defaultValue: 'Edit' })}>
+              <Pencil size={10} />
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={() => onDelete(task.id)} className="!p-0.5 text-content-quaternary hover:text-red-500 h-auto">
             <Trash2 size={10} />
           </Button>
@@ -867,37 +908,45 @@ export function TasksPage() {
   const projectId = routeProjectId || activeProjectId || projects[0]?.id || '';
   const projectName = projects.find((p) => p.id === projectId)?.name || '';
 
+  // "My Tasks" is resolved server-side from the JWT (the client doesn't
+  // carry the user UUID), so it uses a different endpoint and cache key.
   const { data: tasks = [], isLoading } = useQuery({
-    queryKey: ['tasks', projectId, typeFilter],
+    queryKey: myTasksOnly
+      ? ['tasks', 'mine']
+      : ['tasks', projectId, typeFilter],
     queryFn: () =>
-      fetchTasks({
-        project_id: projectId,
-        task_type: typeFilter || undefined,
-      }),
-    enabled: !!projectId,
+      myTasksOnly
+        ? fetchMyTasks()
+        : fetchTasks({
+            project_id: projectId,
+            task_type: typeFilter || undefined,
+          }),
+    enabled: myTasksOnly || !!projectId,
   });
 
   // Client-side filters
   const filtered = useMemo(() => {
     let list = tasks;
+    // When "My Tasks" is active the type tabs still narrow the cross-
+    // project list (the my-tasks endpoint isn't type-filtered server-side).
+    if (myTasksOnly && typeFilter) {
+      list = list.filter((item) => item.task_type === typeFilter);
+    }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       list = list.filter(
         (item) =>
           item.title.toLowerCase().includes(q) ||
-          item.description.toLowerCase().includes(q) ||
+          (item.description ?? '').toLowerCase().includes(q) ||
           (item.assigned_to_name && item.assigned_to_name.toLowerCase().includes(q)),
       );
     }
-    if (myTasksOnly) {
-      // Filter tasks assigned to or created by the current user
-      // Uses a simple heuristic: tasks where assigned_to or created_by is set
-      list = list.filter(
-        (item) => item.assigned_to != null || item.created_by != null,
-      );
-    }
+    // Note: the actual "assigned to / created by me" filtering happens
+    // server-side via the my-tasks endpoint (see the query above). The
+    // old client-side heuristic ("any task with an assignee or creator")
+    // matched essentially every task and was effectively a no-op.
     return list;
-  }, [tasks, searchQuery, myTasksOnly]);
+  }, [tasks, searchQuery, myTasksOnly, typeFilter]);
 
   // Group by status (built-in + custom)
   const grouped = useMemo(() => {
@@ -998,12 +1047,19 @@ export function TasksPage() {
     mutationFn: ({ id, data }: { id: string; data: TaskFormData }) => {
       const assignee = data.assigned_to.trim();
       const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(assignee);
+      // Preserve any non-task metadata the task already carried (e.g.
+      // `source`, DWG pins) and only overwrite the assignee_name slot.
+      const baseMeta = (editingTask?.metadata ?? {}) as Record<string, unknown>;
+      const { assignee_name: _drop, ...keepMeta } = baseMeta;
+      const metadata: Record<string, unknown> = { ...keepMeta };
+      if (assignee && !isUuid) metadata.assignee_name = assignee;
       return updateTask(id, {
         title: data.title,
         description: data.description || undefined,
         task_type: data.task_type,
         priority: data.priority,
-        assigned_to: isUuid ? assignee : null,
+        responsible_id: isUuid ? assignee : null,
+        metadata,
         due_date: data.due_date || null,
       });
     },
@@ -1114,13 +1170,40 @@ export function TasksPage() {
 
   const handleStatusChange = useCallback(
     (id: string, status: TaskStatus | string) => {
+      const current = tasks.find((tsk) => tsk.id === id);
+      if (current && current.status === status) return; // no-op
+
+      // Reject illegal built-in transitions up-front with a precise
+      // message instead of letting the optimistic update flash and roll
+      // back behind a generic "Could not change status" toast. Custom
+      // statuses have no server-side state machine, so any move that
+      // touches a non-built-in status is allowed through.
+      const curStatus = (current?.status ?? '') as TaskStatus;
+      const bothBuiltin =
+        BUILTIN_STATUSES.includes(curStatus) &&
+        BUILTIN_STATUSES.includes(status as TaskStatus);
+      if (current && bothBuiltin) {
+        const allowed = STATUS_TRANSITIONS[curStatus] ?? [];
+        if (!allowed.includes(status as TaskStatus)) {
+          addToast({
+            type: 'warning',
+            title: t('tasks.illegal_transition', {
+              defaultValue: 'Cannot move from "{{from}}" to "{{to}}"',
+              from: t(`tasks.status_${curStatus}`, { defaultValue: curStatus }),
+              to: t(`tasks.status_${status}`, { defaultValue: String(status) }),
+            }),
+          });
+          return;
+        }
+      }
+
       if (status === 'completed') {
         handleComplete(id);
       } else {
         statusMut.mutate({ id, status });
       }
     },
-    [statusMut, handleComplete],
+    [statusMut, handleComplete, tasks, addToast, t],
   );
 
   // Drag-and-drop handlers
@@ -1311,8 +1394,9 @@ export function TasksPage() {
         </div>
       </div>
 
-      {/* No-project warning */}
-      {!projectId && (
+      {/* No-project warning — suppressed in "My Tasks" mode, which is
+          cross-project and doesn't require a selected project. */}
+      {!projectId && !myTasksOnly && (
         <div className="mb-4 flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 px-4 py-3">
           <AlertTriangle size={18} className="text-amber-600 shrink-0" />
           <div>
@@ -1322,7 +1406,7 @@ export function TasksPage() {
         </div>
       )}
 
-      {projectId ? (
+      {projectId || myTasksOnly ? (
       <>
       {/* Type filter tabs */}
       <div className="mb-4 flex items-center gap-1 overflow-x-auto pb-1">

@@ -120,6 +120,17 @@ function todayIso(offsetDays = 0): string {
   return `${y}-${m}-${day}`;
 }
 
+// `<input type="date">` yields a bare `YYYY-MM-DD`, but the backend's
+// `scheduled_for` is validated against a full ISO-8601 *datetime* pattern.
+// Sending the bare date 422s the request. Normalise a date-only string to a
+// UTC midnight datetime so the work-order create / reschedule call validates.
+function dateToIsoDatetime(date: string): string | undefined {
+  if (!date) return undefined;
+  // Already a datetime (defensive — future callers may pass one through).
+  if (date.includes('T') || date.includes(' ')) return date;
+  return `${date}T00:00:00+00:00`;
+}
+
 /* ─── Page ─── */
 
 export function ServicePage() {
@@ -1223,7 +1234,9 @@ function CreateModal({
     period_end: todayIso(365),
     sla_tier: 'standard',
     value: '0',
-    currency: 'EUR',
+    // Data-driven, never hardcoded to EUR — the backend default is "" and the
+    // tenant/contract supplies the currency. Placeholder is a hint only.
+    currency: '',
   });
 
   // Asset
@@ -1286,7 +1299,13 @@ function CreateModal({
         addToast({ type: 'success', title: t('service.ticket_created', { defaultValue: 'Ticket created' }) });
         qc.invalidateQueries({ queryKey: ['service', 'tickets'] });
       } else if (kind === 'work_orders') {
-        await createWorkOrder(woForm);
+        await createWorkOrder({
+          ticket_id: woForm.ticket_id,
+          scheduled_for: dateToIsoDatetime(woForm.scheduled_for),
+          // Don't send an empty technician_id — the backend caps it at 36
+          // chars but an empty string is meaningless and muddies audit.
+          technician_id: woForm.technician_id.trim() || undefined,
+        });
         addToast({ type: 'success', title: t('service.wo_created', { defaultValue: 'Work order created' }) });
         qc.invalidateQueries({ queryKey: ['service', 'workOrders'] });
       } else if (kind === 'contracts') {

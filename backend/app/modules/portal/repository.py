@@ -108,6 +108,41 @@ class PortalAccessRuleRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_rules(
+        self,
+        *,
+        portal_user_id: uuid.UUID | None = None,
+        resource_type: str | None = None,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> tuple[list[PortalAccessRule], int]:
+        """Admin-facing paginated list of access rules (optionally filtered).
+
+        Counting is done with a SQL aggregate over the filtered query rather
+        than materialising every row, matching the pattern used by the other
+        repositories in this module.
+        """
+        base = select(PortalAccessRule)
+        if portal_user_id is not None:
+            base = base.where(
+                PortalAccessRule.portal_user_id == portal_user_id,
+            )
+        if resource_type is not None:
+            base = base.where(
+                PortalAccessRule.resource_type == resource_type,
+            )
+
+        count_stmt = select(func.count()).select_from(base.subquery())
+        total = (await self.session.execute(count_stmt)).scalar_one()
+
+        stmt = (
+            base.order_by(PortalAccessRule.granted_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), int(total)
+
     async def create(self, rule: PortalAccessRule) -> PortalAccessRule:
         self.session.add(rule)
         await self.session.flush()

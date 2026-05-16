@@ -43,7 +43,15 @@ export function unitFactorToMetres(units?: string | null): number {
   }
 }
 
-/** Area of a polygon defined by ordered vertices (Shoelace formula). */
+/** Area of a polygon defined by ordered vertices (Shoelace formula).
+ *
+ *  Returns the absolute shoelace magnitude. NOTE: for a *non-simple*
+ *  (self-intersecting) polygon the shoelace sum cancels — a perfect
+ *  "bowtie" returns 0 even though it covers real area. Callers that
+ *  feed a quantity to the user / BOQ should use {@link calculateAreaSafe}
+ *  so the degeneracy is surfaced instead of silently understated
+ *  (D-TKC-015). This raw form is kept for label-placement / sorting /
+ *  hit-test callers that only need a fast number. */
 export function calculateArea(points: { x: number; y: number }[]): number {
   if (points.length < 3) return 0;
   let area = 0;
@@ -58,12 +66,118 @@ export function calculateArea(points: { x: number; y: number }[]): number {
   return Math.abs(area) / 2;
 }
 
-/** Format a measurement value with a unit label. */
+type Pt2 = { x: number; y: number };
+type Seg = [Pt2, Pt2];
+
+/** Orientation sign of the ordered triplet (p, q, r). */
+function orient(p: Pt2, q: Pt2, r: Pt2): number {
+  const v = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+  if (v > 1e-12) return 1;
+  if (v < -1e-12) return -1;
+  return 0;
+}
+
+function onSeg(p: Pt2, q: Pt2, r: Pt2): boolean {
+  return (
+    Math.min(p.x, r.x) - 1e-9 <= q.x &&
+    q.x <= Math.max(p.x, r.x) + 1e-9 &&
+    Math.min(p.y, r.y) - 1e-9 <= q.y &&
+    q.y <= Math.max(p.y, r.y) + 1e-9
+  );
+}
+
+/** Proper segment-segment intersection test (shared endpoints excluded
+ *  — adjacent polygon edges legitimately touch at a vertex). */
+function segmentsIntersect(a: Seg, b: Seg): boolean {
+  const [p1, p2] = a;
+  const [p3, p4] = b;
+  const o1 = orient(p1, p2, p3);
+  const o2 = orient(p1, p2, p4);
+  const o3 = orient(p3, p4, p1);
+  const o4 = orient(p3, p4, p2);
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && onSeg(p1, p3, p2)) return true;
+  if (o2 === 0 && onSeg(p1, p4, p2)) return true;
+  if (o3 === 0 && onSeg(p3, p1, p4)) return true;
+  if (o4 === 0 && onSeg(p3, p2, p4)) return true;
+  return false;
+}
+
+/** `true` when the closed polygon described by `points` has at least
+ *  one pair of non-adjacent edges that cross (a non-simple polygon). */
+export function isSelfIntersecting(points: Pt2[]): boolean {
+  const n = points.length;
+  if (n < 4) return false; // a triangle cannot self-intersect
+  const edges: Seg[] = [];
+  for (let i = 0; i < n; i++) {
+    edges.push([points[i]!, points[(i + 1) % n]!]);
+  }
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      // Skip adjacent edges (share a vertex) and the wrap-around pair.
+      if (j === i || j === i + 1 || (i === 0 && j === n - 1)) continue;
+      if (segmentsIntersect(edges[i]!, edges[j]!)) return true;
+    }
+  }
+  return false;
+}
+
+/** Reason a polygon area could not be trusted, or `null` when fine. */
+export type AreaDegeneracy = 'too_few_points' | 'self_intersecting' | 'zero' | null;
+
+/**
+ * Area of a polygon plus a degeneracy verdict.
+ *
+ * Use this anywhere the area becomes a number the estimator reads or a
+ * BOQ quantity. A self-intersecting "bowtie" trace, fewer than 3
+ * vertices, or a collapsed (zero) polygon are reported instead of being
+ * silently rounded to a wrong/zero figure (D-TKC-015). The UI shows a
+ * warning and lets the user fix the trace rather than booking a wrong
+ * quantity.
+ */
+export function calculateAreaSafe(points: Pt2[]): {
+  area: number;
+  degenerate: AreaDegeneracy;
+} {
+  if (points.length < 3) return { area: 0, degenerate: 'too_few_points' };
+  if (isSelfIntersecting(points)) {
+    return { area: calculateArea(points), degenerate: 'self_intersecting' };
+  }
+  const area = calculateArea(points);
+  if (area <= 1e-9) return { area, degenerate: 'zero' };
+  return { area, degenerate: null };
+}
+
+/** A unit is "composite" (area / volume) when it carries a superscript
+ *  exponent (m², m³). A linear k/m SI prefix is invalid on these:
+ *  1 km² = 1e6 m², not 1e3 — so `1500 m²` must NOT render `1.50 km²`
+ *  (off by 1e6). Detect and never prefix-scale them (D-TKC-006). */
+function isCompositeUnit(unit: string): boolean {
+  return unit.includes('²') || unit.includes('³'); // ² or ³
+}
+
+/** Format a measurement value with a unit label.
+ *
+ *  Linear (length) units get the usual k/m SI prefixes for readability.
+ *  Area/volume units are *never* prefix-scaled — the prefix maths is
+ *  non-linear for them and produced physically wrong labels
+ *  (`1500 m²` → `1.50 km²`). Composite units are shown with adaptive
+ *  fixed precision instead so a large slab area or a tiny patch both
+ *  stay correct and legible. */
 export function formatMeasurement(value: number, unit: string): string {
+  if (!Number.isFinite(value)) return `0 ${unit}`;
+  if (isCompositeUnit(unit)) {
+    const abs = Math.abs(value);
+    if (abs !== 0 && abs < 0.01) return `${value.toPrecision(2)} ${unit}`;
+    if (abs < 1) return `${value.toFixed(4)} ${unit}`;
+    if (abs < 1000) return `${value.toFixed(2)} ${unit}`;
+    // Group thousands instead of a bogus k-prefix.
+    return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${unit}`;
+  }
   if (value >= 1000) {
     return `${(value / 1000).toFixed(2)} k${unit}`;
   }
-  if (value < 0.01) {
+  if (value !== 0 && Math.abs(value) < 0.01) {
     return `${(value * 1000).toFixed(2)} m${unit}`;
   }
   return `${value.toFixed(2)} ${unit}`;

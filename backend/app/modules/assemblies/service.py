@@ -130,6 +130,78 @@ def _str_to_float(value: str | None) -> float:
         return 0.0
 
 
+# Upper bound for an imported component numeric — mirrors
+# ``schemas._NUM_MAX``. Kept local (no cross-module import) so the
+# import path is self-contained; both are 1e12.
+_IMPORT_NUM_MAX = Decimal("1e12")
+
+
+def _parse_import_decimal(raw: object, field: str, idx: int) -> Decimal:
+    """Parse one imported component numeric into a finite, non-negative Decimal.
+
+    The export/import round-trip is a core "no vendor lock-in" guarantee,
+    so this is intentionally liberal about *shape* (accepts native int /
+    float, ASCII-decimal string ``'1.5'``, integer string ``'2'``, and
+    the EU locale comma ``'1,5'``) but strict about *validity*: garbage
+    (``'abc'``, a nested dict / list), non-finite (NaN / Infinity, or a
+    value large enough to overflow), and negatives are rejected with a
+    clean HTTP 422 — never an unhandled ``ValueError`` 500.
+
+    Args:
+        raw: The raw value pulled from the export payload.
+        field: Field name (factor / quantity / unit_cost) for the error.
+        idx: Zero-based component index for the error message.
+
+    Returns:
+        A finite ``Decimal`` >= 0 and <= ``_IMPORT_NUM_MAX``.
+
+    Raises:
+        HTTPException 422 if the value cannot be parsed to a sane number.
+    """
+    if isinstance(raw, (bool, dict, list)):
+        # bool is an int subclass — an explicit True/False is almost
+        # certainly a malformed export, not "1".
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"components[{idx}].{field}: expected a number, got {type(raw).__name__}",
+        )
+    try:
+        if isinstance(raw, (int, float)):
+            dec = Decimal(str(raw))
+        else:
+            text = str(raw).strip()
+            if not text:
+                raise InvalidOperation
+            # EU locale: "1.234,56" → "1234.56"; bare "1,5" → "1.5".
+            if "," in text and "." in text:
+                text = text.replace(".", "").replace(",", ".")
+            elif "," in text:
+                text = text.replace(",", ".")
+            dec = Decimal(text)
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"components[{idx}].{field}: '{raw}' is not a valid number",
+        ) from exc
+
+    if not dec.is_finite():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"components[{idx}].{field}: non-finite values are not allowed",
+        )
+    if dec < 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"components[{idx}].{field}: must be >= 0",
+        )
+    if dec > _IMPORT_NUM_MAX:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"components[{idx}].{field}: exceeds the maximum of {_IMPORT_NUM_MAX:e}",
+        )
+    return dec
+
+
 def _sum_component_totals(components: list[Component]) -> Decimal:
     """Sum all component totals as Decimal."""
     total = Decimal("0")
@@ -594,10 +666,62 @@ class AssemblyService:
         Raises:
             HTTPException 404 if assembly or BOQ not found.
         """
+        from app.modules.boq.repository import BOQRepository
         from app.modules.boq.schemas import PositionCreate
         from app.modules.boq.service import BOQService
+        from app.modules.projects.repository import ProjectRepository
 
         assembly = await self.get_assembly(assembly_id)
+
+        # ── Cross-currency guard (ASM-006) ──────────────────────────────
+        # An assembly priced in EUR dropped into a GBP project's BOQ
+        # would land a raw EUR number in a GBP bill with no conversion
+        # and no flag. We resolve the target project's currency and
+        # refuse the mismatch with a clear 409 unless the caller has
+        # explicitly opted in — in which case the position carries a
+        # loud ``currency_mismatch`` warning so the contamination is at
+        # least visible (no silent corruption).
+        currency_warning: dict | None = None
+        asm_currency = (assembly.currency or "").strip().upper()
+        try:
+            boq_repo = BOQRepository(self.session)
+            target_boq = await boq_repo.get_by_id(data.boq_id)
+            project_currency = ""
+            if target_boq is not None:
+                project_repo = ProjectRepository(self.session)
+                project = await project_repo.get_by_id(target_boq.project_id)
+                if project is not None:
+                    project_currency = (project.currency or "").strip().upper()
+        except Exception:
+            # Never let the currency lookup itself break apply-to-boq;
+            # absence of currency data simply skips the guard.
+            project_currency = ""
+
+        if (
+            asm_currency
+            and project_currency
+            and asm_currency != project_currency
+        ):
+            if not data.allow_currency_mismatch:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Assembly currency '{asm_currency}' does not match "
+                        f"the target project currency '{project_currency}'. "
+                        f"No FX conversion is applied. Re-send with "
+                        f"allow_currency_mismatch=true to proceed anyway "
+                        f"(the position will be flagged)."
+                    ),
+                )
+            currency_warning = {
+                "type": "currency_mismatch",
+                "assembly_currency": asm_currency,
+                "project_currency": project_currency,
+                "message": (
+                    f"Unit rate is in {asm_currency} but the project is "
+                    f"{project_currency}; no FX conversion was applied."
+                ),
+            }
 
         # Determine effective rate (apply regional factor if provided)
         try:
@@ -696,6 +820,13 @@ class AssemblyService:
                 # mini-badge — see ``backend/app/modules/boq/models.py``
                 # docstring for the metadata vocabulary.
                 "resource_breakdown": resource_breakdown,
+                # Present only when the caller knowingly applied an
+                # assembly priced in a different currency (ASM-006).
+                **(
+                    {"currency_mismatch": currency_warning}
+                    if currency_warning
+                    else {}
+                ),
             },
         )
 
@@ -949,6 +1080,51 @@ class AssemblyService:
         Returns:
             The newly created Assembly.
         """
+        # ── Validate & parse every component BEFORE creating the
+        # assembly row. A bad numeric yields a clean 422 instead of an
+        # unhandled ValueError 500, AND we don't leave an orphan
+        # assembly behind when one component is malformed — the
+        # export/import round-trip is a core "no vendor lock-in"
+        # guarantee, so a partial import is worse than a clean refusal.
+        parsed_components: list[dict] = []
+        for idx, comp_data in enumerate(data.components):
+            if not isinstance(comp_data, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"components[{idx}]: expected an object",
+                )
+            factor_dec = _parse_import_decimal(
+                comp_data.get("factor", 1.0), "factor", idx
+            )
+            quantity_dec = _parse_import_decimal(
+                comp_data.get("quantity", 1.0), "quantity", idx
+            )
+            unit_cost_dec = _parse_import_decimal(
+                comp_data.get("unit_cost", 0.0), "unit_cost", idx
+            )
+            res_type_raw = comp_data.get("resource_type")
+            res_type = (
+                str(res_type_raw).lower()
+                if isinstance(res_type_raw, str) and res_type_raw
+                else None
+            )
+            comp_meta = comp_data.get("metadata") if isinstance(
+                comp_data.get("metadata"), dict
+            ) else {}
+            sort_raw = comp_data.get("sort_order", idx)
+            parsed_components.append(
+                {
+                    "description": str(comp_data.get("description", "") or ""),
+                    "resource_type": res_type,
+                    "factor": factor_dec,
+                    "quantity": quantity_dec,
+                    "unit_cost": unit_cost_dec,
+                    "unit": str(comp_data.get("unit", data.unit) or data.unit),
+                    "metadata": comp_meta,
+                    "sort_order": sort_raw if isinstance(sort_raw, int) else idx,
+                }
+            )
+
         # Ensure unique code
         code = data.code
         existing = await self.assembly_repo.get_by_code(code)
@@ -980,41 +1156,27 @@ class AssemblyService:
         )
         assembly = await self.assembly_repo.create(assembly)
 
-        # Create components
         components_to_create = []
-        for idx, comp_data in enumerate(data.components):
-            desc = comp_data.get("description", "")
-            factor = str(comp_data.get("factor", 1.0))
-            quantity = str(comp_data.get("quantity", 1.0))
-            unit_cost = str(comp_data.get("unit_cost", 0.0))
-            res_type_raw = comp_data.get("resource_type")
-            res_type = (
-                str(res_type_raw).lower()
-                if isinstance(res_type_raw, str) and res_type_raw
-                else None
-            )
-            comp_meta = comp_data.get("metadata") if isinstance(
-                comp_data.get("metadata"), dict
-            ) else {}
+        for pc in parsed_components:
             total = _compute_typed_total(
-                resource_type=res_type,
-                factor=float(factor),
-                quantity=float(quantity),
-                unit_cost=float(unit_cost),
-                metadata=comp_meta,
+                resource_type=pc["resource_type"],
+                factor=float(pc["factor"]),
+                quantity=float(pc["quantity"]),
+                unit_cost=float(pc["unit_cost"]),
+                metadata=pc["metadata"],
             )
             components_to_create.append(
                 Component(
                     assembly_id=assembly.id,
-                    description=desc,
-                    resource_type=res_type,
-                    factor=factor,
-                    quantity=quantity,
-                    unit=comp_data.get("unit", data.unit),
-                    unit_cost=unit_cost,
+                    description=pc["description"],
+                    resource_type=pc["resource_type"],
+                    factor=str(pc["factor"]),
+                    quantity=str(pc["quantity"]),
+                    unit=pc["unit"],
+                    unit_cost=str(pc["unit_cost"]),
                     total=total,
-                    sort_order=comp_data.get("sort_order", idx),
-                    metadata_=comp_meta,
+                    sort_order=pc["sort_order"],
+                    metadata_=pc["metadata"],
                 )
             )
 

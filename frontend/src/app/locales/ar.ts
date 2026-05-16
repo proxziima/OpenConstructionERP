@@ -5129,7 +5129,15 @@ const resource = {
     "validation.suggestion": "اقتراح",
     "validation.summary": "الملخص",
     "validation.title": "التحقق",
-    "validation.warnings": "تحذيرات"
+    "validation.warnings": "تحذيرات",
+    "nav.add_module": "إضافة وحدة",
+    "nav.add_module_hint": "أنشئ وحدتك · دليل المطور",
+    "nav.request_custom_module": "طلب وحدة مخصصة",
+    "nav.request_custom_module_hint": "هل ينقصك شيء؟ أخبرنا بما تحتاجه",
+    "modules.dev_guide": "إنشاء وحدة — دليل المطور",
+    "onboarding.company_property_developer": "مطور عقاري",
+    "onboarding.company_property_developer_desc": "فرق التطوير العقاري",
+    "onboarding.explore_all_modules": "استكشف جميع {{count}} وحدات",
   }
 } as { translation: Record<string, string> };
 

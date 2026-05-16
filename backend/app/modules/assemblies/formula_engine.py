@@ -17,6 +17,12 @@ import math
 import re
 from typing import Any, Union
 
+# Cheap structural caps applied BEFORE any recursive work, so a
+# pathological input (e.g. 5000 nested parens) is rejected in O(n)
+# instead of burning the C stack until Python raises RecursionError.
+_MAX_FORMULA_LEN = 4096
+_MAX_PAREN_DEPTH = 64
+
 
 class FormulaError(ValueError):
     """‌⁠‍Raised when a formula cannot be evaluated."""
@@ -55,6 +61,25 @@ class FormulaEvaluator:
         params = parameters or {}
         lookups = lookup_tables or {}
 
+        # Reject pathological structure cheaply, up front — never let a
+        # caller drive the recursive-descent parser to a RecursionError.
+        if not isinstance(formula, str):
+            raise FormulaError("Formula must be a string")
+        if len(formula) > _MAX_FORMULA_LEN:
+            raise FormulaError(
+                f"Formula too long ({len(formula)} > {_MAX_FORMULA_LEN} chars)"
+            )
+        depth = 0
+        for ch in formula:
+            if ch == "(":
+                depth += 1
+                if depth > _MAX_PAREN_DEPTH:
+                    raise FormulaError(
+                        f"Parenthesis nesting too deep (> {_MAX_PAREN_DEPTH})"
+                    )
+            elif ch == ")":
+                depth -= 1
+
         try:
             # Step 1: Substitute ${param} with values
             substituted = self._substitute_params(formula, params)
@@ -74,7 +99,16 @@ class FormulaEvaluator:
             if not isinstance(result, (int, float)):
                 raise FormulaError(f"Formula must evaluate to a number, got {type(result)}")
 
-            return float(result)
+            result_f = float(result)
+            # A non-finite result (overflow to inf, or 0*inf → nan) must
+            # NOT be returned silently — it would propagate as a corrupt
+            # null total downstream (same class as ASM-002).
+            if not math.isfinite(result_f):
+                raise FormulaError(
+                    "Formula produced a non-finite result (overflow / NaN)"
+                )
+
+            return result_f
 
         except FormulaError:
             raise
@@ -115,23 +149,88 @@ class FormulaEvaluator:
         return re.sub(pattern, replace_lookup, formula)
 
     def _expand_conditionals(self, formula: str) -> str:
-        """Replace if(cond, true_val, false_val) with evaluated branch."""
-        pattern = r"if\s*\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*([^)]+?)\s*\)"
+        """Replace if(cond, true_val, false_val) with the evaluated branch.
 
-        max_iterations = 10
+        The previous implementation used a flat ``[^,]`` regex that
+        could not represent a comma inside a branch — so any nested
+        ``if(...)`` (whose own commas live inside the parent's branch)
+        was sliced apart into a malformed expression. This resolves the
+        *innermost* ``if(...)`` first using brace-aware argument
+        splitting, then loops, so arbitrarily nested conditionals
+        collapse correctly from the inside out.
+        """
+        max_iterations = 100  # generous; each pass removes one if()
         for _ in range(max_iterations):
-            match = re.search(pattern, formula)
-            if not match:
+            span = self._find_innermost_if(formula)
+            if span is None:
                 break
-            cond_str = match.group(1).strip()
-            true_val = match.group(2).strip()
-            false_val = match.group(3).strip()
-
+            start, end = span
+            args = self._split_call_args(formula[start:end])
+            if len(args) != 3:
+                raise FormulaError(
+                    f"if() takes exactly 3 arguments, got {len(args)}: "
+                    f"'{formula[start:end]}'"
+                )
+            cond_str, true_val, false_val = (a.strip() for a in args)
             cond_result = self._eval_condition(cond_str)
             replacement = true_val if cond_result else false_val
-            formula = formula[: match.start()] + replacement + formula[match.end() :]
+            formula = formula[:start] + replacement + formula[end:]
+        else:
+            raise FormulaError("if() nesting too deep")
 
         return formula
+
+    def _find_innermost_if(self, formula: str) -> tuple[int, int] | None:
+        """Locate an ``if(...)`` whose argument list contains no nested ``if(``.
+
+        Returns the ``(start, end)`` slice — ``start`` at the ``i`` of
+        ``if``, ``end`` one past its matching ``)`` — or ``None`` when
+        there is no ``if(`` left to expand. Resolving an *innermost*
+        ``if`` first guarantees its branches are plain expressions, so
+        the brace-aware arg split is unambiguous.
+        """
+        for m in re.finditer(r"\bif\s*\(", formula):
+            open_idx = formula.index("(", m.start())
+            depth = 0
+            for i in range(open_idx, len(formula)):
+                ch = formula[i]
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        # Body strictly between the if()'s own parens.
+                        body = formula[open_idx + 1 : i]
+                        if not re.search(r"\bif\s*\(", body):
+                            return (m.start(), i + 1)
+                        break  # nested → try the next match (deeper one)
+        return None
+
+    @staticmethod
+    def _split_call_args(call: str) -> list[str]:
+        """Split ``if(a, b, c)`` into ``['a',' b',' c']`` at top-level commas.
+
+        Commas inside nested parentheses are NOT split points, so a
+        branch like ``min(1, 2)`` survives intact.
+        """
+        inner = call[call.index("(") + 1 : call.rindex(")")]
+        args: list[str] = []
+        depth = 0
+        current = ""
+        for ch in inner:
+            if ch == "(":
+                depth += 1
+                current += ch
+            elif ch == ")":
+                depth -= 1
+                current += ch
+            elif ch == "," and depth == 0:
+                args.append(current)
+                current = ""
+            else:
+                current += ch
+        args.append(current)
+        return args
 
     def _eval_condition(self, cond: str) -> bool:
         """Evaluate a comparison: 'a > b', 'a == b', etc."""

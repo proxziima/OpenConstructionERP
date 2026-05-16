@@ -696,10 +696,18 @@ class ResourcesService:
         # is spuriously blocked with a 409.
         new_status = fields.get("status", assignment.status)
         skip_conflict_check = new_status in ("cancelled", "completed")
-        if (
-            not skip_conflict_check
-            and any(k in fields for k in ("start_at", "end_at", "allocation_percent"))
-        ):
+        # Only re-run the conflict check when the scheduling footprint
+        # actually changes. The edit modal always sends start/end/alloc in
+        # the payload even when the user only touched notes or status, so
+        # keying off "present in fields" spuriously 409'd innocuous edits
+        # on an assignment that already overlaps a sibling. Compare against
+        # the stored values instead.
+        footprint_changed = (
+            new_start != assignment.start_at
+            or new_end != assignment.end_at
+            or new_alloc != assignment.allocation_percent
+        )
+        if not skip_conflict_check and footprint_changed:
             existing = await self.assignment_repo.assignments_for_resource_in_window(
                 assignment.resource_id,
                 new_start,
@@ -1084,10 +1092,17 @@ class ResourcesService:
         all_assignments, _ = await self.assignment_repo.list_for_resource(
             resource_id, offset=0, limit=500
         )
+        # "Active" = anything that is happening right now and still needs
+        # attention. A *proposed* assignment whose window has already
+        # started is the most important thing to show — it is awaiting a
+        # confirm/decline decision — yet the old filter only matched
+        # confirmed/in_progress, so a live-but-unconfirmed booking fell
+        # into a dead zone (not "active", and not "upcoming" because its
+        # start is in the past). Include running proposed rows here.
         active = [
             a
             for a in all_assignments
-            if a.status in ("confirmed", "in_progress")
+            if a.status in ("proposed", "confirmed", "in_progress")
             and a.start_at <= now <= a.end_at
         ]
         upcoming = [

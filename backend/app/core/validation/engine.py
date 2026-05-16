@@ -53,6 +53,43 @@ class RuleCategory(StrEnum):
     COMPLIANCE = "compliance"  # Standard compliance (DIN, NRM, etc.)
     QUALITY = "quality"  # Data quality (anomalies, outliers)
     CUSTOM = "custom"  # User-defined rules
+    DIAGNOSTIC = "diagnostic"  # Engine/infra failure — NOT a compliance finding
+
+
+# ── Shared scoring ──────────────────────────────────────────────────────────
+#
+# ONE definition of "quality score" so every validation path (BOQ core +
+# BIM-model) produces comparable numbers in the unified dashboard
+# (E-XMOD-015). Severity weights and the blocking-error cap live here so
+# there is a single source of truth.
+
+SEVERITY_WEIGHTS: dict[str, float] = {
+    "error": 3.0,
+    "warning": 1.5,
+    "info": 0.4,
+}
+
+
+def compute_quality_score(
+    passed_weight: float,
+    total_weight: float,
+    n_errors: int,
+) -> float:
+    """Severity-weighted quality score in ``0.0 - 1.0``.
+
+    Args:
+        passed_weight: Sum of severity weights of *passing* checks.
+        total_weight: Sum of severity weights of *all* (compliance) checks.
+        n_errors: Number of blocking (ERROR-severity) failures.
+
+    Any blocking error caps the headline number (E-VAL-007): one error can
+    never read as "99% quality", but the cap stays strictly > 0 so the score
+    still discriminates "one error" from "everything broken".
+    """
+    ratio = passed_weight / total_weight if total_weight > 0 else 1.0
+    if n_errors > 0:
+        ratio = min(ratio, 0.5 / (1 + n_errors))
+    return round(ratio, 4)
 
 
 # ── Results ─────────────────────────────────────────────────────────────────
@@ -71,6 +108,11 @@ class RuleResult:
     element_ref: str | None = None  # Reference to source element (BOQ position ID, etc.)
     details: dict[str, Any] = field(default_factory=dict)
     suggestion: str | None = None  # How to fix the issue
+    # True when this row records a *rule execution failure* (an exception in
+    # the rule, e.g. an un-parseable input) rather than a genuine data
+    # compliance finding. Engine-error rows are surfaced separately and never
+    # flip status to ERRORS or drag down the quality score (E-VAL-018).
+    is_engine_error: bool = False
 
 
 @dataclass
@@ -87,15 +129,32 @@ class ValidationReport:
 
     @property
     def errors(self) -> list[RuleResult]:
-        return [r for r in self.results if not r.passed and r.severity == Severity.ERROR]
+        return [
+            r
+            for r in self.results
+            if not r.passed and r.severity == Severity.ERROR and not r.is_engine_error
+        ]
 
     @property
     def warnings(self) -> list[RuleResult]:
-        return [r for r in self.results if not r.passed and r.severity == Severity.WARNING]
+        return [
+            r
+            for r in self.results
+            if not r.passed and r.severity == Severity.WARNING and not r.is_engine_error
+        ]
 
     @property
     def infos(self) -> list[RuleResult]:
-        return [r for r in self.results if not r.passed and r.severity == Severity.INFO]
+        return [
+            r
+            for r in self.results
+            if not r.passed and r.severity == Severity.INFO and not r.is_engine_error
+        ]
+
+    @property
+    def engine_errors(self) -> list[RuleResult]:
+        """Rule-execution failures (infra), kept distinct from compliance."""
+        return [r for r in self.results if r.is_engine_error]
 
     @property
     def passed_rules(self) -> list[RuleResult]:
@@ -111,7 +170,10 @@ class ValidationReport:
 
     @property
     def status(self) -> ValidationStatus:
-        if not self.results:
+        # Engine-error-only reports are not a real validation pass — there is
+        # no compliance signal, so SKIPPED is the honest status (E-VAL-018).
+        compliance_results = [r for r in self.results if not r.is_engine_error]
+        if not compliance_results:
             return ValidationStatus.SKIPPED
         if self.has_errors:
             return ValidationStatus.ERRORS
@@ -121,18 +183,30 @@ class ValidationReport:
 
     @property
     def score(self) -> float:
-        """Quality score 0.0 - 1.0 based on passed/total ratio, weighted by severity."""
-        if not self.results:
+        """Quality score in ``0.0 - 1.0``, weighted by severity and honest
+        about blocking errors.
+
+        Two corrections vs. the naive per-result weighted ratio (E-VAL-007):
+
+        * Engine-error rows are excluded entirely — an infrastructure failure
+          must not move the quality number (E-VAL-018).
+        * The presence of *any* blocking compliance ERROR caps the score so a
+          single fatal error on an otherwise-clean 20-position BOQ can never
+          read as "99% quality". The cap shrinks with the error count but
+          stays strictly above 0 so the score still discriminates between
+          "one error" and "everything broken".
+        """
+        compliance_results = [r for r in self.results if not r.is_engine_error]
+        if not compliance_results:
             return 1.0
         total_weight = 0.0
         passed_weight = 0.0
-        weights = {Severity.ERROR: 3.0, Severity.WARNING: 1.5, Severity.INFO: 0.4}
-        for r in self.results:
-            w = weights.get(r.severity, 1.0)
+        for r in compliance_results:
+            w = SEVERITY_WEIGHTS.get(r.severity.value, 1.0)
             total_weight += w
             if r.passed:
                 passed_weight += w
-        return round(passed_weight / total_weight, 4) if total_weight > 0 else 1.0
+        return compute_quality_score(passed_weight, total_weight, len(self.errors))
 
     def summary(self) -> dict[str, Any]:
         """Compact summary for API response."""
@@ -146,6 +220,7 @@ class ValidationReport:
                 "errors": len(self.errors),
                 "warnings": len(self.warnings),
                 "infos": len(self.infos),
+                "engine_errors": len(self.engine_errors),
             },
             "rule_sets": self.rule_sets_applied,
             "duration_ms": self.duration_ms,
@@ -358,17 +433,27 @@ class ValidationEngine:
             try:
                 results = await rule.validate(context)
                 report.results.extend(results)
-            except Exception:
+            except Exception as exc:
                 logger.exception("Validation rule %s failed with exception", rule.rule_id)
                 report.results.append(
                     RuleResult(
                         rule_id=rule.rule_id,
                         rule_name=rule.name,
-                        severity=Severity.ERROR,
-                        category=rule.category,
+                        # INFO + DIAGNOSTIC + is_engine_error: a rule crash is
+                        # an infrastructure problem, NOT a blocking compliance
+                        # ERROR. It must not flip status to ERRORS, must not
+                        # drag the quality score, and is reported in its own
+                        # bucket so the UI can show it without a phantom
+                        # element_ref (E-VAL-018).
+                        severity=Severity.INFO,
+                        category=RuleCategory.DIAGNOSTIC,
                         passed=False,
                         message=f"Rule execution failed: {rule.rule_id}",
-                        details={"error": "internal_error"},
+                        details={
+                            "error": "internal_error",
+                            "exception_type": type(exc).__name__,
+                        },
+                        is_engine_error=True,
                     )
                 )
 

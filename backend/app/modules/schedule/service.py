@@ -1040,15 +1040,16 @@ class ScheduleService:
         for act in activities:
             progress = _str_to_float(act.progress_pct)
 
-            duration = 0
-            try:
-                from datetime import datetime as _dt
-
-                d1 = _dt.fromisoformat(str(act.start_date))
-                d2 = _dt.fromisoformat(str(act.end_date))
-                duration = (d2 - d1).days
-            except Exception:
-                duration = int(_str_to_float(act.duration_days)) if act.duration_days else 0
+            # Report the stored working-day duration so the Gantt agrees with
+            # the activity table and CPM. ``act.duration_days`` is recomputed
+            # via compute_duration() on every create/update; falling back to a
+            # raw calendar-day diff (as the old code did) produced a different
+            # number than the rest of the UI for any multi-week activity.
+            duration = act.duration_days or 0
+            if not duration:
+                duration = compute_duration(
+                    str(act.start_date), str(act.end_date)
+                )
 
             gantt_activities.append(
                 GanttActivity(
@@ -1408,8 +1409,11 @@ class ScheduleService:
                     grand_total,
                     total_project_days,
                 )
-                # Convert calendar days to working days for date arithmetic
-                work_days = max(1, math.ceil(duration_cal * 5 / 7))
+                # Convert calendar days to working days for date arithmetic.
+                # Use the project's regional work-week (not a hardcoded 5/7)
+                # so 6-day-week regions (GULF, BRAZIL, CHINA, INDIA) get
+                # working-day counts consistent with the stored duration.
+                work_days = max(1, math.ceil(duration_cal * work_days_per_week / 7))
                 section_work_days_total += work_days
 
                 child_end = _add_working_days(child_start, work_days)

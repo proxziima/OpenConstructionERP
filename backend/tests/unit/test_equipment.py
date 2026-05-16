@@ -945,3 +945,306 @@ async def test_record_telemetry_triggers_maintenance_check() -> None:
         )
 
     assert triggered == [equipment_id]
+
+
+# ── generate_due_work_orders ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_generate_due_work_orders_hours_fires_within_lookahead() -> None:
+    """An 'hours' schedule whose next_due_meter is within the lookahead of
+    the unit's current hour-meter produces a scheduled WO + event."""
+    svc = _make_service()
+    eid = uuid.uuid4()
+    equipment = _make_equipment(id=eid, hour_meter=1480)
+    schedule = SimpleNamespace(
+        id=uuid.uuid4(),
+        equipment_id=eid,
+        trigger_type="hours",
+        next_due_meter=Decimal("1500"),  # 20 h away — within 50 h lookahead
+        next_due_date=None,
+        description="500h service",
+    )
+    svc.schedule_repo.list_active = AsyncMock(return_value=[schedule])
+    svc.equipment_repo.get_by_id = AsyncMock(return_value=equipment)
+    svc.workorder_repo.list_ = AsyncMock(return_value=([], 0))
+
+    created: list[Any] = []
+
+    async def _create(wo: Any) -> Any:
+        _attach_meta(wo)
+        created.append(wo)
+        return wo
+
+    svc.workorder_repo.create = AsyncMock(side_effect=_create)
+
+    captured: list[str] = []
+
+    def _cap(name: str, *_a: Any, **_k: Any) -> None:
+        captured.append(name)
+
+    with patch(
+        "app.modules.equipment.service.event_bus.publish_detached",
+        side_effect=_cap,
+    ):
+        wos = await svc.generate_due_work_orders(equipment_id=eid)
+
+    assert len(wos) == 1
+    assert created[0].schedule_id == schedule.id
+    assert created[0].status == "scheduled"
+    assert "equipment.maintenance_due" in captured
+
+
+@pytest.mark.asyncio
+async def test_generate_due_work_orders_dedupes_open_wo() -> None:
+    """If an open WO already references the schedule, no duplicate is made."""
+    svc = _make_service()
+    eid = uuid.uuid4()
+    sid = uuid.uuid4()
+    equipment = _make_equipment(id=eid, hour_meter=1490)
+    schedule = SimpleNamespace(
+        id=sid,
+        equipment_id=eid,
+        trigger_type="hours",
+        next_due_meter=Decimal("1500"),
+        next_due_date=None,
+        description="x",
+    )
+    existing_wo = SimpleNamespace(id=uuid.uuid4(), schedule_id=sid)
+    svc.schedule_repo.list_active = AsyncMock(return_value=[schedule])
+    svc.equipment_repo.get_by_id = AsyncMock(return_value=equipment)
+    svc.workorder_repo.list_ = AsyncMock(return_value=([existing_wo], 1))
+    svc.workorder_repo.create = AsyncMock()
+
+    wos = await svc.generate_due_work_orders(equipment_id=eid)
+    assert wos == []
+    svc.workorder_repo.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generate_due_work_orders_skips_not_yet_due() -> None:
+    """A schedule far from due (beyond lookahead) yields nothing."""
+    svc = _make_service()
+    eid = uuid.uuid4()
+    equipment = _make_equipment(id=eid, hour_meter=1000)
+    schedule = SimpleNamespace(
+        id=uuid.uuid4(),
+        equipment_id=eid,
+        trigger_type="hours",
+        next_due_meter=Decimal("1500"),  # 500 h away — well beyond 50 h
+        next_due_date=None,
+        description="x",
+    )
+    svc.schedule_repo.list_active = AsyncMock(return_value=[schedule])
+    svc.equipment_repo.get_by_id = AsyncMock(return_value=equipment)
+    svc.workorder_repo.create = AsyncMock()
+
+    wos = await svc.generate_due_work_orders(equipment_id=eid)
+    assert wos == []
+    svc.workorder_repo.create.assert_not_called()
+
+
+# ── create_schedule auto-computes next-due ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_schedule_auto_computes_next_due_meter() -> None:
+    """When next_due_* is omitted, create_schedule projects it from the
+    unit's current meter + threshold."""
+    from app.modules.equipment.schemas import MaintenanceScheduleCreate
+
+    svc = _make_service()
+    eid = uuid.uuid4()
+    equipment = _make_equipment(id=eid, hour_meter=1200)
+    svc.equipment_repo.get_by_id = AsyncMock(return_value=equipment)
+    svc.schedule_repo.create = AsyncMock(side_effect=_attach_meta)
+
+    sched = await svc.create_schedule(
+        MaintenanceScheduleCreate(
+            equipment_id=eid,
+            trigger_type="hours",
+            trigger_threshold=Decimal("250"),
+        )
+    )
+    assert sched.next_due_meter == Decimal("1450")
+    assert sched.next_due_date is None
+
+
+# ── create_rental resolves the active project for fuel/parts ─────────────
+
+
+@pytest.mark.asyncio
+async def test_create_rental_happy_path_emits_assigned() -> None:
+    """create_rental delegates to assign_to_project and emits the event."""
+    from app.modules.equipment.schemas import EquipmentRentalCreate
+
+    svc = _make_service()
+    eid = uuid.uuid4()
+    svc.equipment_repo.get_by_id = AsyncMock(
+        return_value=_make_equipment(id=eid, status="active")
+    )
+    svc.inspection_repo.list_for_equipment = AsyncMock(return_value=[])
+
+    captured: list[str] = []
+
+    def _cap(name: str, *_a: Any, **_k: Any) -> None:
+        captured.append(name)
+
+    with patch(
+        "app.modules.equipment.service.event_bus.publish_detached",
+        side_effect=_cap,
+    ):
+        rental = await svc.create_rental(
+            EquipmentRentalCreate(
+                equipment_id=eid,
+                project_id=PROJECT_ID,
+                start_date="2026-05-15",
+                internal_rate_per_day=Decimal("300"),
+                internal_rate_per_hour=Decimal("45"),
+                currency="USD",
+            )
+        )
+    assert rental.status == "active"
+    assert rental.currency == "USD"
+    assert "equipment.assigned" in captured
+
+
+# ── parts log event carries project + line total ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_parts_log_emits_event_with_line_total() -> None:
+    from app.modules.equipment.schemas import PartsLogCreate
+
+    svc = _make_service()
+    eid = uuid.uuid4()
+    pid = uuid.uuid4()
+    svc.equipment_repo.get_by_id = AsyncMock(
+        return_value=_make_equipment(id=eid)
+    )
+    rental = SimpleNamespace(
+        id=uuid.uuid4(),
+        equipment_id=eid,
+        project_id=pid,
+        start_date="2026-01-01",
+        end_date=None,
+        status="active",
+    )
+    svc.rental_repo.list_ = AsyncMock(return_value=([rental], 1))
+
+    with patch(
+        "app.modules.equipment.service.event_bus.publish_detached"
+    ) as bus:
+        await svc.create_parts_log(
+            PartsLogCreate(
+                equipment_id=eid,
+                part_number="FILT-9",
+                quantity=Decimal("3"),
+                unit_cost=Decimal("12.50"),
+                currency="GBP",
+                logged_at="2026-05-15",
+            )
+        )
+
+    payload = next(
+        c.args[1]
+        for c in bus.call_args_list
+        if c.args[0] == "equipment.parts_logged"
+    )
+    assert payload["project_id"] == str(pid)
+    assert payload["line_total"] == "37.5000"
+    assert payload["currency"] == "GBP"
+
+
+# ── per-unit + fleet dashboards ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_equipment_dashboard_aggregates_unit_kpis() -> None:
+    svc = _make_service()
+    eid = uuid.uuid4()
+    equipment = _make_equipment(id=eid, status="active")
+    svc.equipment_repo.get_by_id = AsyncMock(return_value=equipment)
+    svc.fuel_repo.cost_in_range = AsyncMock(return_value=Decimal("420.00"))
+    svc.workorder_repo.count_open_for_equipment = AsyncMock(return_value=2)
+    insp = SimpleNamespace(equipment_id=eid, inspection_type="annual")
+    svc.inspection_repo.expiring_within = AsyncMock(return_value=[insp])
+    svc.inspection_repo.list_for_equipment = AsyncMock(return_value=[])
+
+    with patch(
+        "app.modules.equipment.service.utilization_for_equipment",
+        new=AsyncMock(return_value=63.5),
+    ):
+        dash = await svc.equipment_dashboard(eid)
+
+    assert dash.code == equipment.code
+    assert dash.fuel_cost_mtd == Decimal("420.00")
+    assert dash.open_work_orders == 2
+    assert dash.expiring_inspections == 1
+    assert dash.utilization_pct == 63.5
+    assert dash.blocked is False
+
+
+@pytest.mark.asyncio
+async def test_fleet_dashboard_counts_by_status_and_type() -> None:
+    svc = _make_service()
+    e1 = _make_equipment(id=uuid.uuid4(), status="active", type_code="excavator")
+    e2 = _make_equipment(
+        id=uuid.uuid4(), status="under_maintenance", type_code="excavator"
+    )
+    e3 = _make_equipment(id=uuid.uuid4(), status="active", type_code="crane")
+    svc.equipment_repo.list_ = AsyncMock(return_value=([e1, e2, e3], 3))
+    svc.fuel_repo.cost_in_range = AsyncMock(return_value=Decimal("0"))
+    svc.workorder_repo.count_open_fleet = AsyncMock(return_value=4)
+    svc.inspection_repo.expiring_within = AsyncMock(return_value=[])
+    svc.equipment_repo.list_blocked = AsyncMock(return_value=[e2])
+    svc.rental_repo.count_active = AsyncMock(return_value=1)
+
+    with patch(
+        "app.modules.equipment.service.fleet_utilization_avg",
+        new=AsyncMock(return_value=42.0),
+    ):
+        fleet = await svc.fleet_dashboard()
+
+    assert fleet.total_units == 3
+    assert fleet.counts_by_status == {"active": 2, "under_maintenance": 1}
+    assert fleet.counts_by_type == {"excavator": 2, "crane": 1}
+    assert fleet.open_work_orders == 4
+    assert fleet.blocked_units == 1
+    assert fleet.active_rentals == 1
+    assert fleet.utilization_pct == 42.0
+
+
+# ── update_equipment no-op + field patch ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_update_equipment_noop_returns_unchanged() -> None:
+    from app.modules.equipment.schemas import EquipmentUpdate
+
+    svc = _make_service()
+    e = _make_equipment()
+    svc.equipment_repo.get_by_id = AsyncMock(return_value=e)
+    svc.equipment_repo.update_fields = AsyncMock()
+
+    result = await svc.update_equipment(e.id, EquipmentUpdate())
+    assert result is e
+    svc.equipment_repo.update_fields.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_equipment_applies_only_set_fields() -> None:
+    from app.modules.equipment.schemas import EquipmentUpdate
+
+    svc = _make_service()
+    e = _make_equipment()
+    svc.equipment_repo.get_by_id = AsyncMock(return_value=e)
+    captured: dict[str, Any] = {}
+
+    async def _cap(_id: Any, **fields: Any) -> None:
+        captured.update(fields)
+
+    svc.equipment_repo.update_fields = AsyncMock(side_effect=_cap)
+
+    await svc.update_equipment(e.id, EquipmentUpdate(name="Renamed"))
+    assert captured == {"name": "Renamed"}
