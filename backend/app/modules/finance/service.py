@@ -506,14 +506,52 @@ class FinanceService:
     # ── Budgets ──────────────────────────────────────────────────────────────
 
     async def create_budget(self, data: BudgetCreate) -> ProjectBudget:
-        """Create a project budget line."""
+        """Create a project budget line.
+
+        Two sensible defaults are applied so manually-created lines behave
+        like commercial staff expect:
+
+        * ``revised_budget`` defaults to ``original_budget`` when the caller
+          leaves it at "0". The revised budget only diverges once a change
+          order revises it; without this, variance and consumed-% would be
+          computed against a zero baseline (always 0%, nonsensical).
+        * ``currency_code`` is inherited from the parent project when the
+          caller does not supply one — never hardcoded (task #217).
+        """
+        from sqlalchemy import select
+
+        from app.modules.projects.models import Project
+
+        revised = data.revised_budget
+        try:
+            if Decimal(revised or "0") == 0 and Decimal(data.original_budget or "0") != 0:
+                revised = data.original_budget
+        except (InvalidOperation, ValueError, TypeError):
+            revised = data.revised_budget
+
+        currency_code = data.currency_code
+        if not currency_code:
+            # Best-effort, mirrors boq ``_resolve_project_currency``: a
+            # failed/unavailable lookup must never 500 a budget create —
+            # fall back to "" (honest unknown, never a wrong hardcoded
+            # EUR — task #217).
+            try:
+                proj = (
+                    await self.session.execute(
+                        select(Project.currency).where(Project.id == data.project_id)
+                    )
+                ).scalar_one_or_none()
+            except Exception:  # noqa: BLE001 — lookup is non-critical
+                proj = None
+            currency_code = proj or ""
+
         budget = ProjectBudget(
             project_id=data.project_id,
             wbs_id=data.wbs_id,
             category=data.category,
-            currency_code=data.currency_code,
+            currency_code=currency_code,
             original_budget=data.original_budget,
-            revised_budget=data.revised_budget,
+            revised_budget=revised,
             committed=data.committed,
             actual=data.actual,
             forecast_final=data.forecast_final,
@@ -753,6 +791,9 @@ class FinanceService:
         # Net cash flow: receivable payments received minus payable payments made
         cash_flow_net = total_receivable - total_payable
 
+        # Dominant currency: prefer budget lines, fall back to invoices.
+        currency = budget_agg.get("currency") or inv_agg.get("currency") or ""
+
         return FinanceDashboardResponse(
             total_payable=round(total_payable, 2),
             total_receivable=round(total_receivable, 2),
@@ -771,4 +812,5 @@ class FinanceService:
             budget_warning_level=warning_level,
             total_payments=round(total_payments, 2),
             cash_flow_net=round(cash_flow_net, 2),
+            currency=currency,
         ).model_dump()

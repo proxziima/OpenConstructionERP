@@ -29,7 +29,9 @@ import {
   SkeletonTable,
   WideModal,
   ConfirmDialog,
+  InfoHint,
 } from '@/shared/ui';
+import { PlanningCrossLinks } from '@/features/schedule/PlanningCrossLinks';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
@@ -276,6 +278,9 @@ export function ScheduleAdvancedPage() {
         ]}
       />
 
+      {/* Cross-module navigation — connects the planning value chain */}
+      <PlanningCrossLinks active="schedule-advanced" />
+
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-semibold text-content-primary">
@@ -307,6 +312,14 @@ export function ScheduleAdvancedPage() {
           </select>
         )}
       </div>
+
+      {/* How Last Planner connects to the rest of the platform */}
+      <InfoHint
+        text={t('schedule_advanced.what_is_lps', {
+          defaultValue:
+            'The Last Planner System is pull-based production control that complements the 4D Schedule. Master schedule sets milestones, Phase Plans pull work backwards from them, Look-Aheads (6 weeks) make work ready by removing constraints, and Weekly Work Plans capture crew commitments. PPC (Percent Plan Complete) and constraint logs measure reliability. Use the 4D Schedule for the CPM critical path; use this for what the team actually commits to do next.',
+        })}
+      />
 
       {/* Tabs */}
       <div className="border-b border-border-light">

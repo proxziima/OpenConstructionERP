@@ -38,6 +38,7 @@ import {
 } from '@/shared/ui/WideModal';
 import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
+import { PipelineBanner } from './PipelineBanner';
 import { apiGet, getErrorMessage } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
@@ -48,6 +49,7 @@ import {
   listVariationOrders,
   listDaywork,
   listEoTClaims,
+  projectDashboard,
   createNotice,
   createVR,
   createVO,
@@ -216,6 +218,25 @@ function RowActions({
   );
 }
 
+function DashKPI({
+  label,
+  value,
+}: {
+  label: React.ReactNode;
+  value: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-border-light bg-surface-secondary/50 px-3 py-2">
+      <p className="text-[10px] uppercase tracking-wide text-content-tertiary">
+        {label}
+      </p>
+      <p className="mt-0.5 text-sm font-semibold text-content-primary tabular-nums">
+        {value}
+      </p>
+    </div>
+  );
+}
+
 export function VariationsPage() {
   const { t } = useTranslation();
   const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
@@ -296,6 +317,14 @@ export function VariationsPage() {
     });
     if (ok) deleteMut.mutate({ kind, id });
   };
+
+  const dashboardQ = useQuery({
+    queryKey: ['variations', 'dashboard', projectId],
+    queryFn: () => projectDashboard(projectId),
+    enabled: !!projectId,
+    retry: false,
+    staleTime: 30_000,
+  });
 
   const noticesQ = useQuery({
     queryKey: ['variations', 'notices', projectId, statusFilter],
@@ -481,6 +510,75 @@ export function VariationsPage() {
           </Button>
         </div>
       </div>
+
+      <PipelineBanner
+        intro={t('variations.pipeline_intro', {
+          defaultValue:
+            'Variations adjust a live contract. A notice flags a change event, a request prices its cost and time impact, and on approval it converts to a variation order that feeds the contract final account. Daywork and EoT claims run alongside.',
+        })}
+        steps={[
+          {
+            label: t('variations.step_contract', { defaultValue: 'Contracts' }),
+            to: '/contracts',
+          },
+          {
+            label: t('variations.step_variations', {
+              defaultValue: 'Variations',
+            }),
+            current: true,
+          },
+          {
+            label: t('variations.step_finance', { defaultValue: 'Finance' }),
+            to: '/finance',
+          },
+        ]}
+      />
+
+      {dashboardQ.data && (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+          <DashKPI
+            label={t('variations.kpi_notices_open', {
+              defaultValue: 'Open notices',
+            })}
+            value={String(dashboardQ.data.notices_open)}
+          />
+          <DashKPI
+            label={t('variations.kpi_requests_pending', {
+              defaultValue: 'Pending requests',
+            })}
+            value={String(dashboardQ.data.requests_pending)}
+          />
+          <DashKPI
+            label={t('variations.kpi_vo_active', {
+              defaultValue: 'Active orders',
+            })}
+            value={String(dashboardQ.data.variation_orders_active)}
+          />
+          <DashKPI
+            label={t('variations.kpi_cost_impact', {
+              defaultValue: 'Cost impact',
+            })}
+            value={
+              <MoneyDisplay
+                amount={Number(dashboardQ.data.cost_impact_total) || 0}
+                currency={dashboardQ.data.currency || currency}
+              />
+            }
+          />
+          <DashKPI
+            label={t('variations.kpi_schedule_impact', {
+              defaultValue: 'Schedule (days)',
+            })}
+            value={String(dashboardQ.data.schedule_impact_days)}
+          />
+          <DashKPI
+            label={t('variations.kpi_eot_open', {
+              defaultValue: 'Open EoT claims',
+            })}
+            value={String(dashboardQ.data.eot_claims_open)}
+          />
+        </div>
+      )}
 
       <div className="border-b border-border-light">
         <nav className="flex gap-1 -mb-px" role="tablist">

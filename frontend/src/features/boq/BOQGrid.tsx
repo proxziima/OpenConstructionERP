@@ -49,6 +49,7 @@ import {
   type Position,
   type UpdatePositionData,
   type CostAutocompleteItem,
+  type ResourceCodeMatch,
   groupPositionsIntoSections,
 } from './api';
 import {
@@ -271,6 +272,9 @@ export interface ManualResource {
   unit_rate: number;
   /** Optional ISO 4217 code for foreign-currency resources (RFC 37 / #93). */
   currency?: string;
+  /** Optional reusable resource code (Issue #133). Persisted on the
+   *  resource entry so it stays referenceable for future reuse. */
+  code?: string;
 }
 
 export interface BOQGridProps {
@@ -337,6 +341,15 @@ export interface BOQGridProps {
    */
   onRepickResourceVariant?: (positionId: string, resourceIndex: number, variantCode: string) => void;
   onAddManualResource?: (positionId: string, resource: ManualResource) => void;
+  /**
+   * Issue #133 — project-wide resource-code lookup. When the user types a
+   * code in the manual-resource form that is already used elsewhere,
+   * resolve the existing resource's reusable definition so the form can
+   * offer "insert the existing resource" vs "create a new one with
+   * another code". Returns ``null`` when the code is free. Optional —
+   * when omitted the code is treated as a plain free-text field.
+   */
+  onLookupResourceByCode?: (code: string) => Promise<ResourceCodeMatch | null>;
   onDuplicatePosition?: (positionId: string) => void;
   /**
    * Issue #127 — reuse an existing project code at a given placement.
@@ -412,6 +425,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   onOpenCatalogForPosition,
   onRepickResourceVariant,
   onAddManualResource,
+  onLookupResourceByCode,
   onDuplicatePosition,
   onReuseCode,
   onShowLinks,
@@ -531,9 +545,17 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
     unitRate: string;
     /** ISO 4217 — empty string = use project base currency. */
     currency: string;
+    /** Issue #133 — reusable resource code; empty = no code. */
+    code: string;
+    /** Set while the project-wide code lookup is in flight. */
+    checkingCode?: boolean;
+    /** Set when the typed code is already used — drives the
+     *  insert-existing vs change-code prompt instead of submitting. */
+    collision?: ResourceCodeMatch | null;
   }
   const [manualResourceDialog, setManualResourceDialog] = useState<ManualResourceDialogState | null>(null);
   const manualResNameRef = useRef<HTMLInputElement>(null);
+  const manualResCodeRef = useRef<HTMLInputElement>(null);
 
   /* ── Expanded resource positions ─────────────────────────────────── */
   const [expandedPositions, setExpandedPositions] = useState<Set<string>>(new Set());
@@ -805,6 +827,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
         setManualResourceDialog({
           positionId, name: '', type: 'material', unit: 'm²', quantity: '1', unitRate: '0',
           currency: '', // empty ⇒ use project base currency
+          code: '',
         });
         setTimeout(() => manualResNameRef.current?.focus(), 50);
       },
@@ -1809,30 +1832,100 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   );
 
   /* ── Manual resource dialog submit ────────────────────────────── */
-  const handleManualResourceSubmit = useCallback(() => {
+
+  /** Commit a resource to the position, then close + expand + refresh.
+   *  ``override`` lets the "insert existing" path supply the looked-up
+   *  master definition (Issue #133) while keeping the user's quantity. */
+  const finalizeManualResource = useCallback(
+    (override?: Partial<ManualResource> & { code?: string }) => {
+      if (!manualResourceDialog) return;
+      const { positionId, name, type, unit, quantity, unitRate, currency, code } =
+        manualResourceDialog;
+      const effName = (override?.name ?? name).trim();
+      if (!effName) return;
+      const qty = parseFloat(quantity.replace(',', '.')) || 1;
+      const rate =
+        override?.unit_rate ?? (parseFloat(unitRate.replace(',', '.')) || 0);
+      const effType = override?.type ?? type;
+      const effUnit = (override?.unit ?? unit).trim();
+      const effCurrency = override?.currency ?? currency;
+      const effCode = (override?.code ?? code).trim();
+      // Persist user-typed units so they show up next time app-wide.
+      if (effUnit) saveCustomUnit(effUnit);
+      onAddManualResource?.(positionId, {
+        name: effName,
+        type: effType,
+        unit: effUnit,
+        quantity: qty,
+        unit_rate: rate,
+        ...(effCurrency ? { currency: effCurrency } : {}),
+        ...(effCode ? { code: effCode } : {}),
+      });
+      setManualResourceDialog(null);
+      setExpandedPositions((prev) => new Set(prev).add(positionId));
+      setTimeout(() => {
+        gridApiRef.current?.refreshCells({
+          columns: ['ordinal', '_expand', 'description', 'quantity', 'unit_rate', 'total'],
+          force: true,
+        });
+      }, 0);
+    },
+    [manualResourceDialog, onAddManualResource],
+  );
+
+  const handleManualResourceSubmit = useCallback(async () => {
     if (!manualResourceDialog) return;
-    const { positionId, name, type, unit, quantity, unitRate, currency } = manualResourceDialog;
+    const { name, code, collision } = manualResourceDialog;
     if (!name.trim()) return;
-    const qty = parseFloat(quantity.replace(',', '.')) || 1;
-    const rate = parseFloat(unitRate.replace(',', '.')) || 0;
-    const trimmedUnit = unit.trim();
-    // Persist user-typed units so they show up next time anywhere in the app.
-    if (trimmedUnit) saveCustomUnit(trimmedUnit);
-    onAddManualResource?.(positionId, {
-      name: name.trim(),
-      type,
-      unit: trimmedUnit,
-      quantity: qty,
-      unit_rate: rate,
-      ...(currency ? { currency } : {}),
+    const trimmedCode = code.trim();
+    // Issue #133 — if the code is set and not yet checked, ask the
+    // backend whether it is already in use anywhere in the project.
+    // When it is, switch the dialog into the collision prompt instead
+    // of adding straight away.
+    if (trimmedCode && !collision && onLookupResourceByCode) {
+      setManualResourceDialog((prev) =>
+        prev ? { ...prev, checkingCode: true } : prev,
+      );
+      try {
+        const match = await onLookupResourceByCode(trimmedCode);
+        if (match) {
+          setManualResourceDialog((prev) =>
+            prev ? { ...prev, checkingCode: false, collision: match } : prev,
+          );
+          return;
+        }
+      } catch {
+        // Lookup failed — don't block the user; fall through to a
+        // plain add (the code is still persisted on the resource).
+      }
+      setManualResourceDialog((prev) =>
+        prev ? { ...prev, checkingCode: false } : prev,
+      );
+    }
+    finalizeManualResource();
+  }, [manualResourceDialog, onLookupResourceByCode, finalizeManualResource]);
+
+  /** Collision resolution — reuse the existing resource's definition. */
+  const handleInsertExistingResource = useCallback(() => {
+    const m = manualResourceDialog?.collision;
+    if (!m) return;
+    finalizeManualResource({
+      name: m.name,
+      type: m.type || manualResourceDialog!.type,
+      unit: m.unit,
+      unit_rate: m.unit_rate,
+      currency: m.currency || undefined,
+      code: m.code,
     });
-    setManualResourceDialog(null);
-    // Auto-expand the position's resources
-    setExpandedPositions((prev) => new Set(prev).add(positionId));
-    setTimeout(() => {
-      gridApiRef.current?.refreshCells({ columns: ['ordinal', '_expand', 'description', 'quantity', 'unit_rate', 'total'], force: true });
-    }, 0);
-  }, [manualResourceDialog, onAddManualResource]);
+  }, [manualResourceDialog, finalizeManualResource]);
+
+  /** Collision resolution — keep editing so the user can change the code. */
+  const handleChangeResourceCode = useCallback(() => {
+    setManualResourceDialog((prev) =>
+      prev ? { ...prev, collision: null } : prev,
+    );
+    setTimeout(() => manualResCodeRef.current?.focus(), 50);
+  }, []);
 
   /* ── Context menu action handlers ─────────────────────────────── */
 
@@ -2175,6 +2268,50 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
               {t('boq.add_resource_manual', { defaultValue: 'Add Resource' })}
             </h3>
 
+            {/* Issue #133 — code-collision prompt: insert the existing
+                resource, or change the code and create a new one. */}
+            {manualResourceDialog.collision && (
+              <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700/60 dark:bg-amber-900/20 p-3">
+                <p className="text-[11px] text-content-primary mb-1 font-medium">
+                  {t('boq.resource_code_in_use', {
+                    defaultValue: "Code '{{code}}' is already in use",
+                    code: manualResourceDialog.collision.code,
+                  })}
+                </p>
+                <p className="text-[11px] text-content-secondary mb-2">
+                  <span className="font-medium text-content-primary">
+                    {manualResourceDialog.collision.name || manualResourceDialog.collision.code}
+                  </span>
+                  {manualResourceDialog.collision.position_ordinal ||
+                  manualResourceDialog.collision.position_description
+                    ? ` (${
+                        manualResourceDialog.collision.position_ordinal ||
+                        manualResourceDialog.collision.position_description
+                      })`
+                    : ''}
+                  {'. '}
+                  {t('boq.resource_code_in_use_detail', {
+                    defaultValue:
+                      'Insert that existing resource, or change the code to create a new one?',
+                  })}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleInsertExistingResource}
+                    className="h-7 px-3 rounded-md text-[11px] font-medium text-white bg-oe-blue hover:bg-oe-blue-hover transition-colors"
+                  >
+                    {t('boq.resource_insert_existing', { defaultValue: 'Insert existing' })}
+                  </button>
+                  <button
+                    onClick={handleChangeResourceCode}
+                    className="h-7 px-3 rounded-md text-[11px] font-medium text-content-secondary bg-surface-secondary hover:bg-surface-tertiary transition-colors"
+                  >
+                    {t('boq.resource_change_code', { defaultValue: 'Change code' })}
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Name */}
             <label className="block text-[11px] font-medium text-content-secondary mb-1">
               {t('boq.resource_name', { defaultValue: 'Name' })} *
@@ -2187,6 +2324,36 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
               onKeyDown={(e) => { if (e.key === 'Enter') handleManualResourceSubmit(); if (e.key === 'Escape') setManualResourceDialog(null); }}
               className="w-full mb-3 h-8 rounded-md border border-border-medium bg-surface-primary px-2 text-xs text-content-primary outline-none focus:border-oe-blue focus:ring-1 focus:ring-oe-blue/30"
               placeholder={t('boq.resource_name_placeholder', { defaultValue: 'e.g. Concrete C30/37' })}
+            />
+
+            {/* Code (Issue #133) — reusable resource code. Typing a code
+                already used in the project triggers the reuse prompt. */}
+            <label className="block text-[11px] font-medium text-content-secondary mb-1">
+              {t('boq.resource_code', { defaultValue: 'Code' })}
+              <span className="text-content-tertiary font-normal ml-1">
+                ({t('common.optional', { defaultValue: 'optional' })})
+              </span>
+            </label>
+            <input
+              ref={manualResCodeRef}
+              type="text"
+              value={manualResourceDialog.code}
+              onChange={(e) =>
+                setManualResourceDialog({
+                  ...manualResourceDialog,
+                  code: e.target.value,
+                  // Editing the code invalidates a prior collision verdict.
+                  collision: null,
+                })
+              }
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleManualResourceSubmit();
+                if (e.key === 'Escape') setManualResourceDialog(null);
+              }}
+              className="w-full mb-3 h-8 rounded-md border border-border-medium bg-surface-primary px-2 text-xs text-content-primary outline-none focus:border-oe-blue focus:ring-1 focus:ring-oe-blue/30"
+              placeholder={t('boq.resource_code_placeholder', {
+                defaultValue: 'e.g. MAT-001 — reuse an existing code to link',
+              })}
             />
 
             {/* Type + Unit row */}
@@ -2314,10 +2481,16 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
               </button>
               <button
                 onClick={handleManualResourceSubmit}
-                disabled={!manualResourceDialog.name.trim()}
+                disabled={
+                  !manualResourceDialog.name.trim() ||
+                  !!manualResourceDialog.checkingCode ||
+                  !!manualResourceDialog.collision
+                }
                 className="h-8 px-4 rounded-md text-xs font-medium text-white bg-oe-blue hover:bg-oe-blue-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
-                {t('boq.add_resource', { defaultValue: 'Add Resource' })}
+                {manualResourceDialog.checkingCode
+                  ? t('boq.resource_checking_code', { defaultValue: 'Checking…' })
+                  : t('boq.add_resource', { defaultValue: 'Add Resource' })}
               </button>
             </div>
           </div>

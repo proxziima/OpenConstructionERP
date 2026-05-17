@@ -561,6 +561,203 @@ async def test_unlink_master_endpoint_does_not_500_and_preserves_values(
     # position's own values.
 
 
+async def _instance_child_of(
+    client: AsyncClient, auth: dict[str, str], boq_id: str, inst_id: str
+) -> dict:
+    """Return the single cloned child of a reused-instance root."""
+    boq = await client.get(f"/api/v1/boq/boqs/{boq_id}", headers=auth)
+    assert boq.status_code == 200, boq.text
+    kids = [
+        p
+        for p in boq.json().get("positions", [])
+        if p.get("parent_id") == inst_id
+    ]
+    assert len(kids) == 1, f"expected exactly one cloned child, got {kids}"
+    return kids[0]
+
+
+@pytest.mark.asyncio
+async def test_master_child_edit_propagates_to_instance_children_only(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    """Issue #132 — Gap A.
+
+    Reuse a whole partida (master root + a sub-line child). Editing the
+    MASTER CHILD's definition must fan out to the matching instance
+    CHILD (same ``reference_code`` subtree) — never to the instance
+    ROOT, and never the per-instance quantity.
+    """
+    project_id = await _create_project(client, auth)
+    boq_id = await _create_boq(client, auth, project_id)
+
+    master = (
+        await _add_position(
+            client, auth, boq_id,
+            ordinal="MC1", description="Partida master", unit="m3",
+            quantity=10.0, unit_rate=185.0, reference_code="MCODE",
+        )
+    ).json()
+    master_child = (
+        await _add_position(
+            client, auth, boq_id,
+            ordinal="MC1.1", description="Old sub-line", unit="kg",
+            quantity=120.0, unit_rate=1.85, parent_id=master["id"],
+        )
+    ).json()
+
+    inst = (
+        await _add_position(
+            client, auth, boq_id,
+            ordinal="MC1", description="x", unit="x",
+            quantity=7.0, reference_code="MCODE",
+        )
+    ).json()
+    assert inst["link_role"] == "instance"
+    inst_child = await _instance_child_of(client, auth, boq_id, inst["id"])
+    assert inst_child["description"] == "Old sub-line"
+    inst_child_qty_before = float(inst_child["quantity"])
+
+    patch = await client.patch(
+        f"/api/v1/boq/positions/{master_child['id']}",
+        json={"description": "NEW sub-line", "unit_rate": 2.0},
+        headers=auth,
+    )
+    assert patch.status_code == 200, patch.text
+    pj = patch.json()
+    assert (
+        pj["metadata"].get("link_propagation", {}).get("propagated_to") == 1
+    ), pj["metadata"]
+
+    gi_child = (
+        await client.get(
+            f"/api/v1/boq/positions/{inst_child['id']}", headers=auth
+        )
+    ).json()
+    assert gi_child["description"] == "NEW sub-line"
+    assert float(gi_child["unit_rate"]) == 2.0
+    # Per-instance quantity untouched; total recomputed against IT.
+    assert float(gi_child["quantity"]) == inst_child_qty_before
+    assert abs(float(gi_child["total"]) - inst_child_qty_before * 2.0) < 0.01
+
+    # The instance ROOT must be untouched by a child edit.
+    gi_root = (
+        await client.get(
+            f"/api/v1/boq/positions/{inst['id']}", headers=auth
+        )
+    ).json()
+    assert gi_root["description"] == "Partida master"
+    assert float(gi_root["quantity"]) == 7.0
+
+
+@pytest.mark.asyncio
+async def test_master_root_edit_does_not_clobber_instance_children(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    """Issue #132 — Gap A'.
+
+    A ROOT definition edit must reach the instance ROOTS only; it must
+    NOT blanket-overwrite the instance CHILDREN with the root's
+    description (the old group-flat propagation bug for subtree reuse).
+    """
+    project_id = await _create_project(client, auth)
+    boq_id = await _create_boq(client, auth, project_id)
+
+    master = (
+        await _add_position(
+            client, auth, boq_id,
+            ordinal="MR1", description="Root def", unit="m3",
+            quantity=10.0, unit_rate=185.0, reference_code="MRCODE",
+        )
+    ).json()
+    await _add_position(
+        client, auth, boq_id,
+        ordinal="MR1.1", description="Child def", unit="kg",
+        quantity=120.0, unit_rate=1.85, parent_id=master["id"],
+    )
+    inst = (
+        await _add_position(
+            client, auth, boq_id,
+            ordinal="MR1", description="x", unit="x",
+            quantity=4.0, reference_code="MRCODE",
+        )
+    ).json()
+    inst_child = await _instance_child_of(client, auth, boq_id, inst["id"])
+
+    patch = await client.patch(
+        f"/api/v1/boq/positions/{master['id']}",
+        json={"description": "Root def CHANGED"},
+        headers=auth,
+    )
+    assert patch.status_code == 200, patch.text
+
+    gi_root = (
+        await client.get(
+            f"/api/v1/boq/positions/{inst['id']}", headers=auth
+        )
+    ).json()
+    gi_child = (
+        await client.get(
+            f"/api/v1/boq/positions/{inst_child['id']}", headers=auth
+        )
+    ).json()
+    # Instance root mirrors the master root.
+    assert gi_root["description"] == "Root def CHANGED"
+    # Instance child keeps ITS OWN definition — NOT the root's.
+    assert gi_child["description"] == "Child def"
+
+
+@pytest.mark.asyncio
+async def test_master_child_quantity_edit_never_propagates(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    """Issue #132 — a pure quantity edit on a master CHILD must never
+    reach the instance children (quantities are per-instance)."""
+    project_id = await _create_project(client, auth)
+    boq_id = await _create_boq(client, auth, project_id)
+
+    master = (
+        await _add_position(
+            client, auth, boq_id,
+            ordinal="MQ1", description="qmaster", unit="m3",
+            quantity=1.0, unit_rate=100.0, reference_code="MQCODE",
+        )
+    ).json()
+    master_child = (
+        await _add_position(
+            client, auth, boq_id,
+            ordinal="MQ1.1", description="qchild", unit="kg",
+            quantity=10.0, unit_rate=5.0, parent_id=master["id"],
+        )
+    ).json()
+    inst = (
+        await _add_position(
+            client, auth, boq_id,
+            ordinal="MQ1", description="x", unit="x",
+            quantity=2.0, reference_code="MQCODE",
+        )
+    ).json()
+    inst_child = await _instance_child_of(client, auth, boq_id, inst["id"])
+    qty_before = float(inst_child["quantity"])
+
+    patch = await client.patch(
+        f"/api/v1/boq/positions/{master_child['id']}",
+        json={"quantity": 999.0},
+        headers=auth,
+    )
+    assert patch.status_code == 200, patch.text
+    pj = patch.json()
+    assert pj["metadata"].get("link_propagation", {}).get(
+        "propagated_to", 0
+    ) in (0, None)
+
+    gi_child = (
+        await client.get(
+            f"/api/v1/boq/positions/{inst_child['id']}", headers=auth
+        )
+    ).json()
+    assert float(gi_child["quantity"]) == qty_before
+
+
 @pytest.mark.asyncio
 async def test_unlink_standalone_position_is_422_not_500(
     client: AsyncClient, auth: dict[str, str]
@@ -580,3 +777,75 @@ async def test_unlink_standalone_position_is_422_not_500(
         f"/api/v1/boq/positions/{solo['id']}/unlink/", headers=auth
     )
     assert un.status_code == 422, f"expected 422, got {un.status_code}: {un.text}"
+
+
+# ── Issue #133 — resource-code project-wide lookup ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_resource_code_lookup_finds_and_misses(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    """The resource-by-code endpoint returns the existing resource's
+    reusable definition (no quantity) when the code is in use anywhere in
+    the project, and ``found=False`` for a free code."""
+    project_id = await _create_project(client, auth)
+    boq_id = await _create_boq(client, auth, project_id)
+
+    host = (
+        await _add_position(
+            client, auth, boq_id,
+            ordinal="RC-HOST", description="host position", unit="m3",
+            quantity=1.0, unit_rate=0.0,
+        )
+    ).json()
+
+    # Attach a coded resource via the standard metadata.resources path.
+    patch = await client.patch(
+        f"/api/v1/boq/positions/{host['id']}",
+        json={
+            "metadata": {
+                "resources": [
+                    {
+                        "name": "Concrete C30/37",
+                        "code": "MAT-001",
+                        "type": "material",
+                        "unit": "m3",
+                        "quantity": 5.0,
+                        "unit_rate": 92.5,
+                        "currency": "EUR",
+                        "total": 462.5,
+                    }
+                ]
+            }
+        },
+        headers=auth,
+    )
+    assert patch.status_code == 200, patch.text
+
+    # Hit (case-insensitive).
+    hit = await client.get(
+        f"/api/v1/boq/projects/{project_id}/resource-by-code/?code=mat-001",
+        headers=auth,
+    )
+    assert hit.status_code == 200, hit.text
+    hj = hit.json()
+    assert hj["found"] is True
+    m = hj["match"]
+    assert m["code"] == "MAT-001"
+    assert m["name"] == "Concrete C30/37"
+    assert m["type"] == "material"
+    assert m["unit"] == "m3"
+    assert abs(float(m["unit_rate"]) - 92.5) < 0.001
+    assert m["currency"] == "EUR"
+    assert m["position_id"] == host["id"]
+    # Definition only — quantity is per-instance and never returned.
+    assert "quantity" not in m
+
+    # Miss.
+    miss = await client.get(
+        f"/api/v1/boq/projects/{project_id}/resource-by-code/?code=NOPE-999",
+        headers=auth,
+    )
+    assert miss.status_code == 200, miss.text
+    assert miss.json()["found"] is False

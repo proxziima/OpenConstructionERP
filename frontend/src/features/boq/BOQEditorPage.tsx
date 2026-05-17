@@ -1610,6 +1610,18 @@ export function BOQEditorPage() {
         return `${parentOrdinal}.${String(nextSuffix).padStart(2, '0')}`;
       };
 
+      // Issue #134 — when invoked without an explicit parent (the
+      // Ctrl+Enter shortcut, or the toolbar "Add Position" button),
+      // insert into the SELECTED row's section instead of always the
+      // last section. A selected section → add as its child; a selected
+      // child → add as a sibling in the same section. Falls through to
+      // the last-section default below only when nothing is selected.
+      if (!parentId && selectedPosition) {
+        parentId = isSection(selectedPosition)
+          ? selectedPosition.id
+          : (selectedPosition.parent_id ?? undefined);
+      }
+
       let ordinal: string;
 
       if (parentId) {
@@ -1654,7 +1666,7 @@ export function BOQEditorPage() {
         }),
       });
     },
-    [boqId, boq, grouped, addMutation, addToast, t],
+    [boqId, boq, grouped, selectedPosition, addMutation, addToast, t],
   );
 
   /**
@@ -1693,7 +1705,13 @@ export function BOQEditorPage() {
       if (!code) return;
 
       // Resolve a placement parent (mirror handleAddPosition's default).
+      // Issue #134 — prefer the selected row's section over the last one.
       let targetParent = parentId;
+      if (!targetParent && selectedPosition) {
+        targetParent = isSection(selectedPosition)
+          ? selectedPosition.id
+          : (selectedPosition.parent_id ?? undefined);
+      }
       if (!targetParent) {
         const lastSection = grouped.sections[grouped.sections.length - 1];
         if (lastSection) targetParent = lastSection.section.id;
@@ -1722,7 +1740,7 @@ export function BOQEditorPage() {
         link_mode: 'link',
       });
     },
-    [boqId, boq, grouped, addMutation, t],
+    [boqId, boq, grouped, selectedPosition, addMutation, t],
   );
 
   /* ── Issue #127: linked-positions modal + unlink ──────────────────── */
@@ -2599,16 +2617,30 @@ export function BOQEditorPage() {
 
   /** Add a manual resource (not from database) to a position. */
   const handleAddManualResource = useCallback(
-    (positionId: string, resource: { name: string; type: string; unit: string; quantity: number; unit_rate: number }) => {
+    (
+      positionId: string,
+      resource: {
+        name: string;
+        type: string;
+        unit: string;
+        quantity: number;
+        unit_rate: number;
+        currency?: string;
+        code?: string;
+      },
+    ) => {
       const pos = boq?.positions.find((p) => p.id === positionId);
       if (!pos) return;
       const newRes = {
         name: resource.name,
-        code: '',
+        // Issue #133 — persist the reusable code so it stays
+        // referenceable for future reuse / collision detection.
+        code: (resource.code ?? '').trim(),
         type: resource.type,
         unit: resource.unit,
         quantity: resource.quantity,
         unit_rate: resource.unit_rate,
+        ...(resource.currency ? { currency: resource.currency } : {}),
         total: Math.round(resource.quantity * resource.unit_rate * 100) / 100,
       };
       const existing = [...((pos.metadata?.resources ?? []) as Array<Record<string, unknown>>)];
@@ -2625,6 +2657,24 @@ export function BOQEditorPage() {
       addToast({ type: 'success', title: t('boq.resource_added', { defaultValue: 'Resource added' }) });
     },
     [boq?.positions, updateMutation, addToast, t],
+  );
+
+  /** Issue #133 — project-wide resource-code lookup for the manual
+   *  resource form's "this code is already used" prompt. Returns the
+   *  existing resource's reusable definition, or null when the code is
+   *  free / unresolvable. */
+  const handleLookupResourceByCode = useCallback(
+    async (code: string) => {
+      const projectId = boq?.project_id;
+      if (!projectId || !code.trim()) return null;
+      try {
+        const res = await boqApi.lookupResourceByCode(projectId, code.trim());
+        return res.found && res.match ? res.match : null;
+      } catch {
+        return null;
+      }
+    },
+    [boq?.project_id],
   );
 
   /** Duplicate a position (copy description, unit, rate, resources). */
@@ -3515,6 +3565,7 @@ export function BOQEditorPage() {
           onOpenCostDbForPosition={handleOpenCostDbForPosition}
           onOpenCatalogForPosition={handleOpenCatalogForPosition}
           onAddManualResource={handleAddManualResource}
+          onLookupResourceByCode={handleLookupResourceByCode}
           onDuplicatePosition={handleDuplicatePosition}
           onReuseCode={handleReuseCode}
           onShowLinks={handleShowLinks}

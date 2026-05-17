@@ -123,6 +123,7 @@ from app.modules.boq.schemas import (
     PrerequisiteItem,
     PricingAnomaly,
     RateMatch,
+    ResourceCodeLookupResponse,
     ResourcePositionRef,
     ResourceSummaryItem,
     ResourceSummaryResponse,
@@ -1096,6 +1097,31 @@ async def get_project_activity(
     Returns all BOQ-related activity across all BOQs in the project.
     """
     return await service.get_activity_for_project(project_id, offset=offset, limit=limit)
+
+
+@router.get(
+    "/projects/{project_id}/resource-by-code/",
+    response_model=ResourceCodeLookupResponse,
+    summary="Look up an existing resource by its code (project-wide)",
+    dependencies=[Depends(RequirePermission("boq.read"))],
+)
+async def lookup_resource_by_code(
+    project_id: uuid.UUID,
+    code: str,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: BOQService = Depends(_get_service),
+) -> ResourceCodeLookupResponse:
+    """Issue #133 — find the first existing resource using ``code``.
+
+    Drives the "this code is already in use — insert the existing
+    resource, or create a new one with another code?" prompt in the BOQ
+    editor's manual resource form. Returns ``found=False`` when the code
+    is unused anywhere in the project.
+    """
+    await _verify_project_owner_for_boq(session, project_id, user_id, payload)
+    return await service.find_resource_by_code(project_id, code)
 
 
 @router.patch(
@@ -2524,6 +2550,19 @@ async def export_boq_csv(
 
     # Use structured data to include markups in the grand total
     structured = await service.get_boq_structured(boq_id)
+    # Issue #111 — freeze the project FX table into the exported artifact so
+    # the base-currency totals are auditable and a later rate edit cannot
+    # retroactively rewrite a delivered BOQ.
+    base_ccy, fx_map = await service.get_export_fx(boq_id)
+
+    def _row_currency(pos: Any) -> str:
+        meta = getattr(pos, "metadata", None) or getattr(pos, "metadata_", None) or {}
+        if isinstance(meta, dict):
+            for key in ("currency", "position_currency", "project_currency"):
+                val = meta.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip().upper()
+        return base_ccy or ""
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -2537,6 +2576,7 @@ async def export_boq_csv(
             "Quantity",
             "Unit Rate",
             "Total",
+            "Currency",
             "Classification",
             "Classification JSON",
             "Source",
@@ -2562,6 +2602,7 @@ async def export_boq_csv(
             _fmt_number(getattr(pos, "quantity", 0.0)),
             _fmt_number(getattr(pos, "unit_rate", 0.0)),
             _fmt_number(getattr(pos, "total", 0.0)),
+            neutralise_formula(_row_currency(pos)),
             neutralise_formula(_get_classification_code(classification)),
             neutralise_formula(
                 _json.dumps(classification, ensure_ascii=False) if classification else ""
@@ -2595,6 +2636,7 @@ async def export_boq_csv(
                 "",
                 "",
                 "",
+                "",
             ]
         )
         for pos in section.positions:
@@ -2604,15 +2646,17 @@ async def export_boq_csv(
     for pos in structured.positions:
         writer.writerow(_pos_row(pos))
 
-    # Direct cost subtotal
-    writer.writerow(
-        [
+    # Aggregate rows are stated in the project BASE currency (foreign-priced
+    # positions were converted via the frozen FX table below — Issue #111).
+    def _total_row(label: str, amount: Any) -> list[str]:
+        return [
             "",
-            "Direct Cost",
+            label,
             "",
             "",
             "",
-            _fmt_number(structured.direct_cost),
+            _fmt_number(amount),
+            base_ccy or "",
             "",
             "",
             "",
@@ -2621,18 +2665,36 @@ async def export_boq_csv(
             "",
             "",
         ]
-    )
+
+    # Direct cost subtotal
+    writer.writerow(_total_row("Direct Cost", structured.direct_cost))
 
     # Markup rows — markup.name is user-controlled.
     for markup in structured.markups:
         writer.writerow(
+            _total_row(neutralise_formula(f"  {markup.name}"), markup.amount)
+        )
+
+    # Grand total row (includes markups)
+    writer.writerow(_total_row("Grand Total", structured.grand_total))
+
+    # FX-rate appendix (Issue #111) — the exact rates that produced the
+    # base-currency totals above, frozen at export time. ``rate`` is units
+    # of base per 1 unit of the listed foreign currency.
+    if fx_map:
+        writer.writerow([""] * 14)
+        writer.writerow(
+            ["", "FX Rates (frozen at export)", "", "", "", "", "", "", "", "", "", "", "", ""]
+        )
+        writer.writerow(
             [
                 "",
-                neutralise_formula(f"  {markup.name}"),
+                "Base currency",
                 "",
                 "",
                 "",
-                _fmt_number(markup.amount),
+                "",
+                neutralise_formula(base_ccy or ""),
                 "",
                 "",
                 "",
@@ -2642,25 +2704,25 @@ async def export_boq_csv(
                 "",
             ]
         )
-
-    # Grand total row (includes markups)
-    writer.writerow(
-        [
-            "",
-            "Grand Total",
-            "",
-            "",
-            "",
-            _fmt_number(structured.grand_total),
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-        ]
-    )
+        for _code, _rate in sorted(fx_map.items()):
+            writer.writerow(
+                [
+                    "",
+                    neutralise_formula(f"1 {_code} ="),
+                    "",
+                    "",
+                    "",
+                    neutralise_formula(str(_rate)),
+                    neutralise_formula(base_ccy or ""),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ]
+            )
 
     content = output.getvalue()
     output.close()
@@ -2709,6 +2771,20 @@ async def export_boq_excel(
     boq_data = await service.get_boq_with_positions(boq_id)
     boq_obj = await service.get_boq(boq_id)
     structured_data = await service.get_boq_structured(boq_id)
+    # Issue #111 — structured_data totals are FX-converted into the project
+    # base currency; boq_data.grand_total is a raw position sum (wrong for
+    # mixed-currency BOQs). Source the aggregate cells from structured_data
+    # and freeze the FX table used to produce them.
+    base_ccy, fx_map = await service.get_export_fx(boq_id)
+
+    def _xl_row_currency(p: Any) -> str:
+        meta = getattr(p, "metadata", None) or getattr(p, "metadata_", None) or {}
+        if isinstance(meta, dict):
+            for key in ("currency", "position_currency", "project_currency"):
+                val = meta.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip().upper()
+        return base_ccy or ""
 
     # ── Custom column definitions from BOQ metadata ──────────────────────
     boq_meta = boq_obj.metadata_ if isinstance(boq_obj.metadata_, dict) else {}
@@ -2730,6 +2806,7 @@ async def export_boq_excel(
         "Quantity",
         "Unit Rate",
         "Total",
+        "Currency",
         "Classification",
         "Classification JSON",
         "Source",
@@ -2859,39 +2936,44 @@ async def export_boq_excel(
         ws.cell(
             row=current_row,
             column=7,
-            value=neutralise_formula(_get_classification_code(classification_)),
+            value=neutralise_formula(_xl_row_currency(pos)),
         )
         ws.cell(
             row=current_row,
             column=8,
+            value=neutralise_formula(_get_classification_code(classification_)),
+        )
+        ws.cell(
+            row=current_row,
+            column=9,
             value=neutralise_formula(
                 _json.dumps(classification_, ensure_ascii=False) if classification_ else ""
             ),
         )
         ws.cell(
             row=current_row,
-            column=9,
+            column=10,
             value=neutralise_formula(getattr(pos, "source", "") or ""),
         )
         conf = getattr(pos, "confidence", None)
-        ws.cell(row=current_row, column=10, value=float(conf) if conf is not None else None)
+        ws.cell(row=current_row, column=11, value=float(conf) if conf is not None else None)
         ws.cell(
             row=current_row,
-            column=11,
+            column=12,
             value=neutralise_formula(
                 getattr(pos, "wbs_code", "") or getattr(pos, "wbs_id", "") or ""
             ),
         )
         ws.cell(
             row=current_row,
-            column=12,
+            column=13,
             value=neutralise_formula(
                 ",".join(str(x) for x in cad_ids) if isinstance(cad_ids, list) else ""
             ),
         )
         ws.cell(
             row=current_row,
-            column=13,
+            column=14,
             value=neutralise_formula(
                 _json.dumps(pos_meta_raw, ensure_ascii=False) if pos_meta_raw else ""
             ),
@@ -2937,18 +3019,69 @@ async def export_boq_excel(
     total_label.font = grand_total_font
     total_label.border = top_border
 
-    grand_total_cell = ws.cell(row=total_row, column=6, value=boq_data.grand_total)
+    # Issue #111: grand total is the FX-converted base-currency figure from
+    # structured_data (boq_data.grand_total is a raw position sum that is
+    # wrong for mixed-currency BOQs).
+    grand_total_cell = ws.cell(
+        row=total_row, column=6, value=structured_data.grand_total
+    )
     grand_total_cell.font = grand_total_font
     grand_total_cell.number_format = number_format
     grand_total_cell.alignment = right_align
     grand_total_cell.border = top_border
+    ccy_cell = ws.cell(row=total_row, column=7, value=neutralise_formula(base_ccy or ""))
+    ccy_cell.font = grand_total_font
+    ccy_cell.border = top_border
+
+    # ── FX-rate appendix (Issue #111) ────────────────────────────────────
+    # Freeze the exact rates that produced the base-currency totals above so
+    # a downloaded BOQ stays auditable after a later project rate edit.
+    last_row = total_row
+    if fx_map:
+        appendix_row = total_row + 2
+        hdr = ws.cell(
+            row=appendix_row, column=1, value="FX Rates (frozen at export)"
+        )
+        hdr.font = bold_font
+        ws.cell(row=appendix_row + 1, column=1, value="Base currency")
+        ws.cell(
+            row=appendix_row + 1,
+            column=2,
+            value=neutralise_formula(base_ccy or ""),
+        )
+        from decimal import Decimal as _DecFx
+        from decimal import InvalidOperation as _InvOpFx
+
+        def _rate_value(raw: str) -> _DecFx | str:
+            try:
+                d = _DecFx(str(raw).strip())
+            except (_InvOpFx, ValueError, TypeError):
+                return neutralise_formula(str(raw))
+            return d if d.is_finite() else neutralise_formula(str(raw))
+
+        rate_row = appendix_row + 2
+        for _code, _rate in sorted(fx_map.items()):
+            ws.cell(
+                row=rate_row,
+                column=1,
+                value=neutralise_formula(f"1 {_code}"),
+            )
+            rc = ws.cell(row=rate_row, column=2, value=_rate_value(_rate))
+            rc.number_format = number_format
+            ws.cell(
+                row=rate_row,
+                column=3,
+                value=neutralise_formula(base_ccy or ""),
+            )
+            rate_row += 1
+        last_row = rate_row
 
     # ── Auto-width columns ────────────────────────────────────────────────
     for col_idx in range(1, len(headers) + 1):
         max_length = len(str(headers[col_idx - 1]))
         for row in ws.iter_rows(
             min_row=2,
-            max_row=total_row,
+            max_row=last_row,
             min_col=col_idx,
             max_col=col_idx,
         ):

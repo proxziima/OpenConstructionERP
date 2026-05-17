@@ -20,6 +20,7 @@ import {
   Loader2,
   Info,
   Trash2,
+  Pencil,
   FileText,
   FileBox,
   CheckCircle2,
@@ -171,6 +172,29 @@ export function SectionFullWidthRenderer(params: ICellRendererParams) {
 
   const [dragOver, setDragOver] = useState(false);
 
+  // Issue #135 — sections had no rename affordance after creation. The
+  // name is now double-click / pencil editable inline and persisted via
+  // the same onUpdatePosition path used for every other field.
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(description);
+
+  const startRename = useCallback(() => {
+    setNameDraft(description);
+    setRenaming(true);
+  }, [description]);
+
+  const commitRename = useCallback(() => {
+    const next = nameDraft.trim();
+    setRenaming(false);
+    if (next && next !== description) {
+      ctx.onUpdatePosition?.(
+        data.id,
+        { description: next },
+        { description },
+      );
+    }
+  }, [nameDraft, description, ctx, data]);
+
   return (
     <div
       className={`flex items-center w-full h-full px-2 gap-2 select-none group/section transition-colors ${
@@ -226,9 +250,45 @@ export function SectionFullWidthRenderer(params: ICellRendererParams) {
         {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
       </span>
 
-      <span className="text-xs font-bold text-content-primary uppercase tracking-wide truncate min-w-0">
-        {description}
-      </span>
+      {renaming ? (
+        <input
+          autoFocus
+          value={nameDraft}
+          onChange={(e) => setNameDraft(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') commitRename();
+            else if (e.key === 'Escape') {
+              setNameDraft(description);
+              setRenaming(false);
+            }
+          }}
+          onBlur={commitRename}
+          className="min-w-0 flex-1 text-xs font-bold text-content-primary uppercase
+                     tracking-wide bg-surface-primary border border-oe-blue rounded
+                     px-1.5 py-0.5 outline-none"
+          aria-label={t('boq.rename_section', { defaultValue: 'Rename section' })}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            startRename();
+          }}
+          title={t('boq.rename_section_hint', {
+            defaultValue: 'Double-click to rename',
+          })}
+          className="text-xs font-bold text-content-primary uppercase tracking-wide
+                     truncate min-w-0 text-left bg-transparent cursor-text"
+        >
+          {description || t('boq.untitled_section', {
+            defaultValue: 'Untitled section',
+          })}
+        </button>
+      )}
 
       <span className="shrink-0 inline-flex items-center h-4 px-1.5 rounded-full
                        bg-surface-tertiary text-[10px] font-medium text-content-tertiary
@@ -240,6 +300,25 @@ export function SectionFullWidthRenderer(params: ICellRendererParams) {
       </span>
 
       <div className="flex-1" />
+
+      {!renaming && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            startRename();
+          }}
+          className="shrink-0 h-5 flex items-center gap-0.5 px-1.5 rounded
+                     text-[10px] font-medium
+                     text-content-tertiary hover:text-oe-blue
+                     bg-transparent hover:bg-oe-blue-subtle
+                     opacity-0 group-hover/section:opacity-100
+                     transition-all"
+          title={t('boq.rename_section', { defaultValue: 'Rename section' })}
+          aria-label={t('boq.rename_section', { defaultValue: 'Rename section' })}
+        >
+          <Pencil size={10} />
+        </button>
+      )}
 
       <button
         onClick={(e) => {

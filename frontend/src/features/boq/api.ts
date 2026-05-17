@@ -94,6 +94,26 @@ export interface PositionLinksResponse {
   members: PositionLinkMember[];
 }
 
+/** Issue #133 — one existing resource that already uses a given code. */
+export interface ResourceCodeMatch {
+  code: string;
+  name: string;
+  type: string;
+  unit: string;
+  unit_rate: number;
+  currency: string;
+  position_id: string;
+  position_ordinal: string;
+  position_description: string;
+}
+
+/** Response of `GET /v1/boq/projects/{id}/resource-by-code/`. */
+export interface ResourceCodeLookupResponse {
+  found: boolean;
+  code: string;
+  match: ResourceCodeMatch | null;
+}
+
 export interface BOQWithPositions extends BOQ {
   positions: Position[];
   grand_total: number;
@@ -194,15 +214,73 @@ export interface UpdatePositionData {
 
 /* ── Normalize backend metadata_ → metadata ─────────────────────── */
 
-/** Backend returns `metadata_` due to SQLAlchemy naming. Normalize to `metadata`. */
+/**
+ * Coerce a backend numeric value into a finite JS number.
+ *
+ * Money / quantity columns are SQLAlchemy ``Numeric`` and the API
+ * serialises them as exact decimal *strings* (e.g. ``"1234.5600"``) so
+ * large totals round-trip without float drift. Untouched, those strings
+ * poison the grid: ``0 + "1234.56"`` string-concatenates into a section
+ * subtotal that renders as ``NaN``, and ``Number.isFinite("1234.56")``
+ * is ``false`` so ``convertToBase`` zeroes resource-driven position
+ * totals (Issue #131 — "total shows for <1s then drops to 0"). Coercing
+ * at the fetch boundary makes the runtime match the ``number`` contract
+ * the rest of the editor already assumes.
+ */
+function toFiniteNumber(v: unknown, fallback = 0): number {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : fallback;
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    if (trimmed === '') return fallback;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  return fallback;
+}
+
+/**
+ * Backend returns `metadata_` (SQLAlchemy alias) and serialises Decimal
+ * money/qty fields as strings. Normalize to `metadata` AND coerce every
+ * numeric field — position-level and per-resource — to a real number so
+ * totals/subtotals never string-concatenate or zero out (Issue #131).
+ */
 export function normalizePosition(p: Position): Position {
-  if (!p.metadata && p.metadata_) {
-    return { ...p, metadata: p.metadata_ };
+  // Preserve the original metadata-resolution semantics exactly:
+  //   metadata missing + metadata_ present → metadata_
+  //   metadata missing (no metadata_)      → {}
+  //   metadata present                     → metadata
+  const resolvedMeta: Record<string, unknown> =
+    !p.metadata && p.metadata_ ? p.metadata_ : (p.metadata ?? {});
+
+  // Resource components carry the same string-Decimal money fields and
+  // BOQGrid sums them for the per-position unit_rate rollup + resource
+  // rows — coerce them too so that rollup stays numeric.
+  let normMeta = resolvedMeta;
+  const res = (resolvedMeta as { resources?: unknown }).resources;
+  if (Array.isArray(res)) {
+    normMeta = {
+      ...resolvedMeta,
+      resources: res.map((r) => {
+        if (!r || typeof r !== 'object') return r;
+        const rr = r as Record<string, unknown>;
+        return {
+          ...rr,
+          quantity: toFiniteNumber(rr.quantity),
+          unit_rate: toFiniteNumber(rr.unit_rate),
+          total: toFiniteNumber(rr.total),
+        };
+      }),
+    };
   }
-  if (!p.metadata) {
-    return { ...p, metadata: {} };
-  }
-  return p;
+
+  return {
+    ...p,
+    quantity: toFiniteNumber(p.quantity),
+    unit_rate: toFiniteNumber(p.unit_rate),
+    total: toFiniteNumber(p.total),
+    sort_order: toFiniteNumber(p.sort_order),
+    metadata: normMeta,
+  };
 }
 
 export function normalizePositions(positions: Position[]): Position[] {
@@ -252,14 +330,19 @@ export function groupPositionsIntoSections(
   const fxRates = fxOpts?.fxRates;
 
   const rebase = (pos: Position): number => {
-    if (!baseCurrency) return pos.total;
+    // Coerce defensively — ``pos.total`` may still be a decimal string
+    // here if the list wasn't run through ``normalizePosition`` first;
+    // adding a raw string into ``subtotal`` concatenates → NaN (#131).
+    const total = toFiniteNumber(pos.total);
+    if (!baseCurrency) return total;
     const meta = ((pos as { metadata?: Record<string, unknown> }).metadata
       ?? {}) as Record<string, unknown>;
     const sourceCurrency = (meta.currency as string | undefined) || baseCurrency;
-    if (sourceCurrency === baseCurrency || !fxRates) return pos.total;
+    if (sourceCurrency === baseCurrency || !fxRates) return total;
     const fx = fxRates.find((r) => r.currency === sourceCurrency);
-    if (!fx || !Number.isFinite(fx.rate) || fx.rate <= 0) return pos.total;
-    return pos.total * fx.rate;
+    const fxRate = fx ? Number(fx.rate) : NaN;
+    if (!fx || !Number.isFinite(fxRate) || fxRate <= 0) return total;
+    return total * fxRate;
   };
 
   // First pass: identify sections
@@ -940,6 +1023,15 @@ export const boqApi = {
    *  Returns the updated PositionResponse. */
   unlinkPosition: (posId: string) =>
     apiPost<Position>(`/v1/boq/positions/${posId}/unlink/`, {}),
+
+  /* ── Resource code reuse (Issue #133) ─────────────────────────────── */
+  /** Project-wide lookup: is this resource code already in use? Returns
+   *  the existing resource's reusable definition (no quantity) so the
+   *  manual-resource form can offer "insert existing" vs "change code". */
+  lookupResourceByCode: (projectId: string, code: string) =>
+    apiGet<ResourceCodeLookupResponse>(
+      `/v1/boq/projects/${projectId}/resource-by-code/?code=${encodeURIComponent(code)}`,
+    ),
 
   /* Position reorder (drag-and-drop) */
   reorderPositions: (boqId: string, positionIds: string[]) =>

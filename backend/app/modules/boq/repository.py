@@ -340,6 +340,23 @@ class PositionRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_for_project(self, project_id: uuid.UUID) -> list[Position]:
+        """Return EVERY position across all BOQs of a project, oldest first.
+
+        Issue #133. Resource codes live in ``metadata.resources[].code``
+        (JSON, no SQL column), so a project-wide resource-by-code lookup
+        must scan positions of every BOQ in the project. Ordered by
+        ``created_at`` so the first match is the original definition.
+        """
+        stmt = (
+            select(Position)
+            .join(BOQ, BOQ.id == Position.boq_id)
+            .where(BOQ.project_id == project_id)
+            .order_by(Position.created_at, Position.sort_order)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def reference_code_exists_in_project(
         self,
         project_id: uuid.UUID,

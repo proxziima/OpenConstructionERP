@@ -981,6 +981,36 @@ class ResourceSummaryResponse(BaseModel):
     grand_total: float = 0.0
 
 
+class ResourceCodeMatch(BaseModel):
+    """A single existing resource that already uses a given code.
+
+    Issue #133. The reusable *definition* (name / type / unit / unit_rate /
+    currency) plus where it was first found, so the BOQ editor can offer
+    "insert the existing resource" vs "create a new one with another code".
+    Quantity is intentionally NOT part of the definition — it is always
+    per-instance (mirrors the #127 position-reuse contract).
+    """
+
+    code: str
+    name: str = ""
+    type: str = ""
+    unit: str = ""
+    unit_rate: float = 0.0
+    currency: str = ""
+    # Provenance — surfaced verbatim to the user in the collision prompt.
+    position_id: str = ""
+    position_ordinal: str = ""
+    position_description: str = ""
+
+
+class ResourceCodeLookupResponse(BaseModel):
+    """Result of a project-wide resource-code lookup (Issue #133)."""
+
+    found: bool = False
+    code: str = ""
+    match: ResourceCodeMatch | None = None
+
+
 class CO2MaterialBreakdown(BaseModel):
     """CO2 breakdown for a single material category."""
 

@@ -282,6 +282,8 @@ from app.modules.boq.schemas import (
     PositionCreate,
     PositionResponse,
     PositionUpdate,
+    ResourceCodeLookupResponse,
+    ResourceCodeMatch,
     SectionCreate,
     SectionResponse,
     TemplateInfo,
@@ -1122,6 +1124,55 @@ def _project_fx_map(project: object | None) -> dict[str, str]:
     return out
 
 
+def _position_currency(pos: Position) -> str:
+    """Resolve a position's home currency from its metadata.
+
+    Mirrors the grid path (``groupPositionsIntoSections`` in the frontend
+    ``api.ts``, the Issue #131 fix the user verified): the per-position
+    ``metadata.currency`` is authoritative. ``project_currency`` /
+    ``position_currency`` are accepted as legacy fallbacks so older
+    imported rows keep converting. Empty → "" (caller treats as base).
+    """
+    meta = pos.metadata_ if isinstance(pos.metadata_, dict) else {}
+    for key in ("currency", "position_currency", "project_currency"):
+        val = meta.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip().upper()
+    return ""
+
+
+def _position_total_in_base(
+    total: str | None,
+    currency_code: str | None,
+    fx_rates_map: dict[str, str] | None,
+    base_currency: str,
+) -> Decimal:
+    """Convert one position's stored ``total`` into the project BASE currency.
+
+    Issue #111 — sibling of #131, which fixed this exact defect in the grid
+    path (``groupPositionsIntoSections``). ``get_boq_structured`` powers the
+    CSV / Excel / PDF exports and was summing foreign-currency ``total``
+    strings straight into the base-currency Direct Cost / Grand Total.
+
+    Semantics match ``_resource_total_in_base``: a position priced in a
+    non-base currency contributes ``total * fx_rates_map[currency]`` (units
+    of base per 1 unit of foreign). Missing currency → treated as base.
+    Missing rate for a foreign currency → summed in its own units anyway
+    (never zeroed) so the rollup stays deterministic and a forgotten FX
+    rate degrades visibly rather than silently dropping money.
+    """
+    amount = _to_decimal(total)
+    base = (base_currency or "").strip().upper()
+    code = (currency_code or "").strip().upper()
+    if code and code != base and fx_rates_map:
+        fx = fx_rates_map.get(code)
+        if fx:
+            converted = _to_decimal(fx, default=Decimal("1"))
+            if converted > 0:
+                amount = amount * converted
+    return amount
+
+
 def _build_position_response(pos: Position) -> PositionResponse:
     """Build a PositionResponse from a Position ORM instance."""
     return PositionResponse(
@@ -1475,10 +1526,16 @@ _LINK_DEFINITION_FIELDS: tuple[str, ...] = (
 )
 # A copy of the master's metadata (resources / assembly sub-structure) is
 # propagated too, but quantity-derived / per-instance keys are stripped.
+# ``_link_src`` (Issue #132) records the id of the MASTER node each linked
+# instance node was cloned from — it is the per-node correspondence key that
+# lets a master CHILD edit reach the matching instance children (the group
+# id alone is too coarse: every node in a subtree shares it). It is
+# per-instance and must never be carried by a master→instance metadata copy.
 _LINK_INSTANCE_ONLY_META_KEYS: tuple[str, ...] = (
     "bim_qty_source",
     "pdf_measurement_source",
     "dwg_annotation_source",
+    "_link_src",
 )
 # Fields whose direct edit on an INSTANCE means "diverge from the master"
 # → unlink + warn. Quantity / ordinal / sort_order / version / validation
@@ -1735,6 +1792,14 @@ class BOQService:
         """
         max_order = await self.position_repo.get_max_sort_order(boq_id)
 
+        # Issue #132: when this clone joins a link group, stamp the master
+        # node it mirrors so a later master-CHILD edit can find exactly the
+        # matching instance children (group id alone can't — every node in
+        # the subtree shares it). Standalone copies (no group) get no marker.
+        _root_meta = _copy_definition_metadata(source.metadata_)
+        if link_group_id is not None:
+            _root_meta["_link_src"] = str(source.id)
+
         root = Position(
             boq_id=boq_id,
             parent_id=new_parent_id,
@@ -1756,7 +1821,7 @@ class BOQService:
             confidence=source.confidence,
             cad_element_ids=list(source.cad_element_ids) if source.cad_element_ids else [],
             validation_status="pending",
-            metadata_=_copy_definition_metadata(source.metadata_),
+            metadata_=_root_meta,
             sort_order=max_order + 1,
             reference_code=reference_code,
             link_group_id=link_group_id,
@@ -1773,6 +1838,12 @@ class BOQService:
             for child in children:
                 max_order += 1
                 child_ordinal = await self._next_free_ordinal(boq_id, child.ordinal)
+                # Issue #132: each cloned child records ITS OWN master child
+                # as the correspondence key (not the root's) so master-child
+                # edits fan out to the matching instance children only.
+                _child_meta = _copy_definition_metadata(child.metadata_)
+                if link_group_id is not None:
+                    _child_meta["_link_src"] = str(child.id)
                 cloned_child = Position(
                     boq_id=boq_id,
                     parent_id=new_parent,
@@ -1791,7 +1862,7 @@ class BOQService:
                         list(child.cad_element_ids) if child.cad_element_ids else []
                     ),
                     validation_status="pending",
-                    metadata_=_copy_definition_metadata(child.metadata_),
+                    metadata_=_child_meta,
                     sort_order=max_order,
                     # Children inherit the group when the root is linked so
                     # the whole sub-structure stays addressable; they keep
@@ -1914,6 +1985,45 @@ class BOQService:
         if not row or not row[0]:
             return ""
         return str(row[0]).strip()[:3].upper()
+
+    async def _resolve_project_fx(
+        self,
+        boq_id: uuid.UUID,
+    ) -> tuple[str, dict[str, str]]:
+        """Resolve ``(base_currency, {code: rate})`` for a BOQ's project.
+
+        Issue #111 — the structured/export rollup needs the project's FX
+        table, not just its base currency, to convert foreign-currency
+        position totals before summing. Best-effort: any failure returns
+        ``("", {})`` so the export never breaks and degrades to raw sums
+        (the pre-#111 behaviour) rather than a 500.
+        """
+        try:
+            from app.modules.projects.models import Project
+
+            row = (
+                await self.session.execute(
+                    select(Project.currency, Project.fx_rates)
+                    .join(BOQ, BOQ.project_id == Project.id)
+                    .where(BOQ.id == boq_id),
+                )
+            ).first()
+        except Exception:  # noqa: BLE001 — never break an export on this lookup
+            logger.debug("Project FX lookup failed for BOQ %s", boq_id, exc_info=True)
+            return "", {}
+        if not row:
+            return "", {}
+        base = str(row[0]).strip()[:3].upper() if row[0] else ""
+        raw = row[1] if isinstance(row[1], list) else []
+        fx_map: dict[str, str] = {}
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            code = str(entry.get("code") or "").strip().upper()
+            rate = str(entry.get("rate") or "").strip()
+            if code and rate:
+                fx_map[code] = rate
+        return base, fx_map
 
     async def _find_content_duplicate(
         self,
@@ -3090,23 +3200,64 @@ class BOQService:
                     group = await self.position_repo.list_link_group(
                         _link_group_before
                     )
+                    # Snapshot EVERY group member into plain values BEFORE
+                    # the first per-instance write. ``update_fields`` ends in
+                    # ``session.expire_all()``, so reading another (not-yet-
+                    # processed) group member's ORM attributes on a LATER
+                    # loop iteration would lazy-load on the async engine →
+                    # MissingGreenlet. The original per-iteration snapshot
+                    # only happened to be safe when the group had ≤1
+                    # propagation target; #132 subtree groups have several.
+                    _grp_snap: list[dict[str, Any]] = [
+                        {
+                            "id": g.id,
+                            "role": g.link_role,
+                            "boq_id": g.boq_id,
+                            "ordinal": g.ordinal,
+                            "quantity": g.quantity,
+                            "unit_rate": g.unit_rate,
+                            "version": int(g.version or 0),
+                            "meta": (
+                                dict(g.metadata_)
+                                if isinstance(g.metadata_, dict)
+                                else {}
+                            ),
+                        }
+                        for g in group
+                    ]
+                    # Issue #132: groups created with the per-node
+                    # correspondence key (``_link_src``) propagate a ROOT
+                    # edit ONLY to instance ROOTS (those whose ``_link_src``
+                    # points back at this master root) — never blanket-
+                    # overwriting instance CHILDREN with the root's
+                    # definition. Legacy groups predating #132 carry no
+                    # ``_link_src`` anywhere; they keep the original
+                    # group-flat behaviour so existing links never regress.
+                    _group_has_src = any(
+                        "_link_src" in s["meta"] for s in _grp_snap
+                    )
                     affected_boqs: set[uuid.UUID] = set()
-                    for inst in group:
-                        _inst_id = inst.id
-                        _inst_role = inst.link_role
-                        _inst_boq_id = inst.boq_id
-                        _inst_ordinal = inst.ordinal
-                        _inst_quantity = inst.quantity
-                        _inst_unit_rate = inst.unit_rate
-                        _inst_version = int(inst.version or 0)
-                        _inst_meta = (
-                            inst.metadata_
-                            if isinstance(inst.metadata_, dict)
-                            else {}
-                        )
+                    for _snap in _grp_snap:
+                        _inst_id = _snap["id"]
+                        _inst_role = _snap["role"]
+                        _inst_boq_id = _snap["boq_id"]
+                        _inst_ordinal = _snap["ordinal"]
+                        _inst_quantity = _snap["quantity"]
+                        _inst_unit_rate = _snap["unit_rate"]
+                        _inst_version = _snap["version"]
+                        _inst_meta = _snap["meta"]
                         if _inst_id == position_id:
                             continue
                         if _inst_role != "instance":
+                            continue
+                        # Correspondence guard (Issue #132): on #132-era
+                        # groups a ROOT edit only reaches the instance
+                        # ROOTS that mirror THIS master root. Instance
+                        # children (``_link_src`` = their own master child)
+                        # are handled by the master-child pass below.
+                        if _group_has_src and str(
+                            _inst_meta.get("_link_src")
+                        ) != str(position_id):
                             continue
                         inst_fields: dict[str, Any] = {}
                         for k, v in _changed_def_payload.items():
@@ -3204,6 +3355,206 @@ class BOQService:
                         position_id,
                         _link_group_before,
                     )
+
+        # ── Issue #132: master CHILD edit → propagate to instance children ─
+        # The block above only fires when the edited row is the master
+        # ROOT (``link_role='master'``). A master's CHILDREN carry no
+        # link_role (they are originals, not instances), so editing one
+        # used to propagate to nothing — the customer's "reuse a whole
+        # partida, fix a sub-line on the master, instances stay stale"
+        # bug. Here: if the edited row is a non-link node whose subtree
+        # ROOT is a master, fan the changed DEFINITION fields out to the
+        # instance nodes that were cloned from THIS exact node
+        # (``metadata._link_src == position_id``). Quantities / ordinals
+        # never propagate (the architecture guide). Instance-side direct edits still
+        # diverge+unlink via the block far above — unchanged.
+        if (
+            _link_role_before is None
+            and not _did_unlink_instance
+            and fields
+            and _requested_def_fields
+        ):
+            try:
+                # Snapshot the edited node's post-write definition BEFORE any
+                # per-instance update_fields() (each ends in expire_all();
+                # the async engine cannot lazy-refresh → MissingGreenlet).
+                _mc_changed: dict[str, Any] = {}
+                for _df in _LINK_DEFINITION_FIELDS:
+                    if _df in _requested_def_fields:
+                        _mc_changed[_df] = getattr(position, _df, None)
+                _mc_prop_meta = (
+                    "metadata_" in _requested_def_fields
+                    and isinstance(position.metadata_, dict)
+                )
+                _mc_meta_snapshot = (
+                    position.metadata_
+                    if isinstance(position.metadata_, dict)
+                    else {}
+                )
+                if _mc_changed or _mc_prop_meta:
+                    # Walk parent chain to the subtree root (depth-capped —
+                    # a cycle would otherwise loop forever).
+                    _walk_id = getattr(position, "parent_id", None)
+                    _root_node: Position | None = None
+                    _hops = 0
+                    while _walk_id is not None and _hops < 256:
+                        _node = await self.position_repo.get_by_id(_walk_id)
+                        if _node is None:
+                            break
+                        _root_node = _node
+                        _walk_id = getattr(_node, "parent_id", None)
+                        _hops += 1
+                    if (
+                        _root_node is not None
+                        and _root_node.link_role == "master"
+                        and _root_node.link_group_id is not None
+                        and _root_node.id != position_id
+                    ):
+                        # Snapshot the master root's link identity NOW —
+                        # per-instance update_fields() runs expire_all()
+                        # and the async engine can't lazy-refresh these
+                        # later for the activity-log (MissingGreenlet).
+                        _mc_root_group_id = _root_node.link_group_id
+                        _mc_root_code = _root_node.reference_code
+                        _mc_group = await self.position_repo.list_link_group(
+                            _mc_root_group_id
+                        )
+                        # Pre-snapshot the whole group before any write —
+                        # update_fields() → expire_all() would otherwise make
+                        # a later iteration's ORM read lazy-load on the async
+                        # engine (MissingGreenlet) once >1 child matches.
+                        _mc_snap: list[dict[str, Any]] = [
+                            {
+                                "id": _c.id,
+                                "role": _c.link_role,
+                                "boq_id": _c.boq_id,
+                                "ordinal": _c.ordinal,
+                                "quantity": _c.quantity,
+                                "unit_rate": _c.unit_rate,
+                                "version": int(_c.version or 0),
+                                "meta": (
+                                    dict(_c.metadata_)
+                                    if isinstance(_c.metadata_, dict)
+                                    else {}
+                                ),
+                            }
+                            for _c in _mc_group
+                        ]
+                        _mc_affected: set[uuid.UUID] = set()
+                        for _cs in _mc_snap:
+                            _ci_id = _cs["id"]
+                            _ci_role = _cs["role"]
+                            _ci_boq_id = _cs["boq_id"]
+                            _ci_ordinal = _cs["ordinal"]
+                            _ci_quantity = _cs["quantity"]
+                            _ci_unit_rate = _cs["unit_rate"]
+                            _ci_version = _cs["version"]
+                            _ci_meta = _cs["meta"]
+                            if _ci_id == position_id:
+                                continue
+                            if _ci_role != "instance":
+                                continue
+                            # Per-node correspondence: only the instance
+                            # children cloned from THIS master child.
+                            if str(_ci_meta.get("_link_src")) != str(
+                                position_id
+                            ):
+                                continue
+                            _ci_fields: dict[str, Any] = {}
+                            for k, v in _mc_changed.items():
+                                if k == "classification":
+                                    _ci_fields[k] = (
+                                        dict(v) if isinstance(v, dict) else v
+                                    )
+                                elif k == "cad_element_ids":
+                                    _ci_fields[k] = (
+                                        list(v) if isinstance(v, list) else v
+                                    )
+                                else:
+                                    _ci_fields[k] = v
+                            if _mc_prop_meta:
+                                _ci_new_meta = _copy_definition_metadata(
+                                    _mc_meta_snapshot
+                                )
+                                # Preserve the instance child's own
+                                # per-instance keys — crucially ``_link_src``
+                                # so the correspondence survives the copy.
+                                for _k in _LINK_INSTANCE_ONLY_META_KEYS:
+                                    if _k in _ci_meta:
+                                        _ci_new_meta[_k] = _ci_meta[_k]
+                                _ci_fields["metadata_"] = _ci_new_meta
+                            _ci_rate = _ci_fields.get(
+                                "unit_rate", _ci_unit_rate
+                            )
+                            _ci_fields["total"] = _compute_total(
+                                _ci_quantity, _ci_rate
+                            )
+                            _ci_fields["version"] = _ci_version + 1
+                            await self.position_repo.update_fields(
+                                _ci_id, **_ci_fields
+                            )
+                            _mc_affected.add(_ci_boq_id)
+                            _propagated_count += 1
+                            await _safe_publish(
+                                "boq.position.updated",
+                                {
+                                    "position_id": str(_ci_id),
+                                    "boq_id": str(_ci_boq_id),
+                                    "ordinal": _ci_ordinal,
+                                    "changes": {
+                                        "propagated_from": str(position_id)
+                                    },
+                                    "kind": "linked_master_child_propagation",
+                                },
+                                source_module="oe_boq",
+                            )
+                        await self.session.flush()
+                        if _mc_affected:
+                            await self.session.refresh(position)
+                        if _mc_affected and actor_id is not None:
+                            try:
+                                _mc_proj: uuid.UUID | None = None
+                                try:
+                                    _mb = await self.get_boq(position.boq_id)
+                                    _mc_proj = _mb.project_id
+                                except Exception:  # noqa: BLE001
+                                    _mc_proj = None
+                                await self.log_activity(
+                                    user_id=actor_id,
+                                    action="position.linked_propagation",
+                                    target_type="position",
+                                    description=(
+                                        f"Propagated master sub-line "
+                                        f"'{position.ordinal}' to "
+                                        f"{len(_mc_affected)} linked "
+                                        f"instance child(ren)"
+                                    ),
+                                    project_id=_mc_proj,
+                                    boq_id=position.boq_id,
+                                    target_id=position.id,
+                                    changes={
+                                        "fields": sorted(_mc_changed),
+                                        "metadata_propagated": _mc_prop_meta,
+                                        "kind": "master_child",
+                                    },
+                                    metadata_={
+                                        "reference_code": _mc_root_code,
+                                        "link_group_id": str(
+                                            _mc_root_group_id
+                                        ),
+                                    },
+                                )
+                            except Exception:  # noqa: BLE001 — best-effort
+                                logger.debug(
+                                    "Activity-log for master-child "
+                                    "propagation failed",
+                                    exc_info=True,
+                                )
+            except Exception:  # noqa: BLE001 — never break the child PATCH
+                logger.exception(
+                    "Master-child linked propagation failed for %s",
+                    position_id,
+                )
 
         # ── BUG-AUDIT01: build the field-level diff payload ──────────────
         # ``_audit_before`` snapshotted attributes BEFORE the UPDATE; we
@@ -4452,6 +4803,58 @@ class BOQService:
             members=members,
         )
 
+    async def find_resource_by_code(
+        self,
+        project_id: uuid.UUID,
+        code: str,
+    ) -> ResourceCodeLookupResponse:
+        """Find the first existing resource in a project that uses ``code``.
+
+        Issue #133. Resource codes live in
+        ``Position.metadata.resources[].code`` (JSON — no SQL column), so
+        we scan every position of the project oldest-first and return the
+        first match's reusable *definition* (name / type / unit /
+        unit_rate / currency) plus where it was found. The quantity is
+        deliberately excluded — it is always per-instance (same contract
+        as #127 position reuse). Returns ``found=False`` when the code is
+        unused anywhere in the project.
+        """
+        norm = (code or "").strip()
+        if not norm:
+            return ResourceCodeLookupResponse(found=False, code="")
+        norm_cf = norm.casefold()
+
+        positions = await self.position_repo.list_for_project(project_id)
+        for pos in positions:
+            meta = pos.metadata_ if isinstance(pos.metadata_, dict) else None
+            if not meta:
+                continue
+            resources = meta.get("resources")
+            if not isinstance(resources, list):
+                continue
+            for r in resources:
+                if not isinstance(r, dict):
+                    continue
+                r_code = str(r.get("code") or "").strip()
+                if not r_code or r_code.casefold() != norm_cf:
+                    continue
+                return ResourceCodeLookupResponse(
+                    found=True,
+                    code=r_code,
+                    match=ResourceCodeMatch(
+                        code=r_code,
+                        name=str(r.get("name") or r.get("description") or ""),
+                        type=str(r.get("type") or ""),
+                        unit=str(r.get("unit") or ""),
+                        unit_rate=_str_to_float(r.get("unit_rate")),
+                        currency=str(r.get("currency") or ""),
+                        position_id=str(pos.id),
+                        position_ordinal=str(pos.ordinal or ""),
+                        position_description=str(pos.description or ""),
+                    ),
+                )
+        return ResourceCodeLookupResponse(found=False, code=norm)
+
     # ── Composite reads ───────────────────────────────────────────────────
 
     async def get_boq_with_positions(self, boq_id: uuid.UUID) -> BOQWithPositions:
@@ -4532,6 +4935,18 @@ class BOQService:
         boq = await self.get_boq(boq_id)
         all_positions = await self.position_repo.list_all_for_boq(boq_id)
 
+        # Issue #111 — resolve the project FX table once so foreign-currency
+        # position totals convert into the base currency before they roll up
+        # into section subtotals / Direct Cost / Grand Total. Without this the
+        # export path (CSV/Excel/PDF all read get_boq_structured) summed
+        # foreign totals as base — the exact defect #131 fixed in the grid.
+        _fx_base, _fx_map = await self._resolve_project_fx(boq_id)
+
+        def _leaf_total_base(pos: Position) -> Decimal:
+            return _position_total_in_base(
+                pos.total, _position_currency(pos), _fx_map, _fx_base
+            )
+
         # Separate sections from items
         section_map: dict[uuid.UUID, Position] = {}
         children_map: dict[uuid.UUID, list[Position]] = {}
@@ -4577,7 +4992,7 @@ class BOQService:
             s = Decimal("0")
             for child in children_map.get(sid, []):
                 if not _is_section(child):
-                    s += Decimal(str(_str_to_float(child.total)))
+                    s += _leaf_total_base(child)
             own_leaf_subtotal[sid] = s
 
         # Rolled subtotal = own leaves + every descendant section's leaves.
@@ -4626,7 +5041,7 @@ class BOQService:
         for pos in remaining_ungrouped:
             if not _is_section(pos):
                 ungrouped_responses.append(_build_position_response(pos))
-                direct_cost += Decimal(str(_str_to_float(pos.total)))
+                direct_cost += _leaf_total_base(pos)
 
         # Calculate markups
         markups_orm = await self.markup_repo.list_for_boq(boq_id)
@@ -4675,6 +5090,19 @@ class BOQService:
             net_total=_round_currency(net_total),
             grand_total=_round_currency(net_total),
         )
+
+    async def get_export_fx(
+        self,
+        boq_id: uuid.UUID,
+    ) -> tuple[str, dict[str, str]]:
+        """Public accessor for a BOQ project's ``(base_currency, fx_map)``.
+
+        Issue #111 — the CSV / Excel exporters embed these frozen rates as
+        an audit appendix so a downloaded BOQ records exactly which FX
+        rates produced its base-currency totals (a later rate edit can't
+        retroactively change a delivered tender).
+        """
+        return await self._resolve_project_fx(boq_id)
 
     # ── Cost breakdown ─────────────────────────────────────────────────
 

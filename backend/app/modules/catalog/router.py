@@ -42,7 +42,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import String
 
-from app.dependencies import CurrentUserId, RequirePermission, SessionDep
+from app.dependencies import (
+    CurrentUserId,
+    OptionalUserPayload,
+    RequirePermission,
+    SessionDep,
+)
 from app.modules.catalog.schemas import (
     CatalogResourceCreate,
     CatalogResourceResponse,
@@ -447,7 +452,17 @@ async def adjust_prices(
 
 @router.get("/", response_model=CatalogSearchResponse)
 async def search_catalog(
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    # Public endpoint (mirrors the unauthenticated ``/regions/`` route and
+    # the "(public, query params)" contract in this module's docstring).
+    # Use OPTIONAL auth: ``CurrentUserId = None`` looks optional but is an
+    # ``Annotated[..., Depends()]`` param — FastAPI ignores the ``= None``
+    # default and ALWAYS resolves the dependency, so an anonymous /
+    # expired-token request got a 401 here while ``/regions/`` returned
+    # 200. The catalog page then rendered region tabs (with counts) but an
+    # empty resource list. ``OptionalUserPayload`` returns ``None`` for an
+    # anonymous request instead of raising, restoring the intended public
+    # behaviour. ``_user`` is unused — kept only as a presence marker.
+    _user: OptionalUserPayload = None,
     service: CatalogResourceService = Depends(_get_service),
     q: str | None = Query(default=None, description="Text search on code and name"),
     resource_type: str | None = Query(default=None, description="Filter: material, equipment, labor, operator"),
@@ -487,11 +502,18 @@ async def search_catalog(
 
 @router.get("/stats/", response_model=CatalogStatsResponse)
 async def catalog_stats(
-    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    region: str | None = Query(
+        default=None,
+        description="Scope counts to a single region so they match the "
+        "region-filtered resource list",
+    ),
+    # Public endpoint — same optional-auth fix as ``search_catalog`` above
+    # (a forced 401 here left the page's type/category badges empty).
+    _user: OptionalUserPayload = None,
     service: CatalogResourceService = Depends(_get_service),
 ) -> CatalogStatsResponse:
-    """Get aggregated counts by type and category."""
-    return await service.get_stats()
+    """Get aggregated counts by type and category (optionally per region)."""
+    return await service.get_stats(region=region)
 
 
 # ── Inverse lookup: positions that use a resource ─────────────────────────

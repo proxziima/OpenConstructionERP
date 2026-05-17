@@ -162,6 +162,22 @@ interface EVMData {
 type FinanceTab = 'budgets' | 'invoices' | 'payments' | 'evm';
 type InvoiceSubTab = 'payable' | 'receivable';
 
+/** Common currency shortlist for the create/edit selects. NOT a default —
+ *  the actual default always comes from project data (task #217). The
+ *  project's resolved currency is merged in dynamically so a project priced
+ *  in e.g. BRL/INR still has its own currency selectable. */
+const COMMON_CURRENCIES = [
+  'EUR', 'USD', 'GBP', 'CHF', 'PLN', 'CZK', 'SEK', 'NOK', 'DKK', 'AED', 'SAR',
+] as const;
+
+function currencyOptions(active: string): string[] {
+  const a = (active || '').trim().toUpperCase();
+  if (a && /^[A-Z]{3}$/.test(a) && !COMMON_CURRENCIES.includes(a as never)) {
+    return [a, ...COMMON_CURRENCIES];
+  }
+  return [...COMMON_CURRENCIES];
+}
+
 const INVOICE_STATUS_COLORS: Record<
   string,
   'neutral' | 'blue' | 'success' | 'warning' | 'error'
@@ -261,6 +277,9 @@ interface FinanceDashboardData {
   budget_warning_level: string;
   total_payments: number;
   cash_flow_net: number;
+  /** Dominant project currency resolved server-side (budgets → invoices).
+   *  Empty string when no financial record carries a currency yet. */
+  currency: string;
 }
 
 function FinanceSummaryCards({ projectId }: { projectId: string }) {
@@ -278,7 +297,12 @@ function FinanceSummaryCards({ projectId }: { projectId: string }) {
   const totalInvoiced = Number(dashboard?.total_payable ?? 0);
   const totalReceivable = Number(dashboard?.total_receivable ?? 0);
   const remaining = (totalRevised || totalBudget) - totalActual;
-  const currency = 'EUR';
+  // Currency comes from the data (task #217) — never hardcoded. When the
+  // backend cannot resolve one (no priced records yet) MoneyDisplay still
+  // renders, falling back to the user's preferred currency for the symbol.
+  const currency = dashboard?.currency || undefined;
+  const consumedPct = Number(dashboard?.budget_consumed_pct ?? 0);
+  const warningLevel = dashboard?.budget_warning_level ?? 'normal';
 
   if (
     !dashboard ||
@@ -323,26 +347,78 @@ function FinanceSummaryCards({ projectId }: { projectId: string }) {
     },
   ];
 
+  const barColor =
+    warningLevel === 'critical'
+      ? 'bg-red-500'
+      : warningLevel === 'caution'
+        ? 'bg-amber-500'
+        : 'bg-oe-blue';
+
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      {cards.map((card) => (
-        <Card key={card.label} padding="none" className="relative overflow-hidden">
-          <div className={`absolute top-0 left-0 right-0 h-1 ${card.accent}`} />
-          <div className="p-4 pt-3">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-2xs font-medium uppercase tracking-wider text-content-tertiary">
-                {card.label}
-              </span>
-              <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${card.color}`}>
-                {card.icon}
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {cards.map((card) => (
+          <Card key={card.label} padding="none" className="relative overflow-hidden">
+            <div className={`absolute top-0 left-0 right-0 h-1 ${card.accent}`} />
+            <div className="p-4 pt-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-2xs font-medium uppercase tracking-wider text-content-tertiary">
+                  {card.label}
+                </span>
+                <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${card.color}`}>
+                  {card.icon}
+                </div>
+              </div>
+              <div className="text-xl font-bold tabular-nums text-content-primary">
+                <MoneyDisplay amount={card.value} currency={currency} />
               </div>
             </div>
-            <div className="text-xl font-bold tabular-nums text-content-primary">
-              <MoneyDisplay amount={card.value} currency={currency} />
+          </Card>
+        ))}
+      </div>
+
+      {/* Budget consumption — makes the budget→actual money flow legible at
+          a glance and surfaces the over-budget risk the cards only imply. */}
+      {(totalRevised > 0 || totalBudget > 0) && (
+        <Card padding="none" className="overflow-hidden">
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-2 text-xs">
+              <span className="font-medium text-content-secondary">
+                {t('finance.budget_consumption', { defaultValue: 'Budget consumed' })}
+              </span>
+              <span className="tabular-nums font-semibold text-content-primary">
+                {consumedPct.toFixed(1)}%
+                {warningLevel !== 'normal' && (
+                  <span
+                    className={clsx(
+                      'ml-2 rounded-full px-2 py-0.5 text-2xs font-medium',
+                      warningLevel === 'critical'
+                        ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300'
+                        : 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300',
+                    )}
+                  >
+                    {warningLevel === 'critical'
+                      ? t('finance.budget_critical', { defaultValue: 'Over 95% — critical' })
+                      : t('finance.budget_caution', { defaultValue: 'Over 80% — watch' })}
+                  </span>
+                )}
+              </span>
             </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-surface-secondary">
+              <div
+                className={clsx('h-full rounded-full transition-all', barColor)}
+                style={{ width: `${Math.min(100, Math.max(0, consumedPct))}%` }}
+              />
+            </div>
+            <p className="mt-2 text-2xs text-content-tertiary">
+              {t('finance.budget_consumption_hint', {
+                defaultValue:
+                  'Actual cost vs revised budget. Lock a BOQ to seed budget lines; invoices roll up into Actual when paid.',
+              })}
+            </p>
           </div>
         </Card>
-      ))}
+      )}
     </div>
   );
 }
@@ -589,8 +665,18 @@ export function FinancePage() {
         <>
           {activeTab === 'budgets' && <BudgetsTab projectId={projectId} />}
           {activeTab === 'invoices' && <InvoicesTab projectId={projectId} />}
-          {activeTab === 'payments' && <PaymentsTab projectId={projectId} />}
-          {activeTab === 'evm' && <EVMTab projectId={projectId} />}
+          {activeTab === 'payments' && (
+            <PaymentsTab
+              projectId={projectId}
+              onGoToInvoices={() => setActiveTab('invoices')}
+            />
+          )}
+          {activeTab === 'evm' && (
+            <EVMTab
+              projectId={projectId}
+              onGoToBudgets={() => setActiveTab('budgets')}
+            />
+          )}
         </>
       )}
     </div>
@@ -883,7 +969,9 @@ function BudgetsTab({ projectId }: { projectId: string }) {
         >
           <div className="relative">
             <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-xs text-content-tertiary font-medium">
-              {budgets?.[0]?.currency ?? 'EUR'}
+              {budgets?.[0]?.currency_code ||
+                budgets?.[0]?.currency ||
+                t('finance.project_currency', { defaultValue: 'project currency' })}
             </span>
             <input
               type="number"
@@ -947,7 +1035,9 @@ function BudgetsTab({ projectId }: { projectId: string }) {
       actual: filtered.reduce((s, b) => s + Number(b.actual ?? 0), 0),
       forecast: filtered.reduce((s, b) => s + Number(b.forecast_final ?? b.forecast ?? 0), 0),
       variance: filtered.reduce((s, b) => s + Number(b.variance ?? 0), 0),
-      currency: filtered[0]?.currency_code ?? filtered[0]?.currency ?? 'EUR',
+      // Currency from data, never hardcoded (task #217). undefined →
+      // MoneyDisplay falls back to the user's preferred currency symbol.
+      currency: filtered[0]?.currency_code || filtered[0]?.currency || undefined,
     };
   }, [filtered]);
 
@@ -1117,7 +1207,7 @@ function BudgetsTab({ projectId }: { projectId: string }) {
                 </td>
               </tr>
             ) : filtered.map((b) => {
-              const rowCurrency = b.currency_code ?? b.currency ?? 'EUR';
+              const rowCurrency = b.currency_code || b.currency || undefined;
               const forecastValue = b.forecast_final ?? b.forecast ?? 0;
               return (
                 <tr
@@ -1215,7 +1305,7 @@ function BudgetsTab({ projectId }: { projectId: string }) {
             {t('finance.no_budget_match', { defaultValue: 'No matching budget lines' })}
           </p>
         ) : filtered.map((b) => {
-          const rowCurrency = b.currency_code ?? b.currency ?? 'EUR';
+          const rowCurrency = b.currency_code || b.currency || undefined;
           const forecastValue = b.forecast_final ?? b.forecast ?? 0;
           return (
             <Card key={b.id} className="p-4">
@@ -1229,9 +1319,11 @@ function BudgetsTab({ projectId }: { projectId: string }) {
                   </h4>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-2xs font-medium text-content-tertiary">
-                    {rowCurrency}
-                  </span>
+                  {rowCurrency && (
+                    <span className="text-2xs font-medium text-content-tertiary">
+                      {rowCurrency}
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={() => openEditBudget(b)}
@@ -1420,6 +1512,16 @@ function InvoicesTab({ projectId }: { projectId: string }) {
 
   const todayStr = new Date().toISOString().split('T')[0];
 
+  // Resolve the project's currency (budgets → invoices) so new invoices
+  // default to it rather than a hardcoded EUR (task #217). Shares the
+  // dashboard query key, so this is a cache hit alongside the summary cards.
+  const { data: invDashboard } = useQuery({
+    queryKey: ['finance', 'dashboard', projectId],
+    queryFn: () =>
+      apiGet<FinanceDashboardData>(`/v1/finance/dashboard/?project_id=${projectId}`),
+  });
+  const projectCurrency = invDashboard?.currency || '';
+
   const [invoiceForm, setInvoiceForm] = useState({
     direction: 'payable' as 'payable' | 'receivable',
     counterparty: '',
@@ -1429,7 +1531,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
     subtotal: '',
     tax: '',
     amount: '',
-    currency: 'EUR',
+    currency: '',
     description: '',
   });
   const [invoiceErrors, setInvoiceErrors] = useState<Record<string, string>>({});
@@ -1528,15 +1630,18 @@ function InvoicesTab({ projectId }: { projectId: string }) {
         amount_subtotal: String(sub),
         tax_amount: String(tax),
         amount_total: String(total),
-        currency_code: data.currency || 'EUR',
+        // Send the chosen currency; empty string lets the backend
+        // resolve the project currency (never hardcode EUR — task #217).
+        currency_code: data.currency || projectCurrency || '',
         notes: data.description || undefined,
         status: 'draft',
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['finance-invoices', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['finance', 'dashboard', projectId] });
       setShowCreate(false);
-      setInvoiceForm({ direction: 'payable', counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: 'EUR', description: '' });
+      setInvoiceForm({ direction: 'payable', counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: projectCurrency, description: '' });
       addToast({ type: 'success', title: t('finance.invoice_created', { defaultValue: 'Invoice created successfully' }) });
     },
     onError: (e: Error) =>
@@ -1561,7 +1666,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
         amount_subtotal: String(sub),
         tax_amount: String(tax),
         amount_total: String(total),
-        currency_code: data.form.currency || 'EUR',
+        currency_code: data.form.currency || projectCurrency || '',
         notes: data.form.description || null,
       });
     },
@@ -1625,7 +1730,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
     if (!filtered.length) return null;
     const totalAmount = filtered.reduce((s, inv) => s + Number(inv.amount ?? 0), 0);
     const totalPaid = filtered.filter((inv) => inv.status === 'paid').reduce((s, inv) => s + Number(inv.amount ?? 0), 0);
-    const currency = filtered[0]?.currency ?? 'EUR';
+    const currency = filtered[0]?.currency || projectCurrency || undefined;
     return { totalAmount, totalPaid, currency };
   }, [filtered]);
 
@@ -1717,7 +1822,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
             size="sm"
             icon={<Plus size={14} />}
             onClick={() => {
-              setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: 'EUR', description: '' });
+              setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: projectCurrency, description: '' });
               setInvoiceErrors({});
               setShowCreate(true);
             }}
@@ -1788,7 +1893,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                   ? {
                       label: t('finance.new_invoice', { defaultValue: 'New Invoice' }),
                       onClick: () => {
-                        setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: 'EUR', description: '' });
+                        setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: projectCurrency, description: '' });
                         setInvoiceErrors({});
                         setShowCreate(true);
                       },
@@ -2181,17 +2286,18 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                 onChange={(e) => setInvoiceForm((f) => ({ ...f, currency: e.target.value }))}
                 className={inputCls}
               >
-                <option value="EUR">EUR</option>
-                <option value="USD">USD</option>
-                <option value="GBP">GBP</option>
-                <option value="CHF">CHF</option>
-                <option value="PLN">PLN</option>
-                <option value="CZK">CZK</option>
-                <option value="SEK">SEK</option>
-                <option value="NOK">NOK</option>
-                <option value="DKK">DKK</option>
-                <option value="AED">AED</option>
-                <option value="SAR">SAR</option>
+                {!invoiceForm.currency && (
+                  <option value="">
+                    {t('finance.currency_from_project', {
+                      defaultValue: 'Use project currency',
+                    })}
+                  </option>
+                )}
+                {currencyOptions(invoiceForm.currency).map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
               </select>
             </WideModalField>
             <WideModalField
@@ -2290,7 +2396,13 @@ function InvoicesTab({ projectId }: { projectId: string }) {
 
 /* ── Payments Tab ─────────────────────────────────────────────────────── */
 
-function PaymentsTab({ projectId }: { projectId: string }) {
+function PaymentsTab({
+  projectId,
+  onGoToInvoices,
+}: {
+  projectId: string;
+  onGoToInvoices: () => void;
+}) {
   const { t } = useTranslation();
 
   const { data: payments, isLoading } = useQuery({
@@ -2303,7 +2415,9 @@ function PaymentsTab({ projectId }: { projectId: string }) {
   const paymentTotals = useMemo(() => {
     if (!payments || !payments.length) return null;
     const total = payments.reduce((s, p) => s + Number(p.amount ?? 0), 0);
-    const currency = payments[0]?.currency ?? 'EUR';
+    // Currency from the payment data; undefined → MoneyDisplay uses the
+    // user's preferred currency symbol (never hardcode EUR — task #217).
+    const currency = payments[0]?.currency || undefined;
     return { total, currency };
   }, [payments]);
 
@@ -2318,6 +2432,10 @@ function PaymentsTab({ projectId }: { projectId: string }) {
           defaultValue:
             'Payments are recorded automatically when you mark invoices as paid. Go to the Invoices tab to approve and pay invoices.',
         })}
+        action={{
+          label: t('finance.go_to_invoices', { defaultValue: 'Go to Invoices' }),
+          onClick: onGoToInvoices,
+        }}
       />
     );
   }
@@ -2325,12 +2443,22 @@ function PaymentsTab({ projectId }: { projectId: string }) {
   return (
     <Card padding="none">
       {/* Header bar */}
-      <div className="p-4 border-b border-border-light flex items-center justify-between">
+      <div className="p-4 border-b border-border-light flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <p className="text-sm text-content-secondary">
           {t('finance.payments_explanation', {
-            defaultValue: 'Payment records are created when invoices are marked as paid.',
+            defaultValue:
+              'Payments are read-only ledger entries created automatically when an invoice is marked as paid in the Invoices tab. To record a new payment, approve and pay its invoice.',
           })}
         </p>
+        <Button
+          variant="secondary"
+          size="sm"
+          icon={<FileText size={14} />}
+          onClick={onGoToInvoices}
+          className="shrink-0"
+        >
+          {t('finance.go_to_invoices', { defaultValue: 'Go to Invoices' })}
+        </Button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -2411,10 +2539,26 @@ function PaymentsTab({ projectId }: { projectId: string }) {
 
 /* ── EVM Dashboard Tab ────────────────────────────────────────────────── */
 
-function EVMTab({ projectId }: { projectId: string }) {
+function EVMTab({
+  projectId,
+  onGoToBudgets,
+}: {
+  projectId: string;
+  onGoToBudgets: () => void;
+}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
+
+  // Resolve the project currency from the finance dashboard so EVM money
+  // KPIs are never mislabelled as EUR (task #217). Shares the same query
+  // key as the summary cards, so this is a cache hit in practice.
+  const { data: dashboard } = useQuery({
+    queryKey: ['finance', 'dashboard', projectId],
+    queryFn: () =>
+      apiGet<FinanceDashboardData>(`/v1/finance/dashboard/?project_id=${projectId}`),
+  });
+  const evmCurrency = dashboard?.currency || undefined;
 
   // Backend returns EVMListResponse `{items: EVMSnapshot[], total: int}`
   // sorted by snapshot_date DESC — the most-recent snapshot is items[0].
@@ -2444,7 +2588,9 @@ function EVMTab({ projectId }: { projectId: string }) {
         ac: num(latest.ac), sv: num(latest.sv), cv: num(latest.cv),
         spi: num(latest.spi), cpi: num(latest.cpi), eac: num(latest.eac),
         etc: num(latest.etc), vac: num(latest.vac), tcpi: num(latest.tcpi),
-        currency: 'EUR',
+        // Resolved from the dashboard below — kept empty here so the
+        // currency is never hardcoded in the data layer (task #217).
+        currency: '',
         data_date: latest.snapshot_date,
       };
     },
@@ -2485,19 +2631,36 @@ function EVMTab({ projectId }: { projectId: string }) {
   }
 
   if (!evm) {
+    const hasBudget =
+      (dashboard?.total_budget_revised ?? 0) > 0 ||
+      (dashboard?.total_budget_original ?? 0) > 0;
     return (
       <div className="space-y-4">
         <EmptyState
           icon={<BarChart3 size={28} strokeWidth={1.5} />}
           title={t('finance.no_evm', { defaultValue: 'No EVM data available' })}
-          description={t('finance.no_evm_desc', {
-            defaultValue:
-              'Earned value data requires budget lines and a cost baseline. Create budget lines first, then click "Create Snapshot" to calculate EVM metrics.',
-          })}
-          action={{
-            label: t('finance.create_snapshot', { defaultValue: 'Create Snapshot' }),
-            onClick: () => snapshotMut.mutate(),
-          }}
+          description={
+            hasBudget
+              ? t('finance.no_evm_desc', {
+                  defaultValue:
+                    'Earned value data requires a cost baseline. Click "Create Snapshot" to compute BAC, SPI, CPI and the forecast metrics from your current budget and paid invoices.',
+                })
+              : t('finance.no_evm_no_budget_desc', {
+                  defaultValue:
+                    'EVM is computed from your project budget and paid invoices. Add budget lines first — then create a snapshot to track schedule and cost performance.',
+                })
+          }
+          action={
+            hasBudget
+              ? {
+                  label: t('finance.create_snapshot', { defaultValue: 'Create Snapshot' }),
+                  onClick: () => snapshotMut.mutate(),
+                }
+              : {
+                  label: t('finance.go_to_budgets', { defaultValue: 'Go to Budgets' }),
+                  onClick: onGoToBudgets,
+                }
+          }
         />
       </div>
     );
@@ -2508,6 +2671,10 @@ function EVMTab({ projectId }: { projectId: string }) {
     value: number;
     isCurrency: boolean;
     isIndex?: boolean;
+    /** Variance metrics colorize good=positive / bad=negative. The label
+     *  text is translated, so we must NOT match on it (was a bug: German
+     *  "Abweichung" never matched "Variance"). */
+    isVariance?: boolean;
     good?: 'high' | 'low';
   }[] = [
     {
@@ -2548,11 +2715,13 @@ function EVMTab({ projectId }: { projectId: string }) {
       label: t('finance.evm_sv', { defaultValue: 'SV (Schedule Variance)' }),
       value: evm.sv,
       isCurrency: true,
+      isVariance: true,
     },
     {
       label: t('finance.evm_cv', { defaultValue: 'CV (Cost Variance)' }),
       value: evm.cv,
       isCurrency: true,
+      isVariance: true,
     },
     {
       label: t('finance.evm_eac', { defaultValue: 'EAC (Estimate at Completion)' }),
@@ -2568,6 +2737,7 @@ function EVMTab({ projectId }: { projectId: string }) {
       label: t('finance.evm_vac', { defaultValue: 'VAC (Variance at Completion)' }),
       value: evm.vac,
       isCurrency: true,
+      isVariance: true,
     },
     {
       label: t('finance.evm_tcpi', { defaultValue: 'TCPI (To-Complete Performance)' }),
@@ -2622,9 +2792,15 @@ function EVMTab({ projectId }: { projectId: string }) {
         {kpiCards.map((kpi) => {
           let indicatorColor = '';
           if (kpi.isIndex) {
-            indicatorColor =
-              kpi.value >= 1.0 ? 'text-semantic-success' : 'text-semantic-error';
-          } else if (kpi.isCurrency && kpi.label.includes('Variance')) {
+            // TCPI is "good" when LOW (≤1 means the remaining work is
+            // achievable at or under the planned rate); all other indices
+            // are good when ≥1.
+            const onTrack =
+              kpi.good === 'low' ? kpi.value <= 1.0 : kpi.value >= 1.0;
+            indicatorColor = onTrack
+              ? 'text-semantic-success'
+              : 'text-semantic-error';
+          } else if (kpi.isCurrency && kpi.isVariance) {
             indicatorColor =
               kpi.value >= 0 ? 'text-semantic-success' : 'text-semantic-error';
           }
@@ -2640,32 +2816,36 @@ function EVMTab({ projectId }: { projectId: string }) {
                 {kpi.isCurrency ? (
                   <MoneyDisplay
                     amount={kpi.value}
-                    currency={evm.currency}
+                    currency={evmCurrency}
                     compact
-                    colorize={kpi.label.includes('Variance')}
+                    colorize={kpi.isVariance}
                   />
                 ) : (
                   (kpi.value ?? 0).toFixed(2)
                 )}
               </div>
-              {kpi.isIndex && (
-                <div className="mt-1 flex items-center gap-1 text-xs">
-                  {kpi.value >= 1.0 ? (
-                    <ArrowUpRight size={12} className="text-semantic-success" />
-                  ) : (
-                    <ArrowDownRight size={12} className="text-semantic-error" />
-                  )}
-                  <span
-                    className={
-                      kpi.value >= 1.0 ? 'text-semantic-success' : 'text-semantic-error'
-                    }
-                  >
-                    {kpi.value >= 1.0
-                      ? t('finance.on_track', { defaultValue: 'On track' })
-                      : t('finance.behind', { defaultValue: 'Behind' })}
-                  </span>
-                </div>
-              )}
+              {kpi.isIndex && (() => {
+                const onTrack =
+                  kpi.good === 'low' ? kpi.value <= 1.0 : kpi.value >= 1.0;
+                return (
+                  <div className="mt-1 flex items-center gap-1 text-xs">
+                    {onTrack ? (
+                      <ArrowUpRight size={12} className="text-semantic-success" />
+                    ) : (
+                      <ArrowDownRight size={12} className="text-semantic-error" />
+                    )}
+                    <span
+                      className={
+                        onTrack ? 'text-semantic-success' : 'text-semantic-error'
+                      }
+                    >
+                      {onTrack
+                        ? t('finance.on_track', { defaultValue: 'On track' })
+                        : t('finance.behind', { defaultValue: 'Behind' })}
+                    </span>
+                  </div>
+                );
+              })()}
             </Card>
           );
         })}

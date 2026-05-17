@@ -5,6 +5,33 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] — 2026-05-18 · Pipeline Builder + BOQ FX-correct exports + reuse codes
+
+### Added
+
+- Pipeline Builder: visual automation canvas + graph executor + node registry (6 node types), per-run states, publish-gated structural validation.
+- BOQ manual resources gain a `code` field with a project-wide reuse prompt: insert the existing resource or create-new-with-changed-code (#133 stage 1).
+- Exchange modules (22 regions) ship a one-click sample-template download.
+- BOQ CSV & Excel exports gain a Currency column + a frozen FX-rate appendix (rates can't be retroactively changed on a delivered BOQ).
+
+### Changed
+
+- New Project page: collapsible "Optional details" with progressive disclosure — fast path stays 3–4 fields (#195).
+- §4–12 deep-improvement wave across AI, Planning, Field Ops, Finance, Commercial, Communication, Documentation, Quality and Regional modules.
+
+### Fixed
+
+- BOQ reuse codes: a master edit now propagates to every linked instance's child/subtree (instance edits still diverge/unlink as intended) (#132).
+- BOQ section subtotals, Direct Cost and Grand Total now FX-convert foreign-currency positions in the export path (CSV/Excel/PDF/GAEB) — the export-side twin of the #131 grid fix (#111).
+- /catalog resources not displaying for anonymous/demo access (#196).
+- BIM converters status panel is now dismissible (#194).
+- GitHub issues #128, #129, #131, #134, #135 resolved; takeoff measurements horizontal scroll (#182).
+- Finance/procurement project-currency inheritance is now best-effort — a failed lookup never 500s a budget/PO create.
+
+### Security
+
+- Pipeline Builder endpoints (list / get / update / **delete** / runs / node-types) required no authentication — all now require an authenticated user.
+
 ## [3.4.1] — 2026-05-17 · Authenticated media loading + dual IFC/RVT showcase
 
 ### Fixed

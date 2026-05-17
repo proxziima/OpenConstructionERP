@@ -136,32 +136,47 @@ class CatalogResourceRepository:
         # Expire cached ORM instances so the next get_by_id re-reads from DB
         self.session.expire_all()
 
-    async def count(self) -> int:
-        """Total number of active catalog resources."""
-        stmt = select(func.count()).select_from(
-            select(CatalogResource).where(CatalogResource.is_active.is_(True)).subquery()
-        )
+    async def count(self, region: str | None = None) -> int:
+        """Total number of active catalog resources (optionally per region)."""
+        inner = select(CatalogResource).where(CatalogResource.is_active.is_(True))
+        if region:
+            inner = inner.where(CatalogResource.region == region)
+        stmt = select(func.count()).select_from(inner.subquery())
         return (await self.session.execute(stmt)).scalar_one()
 
-    async def stats_by_type(self) -> list[tuple[str, int]]:
-        """Count of active resources grouped by resource_type."""
+    async def stats_by_type(self, region: str | None = None) -> list[tuple[str, int]]:
+        """Count of active resources grouped by resource_type.
+
+        When ``region`` is given the counts are scoped to that region so
+        the UI's type tabs match the region-filtered resource list (an
+        unscoped count would advertise rows the list can never show).
+        """
         stmt = (
             select(CatalogResource.resource_type, func.count())
             .where(CatalogResource.is_active.is_(True))
             .group_by(CatalogResource.resource_type)
             .order_by(func.count().desc())
         )
+        if region:
+            stmt = stmt.where(CatalogResource.region == region)
         result = await self.session.execute(stmt)
         return list(result.all())
 
-    async def stats_by_category(self) -> list[tuple[str, int]]:
-        """Count of active resources grouped by category."""
+    async def stats_by_category(self, region: str | None = None) -> list[tuple[str, int]]:
+        """Count of active resources grouped by category.
+
+        Scoped by ``region`` when supplied — otherwise a category badge
+        could show a non-zero count while the region-filtered list under
+        it is empty (the reported "count says N but No resources found").
+        """
         stmt = (
             select(CatalogResource.category, func.count())
             .where(CatalogResource.is_active.is_(True))
             .group_by(CatalogResource.category)
             .order_by(func.count().desc())
         )
+        if region:
+            stmt = stmt.where(CatalogResource.region == region)
         result = await self.session.execute(stmt)
         return list(result.all())
 

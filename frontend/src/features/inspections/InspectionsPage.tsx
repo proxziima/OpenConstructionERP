@@ -28,6 +28,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { Button, Card, Badge, EmptyState, Breadcrumb, ConfirmDialog, SkeletonTable } from '@/shared/ui';
+import { SectionIntro } from '@/features/validation';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { apiGet, apiPost, triggerDownload } from '@/shared/lib/api';
@@ -674,6 +675,7 @@ async function downloadExcelExport(url: string, fallbackFilename: string): Promi
 
 export function InspectionsPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { projectId: routeProjectId } = useParams<{ projectId: string }>();
   const qc = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
@@ -907,7 +909,7 @@ export function InspectionsPage() {
   const createDefectMut = useMutation({
     mutationFn: (inspectionId: string) =>
       apiPost<{ punch_item_id: string; title: string }>(
-        `/v1/inspections/${inspectionId}/create-defect`,
+        `/v1/inspections/${inspectionId}/create-defect/`,
         {},
       ),
     onSuccess: (data) => {
@@ -1000,6 +1002,32 @@ export function InspectionsPage() {
           </Button>
         </div>
       </div>
+
+      <SectionIntro
+        storageKey="inspections"
+        title={t('inspections.intro_title', {
+          defaultValue: 'Quality inspections in the QA workflow',
+        })}
+        links={[
+          {
+            label: t('inspections.intro_link_punch', { defaultValue: 'Punch List' }),
+            onClick: () => navigate('/punchlist'),
+          },
+          {
+            label: t('inspections.intro_link_ncr', { defaultValue: 'NCRs' }),
+            onClick: () => navigate('/ncr'),
+          },
+          {
+            label: t('inspections.intro_link_qms', { defaultValue: 'QMS overview' }),
+            onClick: () => navigate('/qms'),
+          },
+        ]}
+      >
+        {t('inspections.intro_body', {
+          defaultValue:
+            'Schedule and record quality inspections (structural, MEP, concrete, handover, …) against a project. Completing an inspection with a fail/partial result lets you raise a Punch List item or an NCR in one click, keeping the inspect → defect → close-out loop fully traceable.',
+        })}
+      </SectionIntro>
 
       {/* No-project warning */}
       {!projectId && (
