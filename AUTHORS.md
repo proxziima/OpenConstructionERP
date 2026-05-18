@@ -11,8 +11,12 @@ estimation.
 
 ## Contributors
 
-OpenConstructionERP is built together with the community. See the full list of
-everyone who has contributed:
+OpenConstructionERP is built together with the community.
+
+- **skolodi** ([@skolodi](https://github.com/skolodi)) — issue reports and
+  field feedback on the BOQ AI assistant.
+
+See the full list of everyone who has contributed:
 
 https://github.com/datadrivenconstruction/OpenConstructionERP/graphs/contributors
 
