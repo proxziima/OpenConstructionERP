@@ -141,7 +141,7 @@ from app.modules.boq.schemas import (
     SustainabilityResponse,
     TemplateInfo,
 )
-from app.modules.boq.service import BOQService
+from app.modules.boq.service import MAX_NESTING_DEPTH, BOQService
 from app.modules.costs.repository import CostItemRepository
 
 router = APIRouter()
@@ -1905,6 +1905,25 @@ async def reorder_positions(
         boq_id=boq_id,
     )
     return {"ok": True}
+
+
+# ── BOQ limits (Issue #136) ───────────────────────────────────────────────────
+
+
+@router.get(
+    "/limits/",
+    summary="BOQ structural limits (max nesting depth, etc.)",
+    dependencies=[Depends(RequirePermission("boq.read"))],
+)
+async def get_boq_limits() -> dict[str, int]:
+    """Return server-enforced BOQ structural limits.
+
+    Issue #136 — the editor reads ``max_nesting_depth`` so it can disable
+    "add child" / "add sub-section" once the configurable cap is reached
+    and show a tooltip, keeping the UI in lock-step with the backend
+    validation (single source of truth: ``service.MAX_NESTING_DEPTH``).
+    """
+    return {"max_nesting_depth": MAX_NESTING_DEPTH}
 
 
 # ── Section CRUD ──────────────────────────────────────────────────────────────

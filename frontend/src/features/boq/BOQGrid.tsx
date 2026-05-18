@@ -51,6 +51,8 @@ import {
   type CostAutocompleteItem,
   type ResourceCodeMatch,
   groupPositionsIntoSections,
+  getPositionDepth,
+  DEFAULT_MAX_NESTING_DEPTH,
 } from './api';
 import {
   acquireLock as acquireCollabLock,
@@ -358,6 +360,23 @@ export interface BOQGridProps {
    * a section row.
    */
   onReuseCode?: (sectionId?: string) => void;
+  /**
+   * Issue #136 — add a child Partida under the given position (deep
+   * nesting of partidas-within-partidas). Disabled in the UI once the
+   * configurable depth cap is reached.
+   */
+  onAddChildPosition?: (parentId: string) => void;
+  /**
+   * Issue #136 — add a sub-section under the given section (deep nesting
+   * of sections-within-sections). Disabled at the depth cap.
+   */
+  onAddSubSection?: (parentSectionId: string) => void;
+  /**
+   * Issue #136 — server-enforced maximum nesting depth (tiers). The grid
+   * disables "add child" / "add sub-section" once a row sits at this
+   * depth and shows an i18n tooltip explaining the cap.
+   */
+  maxNestingDepth?: number;
   /** Issue #127 — open the linked-positions modal for a position. */
   onShowLinks?: (positionId: string) => void;
   /** Issue #127 — detach a position from its shared code (value-preserving). */
@@ -428,6 +447,9 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   onLookupResourceByCode,
   onDuplicatePosition,
   onReuseCode,
+  onAddChildPosition,
+  onAddSubSection,
+  maxNestingDepth = DEFAULT_MAX_NESTING_DEPTH,
   onShowLinks,
   onUnlinkPosition,
   onSuggestRate,
@@ -534,6 +556,40 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   );
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  /* ── Issue #136: depth helpers for the deep-nesting cap ──────────────
+   * ``rowTier`` is 1-based (a top-level row is tier 1). Adding a CHILD
+   * makes it ``rowTier + 1``; the action is disabled once that would
+   * exceed ``maxNestingDepth`` so the UI never lets the user attempt a
+   * placement the backend would reject (and shows a tooltip explaining
+   * the cap). Single source of truth for the limit: the server. */
+  const posDepthMap = useMemo(() => {
+    const m = new Map<string, Position>();
+    for (const p of positions) m.set(p.id, p);
+    return m;
+  }, [positions]);
+
+  const rowTier = useCallback(
+    (rowId: string): number => {
+      const p = posDepthMap.get(rowId);
+      if (!p) return 1;
+      // getPositionDepth is 0-based ancestor count → +1 for 1-based tier.
+      return getPositionDepth(p, posDepthMap) + 1;
+    },
+    [posDepthMap],
+  );
+
+  /** True when a child added under ``rowId`` would breach the cap. */
+  const childWouldExceedCap = useCallback(
+    (rowId: string): boolean => rowTier(rowId) + 1 > maxNestingDepth,
+    [rowTier, maxNestingDepth],
+  );
+
+  const depthCapTooltip = t('boq.max_depth_reached_tooltip', {
+    defaultValue:
+      'Maximum nesting depth of {{max}} levels reached — flatten the structure or use fewer sub-levels.',
+    max: maxNestingDepth,
+  });
 
   /* ── Manual resource dialog state ────────────────────────────────── */
   interface ManualResourceDialogState {
@@ -2093,6 +2149,18 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                   label={t('boq.duplicate_position', { defaultValue: 'Duplicate Position' })}
                   onClick={() => { onDuplicatePosition?.(d.id as string); closeContextMenu(); }}
                 />
+                {/* ── Issue #136: nest a child Partida under this one ── */}
+                {onAddChildPosition && (() => {
+                  const capped = childWouldExceedCap(d.id as string);
+                  return (
+                    <CtxItem icon={<Plus size={14}/>}
+                      label={t('boq.add_child_position', { defaultValue: 'Add Child Partida' })}
+                      disabled={capped}
+                      title={capped ? depthCapTooltip : undefined}
+                      onClick={() => { onAddChildPosition(d.id as string); closeContextMenu(); }}
+                    />
+                  );
+                })()}
                 {/* ── Issue #127: reuse / linked-positions ──────────── */}
                 {onReuseCode && (
                   <CtxItem icon={<Link2 size={14}/>}
@@ -2212,11 +2280,22 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
             {contextMenu.type === 'section' && (() => {
               const d = contextMenu.data;
               const isCollapsed = collapsedSections.has(d.id as string);
+              const sectionCapped = childWouldExceedCap(d.id as string);
               return <>
                 <CtxItem icon={<Plus size={14}/>}
                   label={t('boq.add_position', { defaultValue: 'Add Position' })}
+                  disabled={sectionCapped}
+                  title={sectionCapped ? depthCapTooltip : undefined}
                   onClick={() => { onAddPosition(d.id as string); closeContextMenu(); }}
                 />
+                {onAddSubSection && (
+                  <CtxItem icon={<Plus size={14}/>}
+                    label={t('boq.add_sub_section', { defaultValue: 'Add Sub-section' })}
+                    disabled={sectionCapped}
+                    title={sectionCapped ? depthCapTooltip : undefined}
+                    onClick={() => { onAddSubSection(d.id as string); closeContextMenu(); }}
+                  />
+                )}
                 {onReuseCode && (
                   <CtxItem icon={<Link2 size={14}/>}
                     label={t('boq.reuse_code_action', { defaultValue: 'Reuse Existing Code…' })}
@@ -2537,22 +2616,31 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
 
 /* ── Context menu sub-components ─────────────────────────────────── */
 
-function CtxItem({ icon, label, onClick, danger }: {
+function CtxItem({ icon, label, onClick, danger, disabled, title }: {
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
   danger?: boolean;
+  /** Issue #136 — render greyed-out + non-interactive (e.g. depth cap). */
+  disabled?: boolean;
+  /** Native tooltip (Issue #136 — explains why an action is disabled). */
+  title?: string;
 }) {
   return (
     <button
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      title={title}
+      aria-disabled={disabled || undefined}
       className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-xs text-left transition-colors ${
-        danger
+        disabled
+          ? 'text-content-tertiary opacity-50 cursor-not-allowed'
+          : danger
           ? 'text-semantic-error hover:bg-semantic-error-bg'
           : 'text-content-primary hover:bg-surface-tertiary'
       }`}
     >
-      <span className={`shrink-0 ${danger ? '' : 'text-content-tertiary'}`}>{icon}</span>
+      <span className={`shrink-0 ${danger && !disabled ? '' : 'text-content-tertiary'}`}>{icon}</span>
       {label}
     </button>
   );

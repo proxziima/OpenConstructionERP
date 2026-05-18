@@ -5,6 +5,24 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] — 2026-05-18 · Multi-level BOQ hierarchy + resource-code dedup + match-pipeline restore
+
+### Added
+
+- BOQ multi-level hierarchy: sections-in-sections and partidas-in-partidas up to 8 nesting tiers, depth-capped on every create/bulk/section/re-parent path; `GET /v1/boq/limits/` exposes the cap (#136).
+- BOQ resource code: full duplicate handling — reuse the existing resource or create-new-with-changed-code; a master-resource edit propagates its definition to every reusing instance (quantity never propagates, user-overridden resources preserved) (#133).
+- New Project "Show all options": optional fields grouped into iconed cards — Description, Localization, Identification, Site address, Schedule & budget.
+
+### Changed
+
+- /match-elements: the deep 7-stage pipeline (Convert→Load→Schema→Filter→Group→Match→Rollup, per-stage Adjust, editable prompts) is the visible primary flow again — single rail, prominent resume doorway.
+
+### Fixed
+
+- Qdrant collection-info reads are version-tolerant (`points_count`→`vectors_count`→`count()`); fixes the `'CollectionInfo' object has no attribute 'vectors_count'` crash on /match-elements.
+- "Vector DB unreachable" banner is now actionable — explains the optional dependency, points to native Qdrant install, lexical-fallback note, wired Retry button.
+- Takeoff measurements tab fits in one viewport at desktop sizes — no page scrollbars (real fix after #181/#182).
+
 ## [3.5.0] — 2026-05-18 · Pipeline Builder + BOQ FX-correct exports + reuse codes
 
 ### Added

@@ -23,6 +23,7 @@ import {
   type Markup,
   type ActivityEntry,
   type CostAutocompleteItem,
+  DEFAULT_MAX_NESTING_DEPTH,
 } from './api';
 import { ApiError } from '@/shared/lib/api';
 import { projectsApi } from '@/features/projects/api';
@@ -200,6 +201,20 @@ export function BOQEditorPage() {
   });
 
   const markups: Markup[] = markupsData?.markups ?? [];
+
+  /* Issue #136 — server-enforced deep-nesting cap. Static across the
+   * session; the editor disables "add child / sub-section" once a row is
+   * this deep and shows an i18n tooltip. Falls back to the mirrored
+   * constant so the UI never blocks nesting the backend would accept. */
+  const { data: boqLimits } = useQuery({
+    queryKey: ['boq-limits'],
+    queryFn: () => boqApi.getLimits(),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const maxNestingDepth =
+    boqLimits?.max_nesting_depth ?? DEFAULT_MAX_NESTING_DEPTH;
 
   /**
    * VAT rate driven from the `tax`-category markup row — single source of
@@ -445,7 +460,11 @@ export function BOQEditorPage() {
       // ── Issue #127: linked-position feedback ─────────────────────────
       const meta = (normalized.metadata ?? {}) as Record<string, unknown>;
       const prop = meta.link_propagation as
-        | { propagated_to?: number; unlinked?: boolean }
+        | {
+            propagated_to?: number;
+            unlinked?: boolean;
+            resource_propagated_to?: number;
+          }
         | undefined;
 
       // (a) Master definition edit fanned out to N linked instances. Those
@@ -463,6 +482,28 @@ export function BOQEditorPage() {
             defaultValue:
               'Updated {{count}} linked position(s) across this project.‌⁠‍',
             count: prop.propagated_to,
+          }),
+        });
+      }
+
+      // (a2) Issue #133 — a master RESOURCE definition edit fanned out to
+      // resource instances on OTHER positions sharing that code. Those
+      // rows are elsewhere in the BOQ, so refetch and inform the user.
+      if (
+        prop &&
+        typeof prop.resource_propagated_to === 'number' &&
+        prop.resource_propagated_to > 0
+      ) {
+        queryClient.invalidateQueries({ queryKey: ['boq', boqId] });
+        addToast({
+          type: 'info',
+          title: t('boq.resource_link_propagated_title', {
+            defaultValue: 'Resource definition propagated‌⁠‍',
+          }),
+          message: t('boq.resource_link_propagated_msg', {
+            defaultValue:
+              'Updated the shared resource on {{count}} other position(s) across this project.‌⁠‍',
+            count: prop.resource_propagated_to,
           }),
         });
       }
@@ -1551,7 +1592,7 @@ export function BOQEditorPage() {
   /* ── Handlers ──────────────────────────────────────────────────────── */
 
   const sectionMutation = useMutation({
-    mutationFn: (data: { ordinal: string; description: string }) =>
+    mutationFn: (data: { ordinal: string; description: string; parent_id?: string | null }) =>
       boqApi.addSection(boqId!, data),
     onSuccess: () => {
       invalidateAll();
@@ -1561,6 +1602,33 @@ export function BOQEditorPage() {
       addToast({ type: 'error', title: t('boq.section_add_failed', { defaultValue: 'Failed to add section' }), message: err.message });
     },
   });
+
+  /**
+   * Issue #136 — create a sub-section nested under ``parentSectionId``.
+   * Backend enforces the depth cap; the grid already disables the menu
+   * item at the cap, so this is a straightforward nested create. The
+   * ordinal is derived from the parent + its existing direct sub-sections
+   * (gap-of-10, mirroring handleAddPosition).
+   */
+  const handleAddSubSection = useCallback(
+    (parentSectionId: string) => {
+      if (!boqId) return;
+      const all = boq?.positions ?? [];
+      const parent = all.find((p) => p.id === parentSectionId);
+      const parentOrdinal = parent?.ordinal ?? '01';
+      const prefix = `${parentOrdinal}.`;
+      let maxSuffix = 0;
+      for (const p of all) {
+        if (p.parent_id !== parentSectionId) continue;
+        if (!p.ordinal?.startsWith(prefix)) continue;
+        const suffix = parseInt(p.ordinal.slice(prefix.length), 10);
+        if (!isNaN(suffix) && suffix > maxSuffix) maxSuffix = suffix;
+      }
+      const ordinal = `${parentOrdinal}.${String(maxSuffix + 10).padStart(2, '0')}`;
+      sectionMutation.mutate({ ordinal, description: '', parent_id: parentSectionId });
+    },
+    [boqId, boq?.positions, sectionMutation],
+  );
 
   /** Section name modal */
   const [showSectionModal, setShowSectionModal] = useState(false);
@@ -3568,6 +3636,9 @@ export function BOQEditorPage() {
           onLookupResourceByCode={handleLookupResourceByCode}
           onDuplicatePosition={handleDuplicatePosition}
           onReuseCode={handleReuseCode}
+          onAddChildPosition={(parentId) => handleAddPosition(parentId)}
+          onAddSubSection={handleAddSubSection}
+          maxNestingDepth={maxNestingDepth}
           onShowLinks={handleShowLinks}
           onUnlinkPosition={handleUnlinkPosition}
           onSuggestRate={handleSuggestRate}

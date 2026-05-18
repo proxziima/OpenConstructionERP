@@ -69,6 +69,9 @@ export interface Position {
 export interface LinkPropagationMeta {
   propagated_to: number;
   unlinked: boolean;
+  /** Issue #133 — count of linked RESOURCE instances a master resource
+   *  definition edit was fanned out to (separate from position links). */
+  resource_propagated_to?: number;
 }
 
 /** One member of a reference-code link group. */
@@ -93,6 +96,24 @@ export interface PositionLinksResponse {
   instance_count: number;
   members: PositionLinkMember[];
 }
+
+/**
+ * Issue #136 — server-enforced BOQ structural limits. The editor reads
+ * `max_nesting_depth` so it can disable "add child" / "add sub-section"
+ * once the configurable cap is reached and surface an i18n tooltip,
+ * keeping the UI in lock-step with the backend validation.
+ */
+export interface BOQLimits {
+  max_nesting_depth: number;
+}
+
+/**
+ * Conservative client-side fallback for {@link BOQLimits.max_nesting_depth}
+ * — mirrors `service.MAX_NESTING_DEPTH`. Used only until the `/limits/`
+ * fetch resolves (or if it fails) so the UI never blocks nesting that the
+ * backend would actually accept.
+ */
+export const DEFAULT_MAX_NESTING_DEPTH = 8;
 
 /** Issue #133 — one existing resource that already uses a given code. */
 export interface ResourceCodeMatch {
@@ -989,9 +1010,14 @@ export const boqApi = {
   duplicatePosition: (posId: string) =>
     apiPost<Position>(`/v1/boq/positions/${posId}/duplicate/`, {}),
 
-  /* Section */
-  addSection: (boqId: string, data: { ordinal: string; description: string }) =>
-    apiPost<Position>(`/v1/boq/boqs/${boqId}/sections/`, { boq_id: boqId, ...data }),
+  /* Issue #136 — server-enforced structural limits (max nesting depth). */
+  getLimits: () => apiGet<BOQLimits>('/v1/boq/limits/'),
+
+  /* Section — Issue #136: optional parent_id nests a section under another. */
+  addSection: (
+    boqId: string,
+    data: { ordinal: string; description: string; parent_id?: string | null },
+  ) => apiPost<Position>(`/v1/boq/boqs/${boqId}/sections/`, { boq_id: boqId, ...data }),
 
   /* Position CRUD */
   addPosition: (data: CreatePositionData) =>

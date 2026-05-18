@@ -1552,6 +1552,42 @@ _LINK_UNLINK_TRIGGER_FIELDS: tuple[str, ...] = (
 
 _AUTO_CODE_PREFIX = "R-"
 
+# ── Issue #133 (full): resource code dedup + master→instance propagation ──
+#
+# Resources are JSON leaves on ``Position.metadata.resources`` — there is
+# no resource row / link_role. The canonical (master) definition for a
+# resource ``code`` is the OLDEST position carrying that code (same rule
+# ``find_resource_by_code`` uses for the reuse prompt). When that master
+# resource's DEFINITION fields change, the change propagates to every
+# OTHER position whose resource carries the same code — EXCEPT a target
+# resource the user explicitly diverged (``_code_overridden`` marker).
+# Quantity is NEVER propagated (per-instance, mirrors #127). This extends
+# the existing reuse plumbing — it does not introduce a parallel model.
+_RESOURCE_DEFINITION_FIELDS: tuple[str, ...] = (
+    "name",
+    "description",
+    "type",
+    "unit",
+    "unit_rate",
+    "currency",
+)
+
+# ── Issue #136: multi-level section / partida hierarchy ──────────────────
+#
+# Historically a BOQ had exactly 3 fixed tiers: Section → Partida → Resource.
+# Real estimating practice nests far deeper — the issue reports up to ~8
+# tiers ("a veces se utilizan hasta 8 niveles"). We therefore allow
+# generous deep nesting of Sections-within-Sections and Partidas-within-
+# Partidas, capped by a SINGLE configurable constant so the limit is easy
+# to tune and cycles / runaway recursion are still impossible.
+#
+# ``MAX_NESTING_DEPTH`` is the maximum number of *position* tiers (1-based:
+# a top-level row is tier 1). Resources are JSON leaves on a position and
+# are NOT counted here. The cap is enforced on BOTH create (add_position /
+# bulk_add_positions / create_section) and the parent_id-move path of
+# update_position so a deep tree can never be assembled by either route.
+MAX_NESTING_DEPTH = 8
+
 
 def _generate_internal_reference_code() -> str:
     """Generate a stable, collision-resistant internal reusable code.
@@ -1712,6 +1748,110 @@ class BOQService:
                         ),
                     )
                 frontier.append(child.id)
+
+    async def _parent_chain_depth(self, parent_id: uuid.UUID | None) -> int:
+        """Return the 1-based tier of the position identified by ``parent_id``.
+
+        Issue #136. Walks ``parent_id`` → root counting hops, INCLUDING the
+        node itself: a top-level position returns 1, its direct child's
+        parent returns 1 (so the child is tier 2), and so on. ``None``
+        returns 0 (a row with no parent is tier 1, computed by the caller).
+        A ``visited`` guard makes a pre-existing corrupt cycle terminate
+        instead of looping forever (defence-in-depth — ``_validate_parent_id``
+        already blocks cycle *creation*).
+        """
+        if parent_id is None:
+            return 0
+        depth = 0
+        visited: set[uuid.UUID] = set()
+        current: uuid.UUID | None = parent_id
+        while current is not None:
+            if current in visited:
+                logger.warning(
+                    "Depth guard: cycle detected walking ancestors of %s",
+                    parent_id,
+                )
+                break
+            visited.add(current)
+            node = await self.position_repo.get_by_id(current)
+            if node is None:
+                break
+            depth += 1
+            current = getattr(node, "parent_id", None)
+            if depth > MAX_NESTING_DEPTH + 4:
+                # Hard stop well past the cap — a chain this long is
+                # already over-deep; the caller's cap check will reject it.
+                break
+        return depth
+
+    async def _validate_nesting_depth(
+        self,
+        *,
+        new_parent_id: uuid.UUID | None,
+        moving_subtree_root: uuid.UUID | None = None,
+    ) -> None:
+        """Reject a placement that would exceed ``MAX_NESTING_DEPTH`` tiers.
+
+        Issue #136. ``new_parent_id`` is the candidate parent.
+        ``_parent_chain_depth`` returns the parent's OWN 1-based tier
+        (it counts the parent itself plus all of its ancestors), so the
+        created / moved node lands at tier ``parent_tier + 1``. When
+        ``moving_subtree_root`` is given (the update / move path) the
+        DEEPEST descendant of that subtree must also stay within the cap,
+        so the whole branch is depth-checked, not just its root.
+
+        Raises:
+            HTTPException 422: the placement would create tier
+                ``> MAX_NESTING_DEPTH``.
+        """
+        if new_parent_id is None:
+            base_tier = 1  # top-level row
+        else:
+            parent_tier = await self._parent_chain_depth(new_parent_id)
+            base_tier = parent_tier + 1
+
+        # On a move, account for the moved subtree's own internal depth so
+        # a deep branch can't be re-parented just below the cap and then
+        # silently overflow at its leaves.
+        extra = 0
+        if moving_subtree_root is not None:
+            extra = await self._subtree_height(moving_subtree_root)
+
+        deepest_tier = base_tier + extra
+        if deepest_tier > MAX_NESTING_DEPTH:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Maximum nesting depth of {MAX_NESTING_DEPTH} tiers "
+                    f"reached — cannot place this item {deepest_tier} "
+                    f"levels deep. Flatten the structure or use fewer "
+                    f"sub-levels."
+                ),
+            )
+
+    async def _subtree_height(self, root_id: uuid.UUID) -> int:
+        """Return the height of the subtree rooted at ``root_id``.
+
+        0 when ``root_id`` is a leaf, 1 when it has children but no
+        grandchildren, etc. Breadth-first with a ``visited`` guard so a
+        corrupt cycle terminates. Used by the move path so re-parenting a
+        deep branch is rejected if ANY leaf would exceed the cap.
+        """
+        height = 0
+        visited: set[uuid.UUID] = set()
+        frontier: list[tuple[uuid.UUID, int]] = [(root_id, 0)]
+        while frontier:
+            node_id, level = frontier.pop()
+            if node_id in visited:
+                continue
+            visited.add(node_id)
+            if level > height:
+                height = level
+            if level > MAX_NESTING_DEPTH + 4:
+                break
+            for child in await self.position_repo.list_children(node_id):
+                frontier.append((child.id, level + 1))
+        return height
 
     # ── Issue #127: linked-position helpers ───────────────────────────────
 
@@ -2183,6 +2323,8 @@ class BOQService:
             position_id=None,
             new_parent_id=data.parent_id,
         )
+        # Issue #136: enforce the configurable deep-nesting cap.
+        await self._validate_nesting_depth(new_parent_id=data.parent_id)
 
         # Issue #79: validate and stamp ``metadata.cost_item_id`` so a position
         # created with ``source='cwicr'`` (or any source) can carry a typed
@@ -2515,6 +2657,8 @@ class BOQService:
                 position_id=None,
                 new_parent_id=data.parent_id,
             )
+            # Issue #136: deep-nesting cap also guards the bulk path.
+            await self._validate_nesting_depth(new_parent_id=data.parent_id)
 
             merged_metadata: dict[str, Any] = (
                 dict(data.metadata) if isinstance(data.metadata, dict) else {}
@@ -2601,12 +2745,13 @@ class BOQService:
         """Create a section header row in a BOQ.
 
         A section is stored as a Position with unit="section", quantity=0,
-        unit_rate=0, and parent_id=None.  This distinguishes it from regular
-        items.
+        unit_rate=0.  This distinguishes it from regular items. Issue #136:
+        a section may nest under another section via ``data.parent_id``,
+        bounded by ``MAX_NESTING_DEPTH``.
 
         Args:
             boq_id: Target BOQ identifier.
-            data: Section creation payload (ordinal, description).
+            data: Section creation payload (ordinal, description, parent_id).
 
         Returns:
             The newly created section (Position).
@@ -2614,6 +2759,8 @@ class BOQService:
         Raises:
             HTTPException 404 if the target BOQ doesn't exist.
             HTTPException 409 if the BOQ is locked.
+            HTTPException 422 if ``parent_id`` is invalid or the placement
+                would exceed ``MAX_NESTING_DEPTH`` (Issue #136).
         """
         await self._ensure_not_locked(boq_id)
 
@@ -2624,11 +2771,20 @@ class BOQService:
                 detail=f"Section with ordinal '{data.ordinal}' already exists in this BOQ",
             )
 
+        # Issue #136: validate the (optional) parent + enforce the cap.
+        parent_id = getattr(data, "parent_id", None)
+        await self._validate_parent_id(
+            boq_id=boq_id,
+            position_id=None,
+            new_parent_id=parent_id,
+        )
+        await self._validate_nesting_depth(new_parent_id=parent_id)
+
         max_order = await self.position_repo.get_max_sort_order(boq_id)
 
         section = Position(
             boq_id=boq_id,
-            parent_id=None,
+            parent_id=parent_id,
             ordinal=data.ordinal,
             description=data.description,
             unit="section",
@@ -2793,6 +2949,21 @@ class BOQService:
             except AttributeError:
                 _audit_before[key] = None
 
+        # ── Issue #133: snapshot resources BEFORE the write so a master
+        # resource definition edit can be diffed + propagated afterwards.
+        _res_before: list[dict[str, Any]] | None = None
+        if "metadata" in fields:
+            _existing_meta = (
+                position.metadata_
+                if isinstance(position.metadata_, dict)
+                else {}
+            )
+            _rb = _existing_meta.get("resources")
+            if isinstance(_rb, list):
+                _res_before = [
+                    dict(r) if isinstance(r, dict) else {} for r in _rb
+                ]
+
         # If ordinal is being changed, check uniqueness within the BOQ
         if "ordinal" in fields and fields["ordinal"] != position.ordinal:
             if await self.position_repo.ordinal_exists(position.boq_id, fields["ordinal"], exclude_id=position_id):
@@ -2809,6 +2980,12 @@ class BOQService:
                 boq_id=position.boq_id,
                 position_id=position_id,
                 new_parent_id=fields["parent_id"],
+            )
+            # Issue #136: re-parenting must keep the WHOLE moved subtree
+            # within the configurable depth cap, not just its root.
+            await self._validate_nesting_depth(
+                new_parent_id=fields["parent_id"],
+                moving_subtree_root=position_id,
             )
 
         # Convert float values to strings for storage and quantise to 4dp
@@ -3621,16 +3798,65 @@ class BOQService:
             except Exception:  # noqa: BLE001 — best-effort, never break PATCH
                 logger.debug("Activity-log write for position.updated failed", exc_info=True)
 
-        # ── Issue #127: surface the link outcome on the response ─────────
+        # ── Issue #133: master resource definition edit → propagate ──────
+        # If the patch changed a coded resource the editor owns the master
+        # definition for, fan the changed DEFINITION fields out to every
+        # other position's resource sharing that code (never the quantity,
+        # never a user-diverged instance). Mirrors the #127 contract.
+        _resource_propagated = 0
+        if (
+            # ``metadata`` is renamed to ``metadata_`` earlier in this
+            # method (the column writer expects the mapped attribute name),
+            # so accept either spelling here.
+            ("metadata" in fields or "metadata_" in fields)
+            and not _did_unlink_instance
+            and isinstance(position.metadata_, dict)
+        ):
+            _res_after_raw = position.metadata_.get("resources")
+            if isinstance(_res_after_raw, list):
+                # Snapshot the after-state into a plain list NOW — the
+                # propagation helper runs per-instance ``update_fields``
+                # (expire_all) and the async engine cannot lazy-refresh
+                # ``position.metadata_`` afterwards (MissingGreenlet).
+                _res_after = [
+                    dict(r) if isinstance(r, dict) else r
+                    for r in _res_after_raw
+                ]
+                _res_delta = self._resource_def_changed(
+                    _res_before, _res_after
+                )
+                if _res_delta:
+                    _resource_propagated = (
+                        await self._propagate_resource_definitions(
+                            editor_position=position,
+                            changed_by_code=_res_delta,
+                            actor_id=actor_id,
+                        )
+                    )
+                    # Per-instance writes above expired ``position``;
+                    # re-hydrate it so the response serialisation
+                    # (``_position_to_response_with_links``) reads live
+                    # attributes, not lazy-loads → MissingGreenlet.
+                    if _resource_propagated:
+                        try:
+                            await self.session.refresh(position)
+                        except Exception:  # noqa: BLE001 — best-effort
+                            logger.debug(
+                                "Refresh after resource propagation failed",
+                                exc_info=True,
+                            )
+
+        # ── Issue #127/#133: surface the link outcome on the response ────
         # Stashed on a NON-mapped attribute so the request-session commit
         # in ``get_session`` never persists it (mutating the mapped
         # ``metadata_`` column here would flush the transient key into the
         # DB). The router merges it into the response metadata.
-        if _propagated_count or _did_unlink_instance:
+        if _propagated_count or _did_unlink_instance or _resource_propagated:
             try:
                 position._link_propagation_info = {  # type: ignore[attr-defined]
                     "propagated_to": _propagated_count,
                     "unlinked": _did_unlink_instance,
+                    "resource_propagated_to": _resource_propagated,
                 }
             except Exception:  # noqa: BLE001 — purely cosmetic
                 pass
@@ -4854,6 +5080,253 @@ class BOQService:
                     ),
                 )
         return ResourceCodeLookupResponse(found=False, code=norm)
+
+    @staticmethod
+    def _resource_def_changed(
+        before: list[dict[str, Any]] | None,
+        after: list[dict[str, Any]] | None,
+    ) -> dict[str, dict[str, Any]]:
+        """Return ``{code: {field: new_value}}`` for resources whose
+        DEFINITION fields changed between two ``metadata.resources`` lists.
+
+        Issue #133. Only coded resources participate (a blank code is
+        un-shareable). Quantity / total are intentionally excluded — they
+        are per-instance and must never propagate. Matched positionally
+        first (the common in-place edit), then by code so a re-order does
+        not produce spurious diffs.
+        """
+        if not isinstance(after, list):
+            return {}
+        before_by_code: dict[str, dict[str, Any]] = {}
+        for r in before or []:
+            if isinstance(r, dict):
+                c = str(r.get("code") or "").strip()
+                if c:
+                    before_by_code.setdefault(c, r)
+        changed: dict[str, dict[str, Any]] = {}
+        for idx, r in enumerate(after):
+            if not isinstance(r, dict):
+                continue
+            code = str(r.get("code") or "").strip()
+            if not code:
+                continue
+            prev: dict[str, Any] | None = None
+            if (
+                isinstance(before, list)
+                and idx < len(before)
+                and isinstance(before[idx], dict)
+                and str(before[idx].get("code") or "").strip() == code
+            ):
+                prev = before[idx]
+            else:
+                prev = before_by_code.get(code)
+            delta: dict[str, Any] = {}
+            for f in _RESOURCE_DEFINITION_FIELDS:
+                new_v = r.get(f)
+                old_v = prev.get(f) if isinstance(prev, dict) else None
+                if new_v != old_v:
+                    delta[f] = new_v
+            if delta:
+                changed[code] = delta
+        return changed
+
+    async def _propagate_resource_definitions(
+        self,
+        *,
+        editor_position: Position,
+        changed_by_code: dict[str, dict[str, Any]],
+        actor_id: uuid.UUID | None,
+    ) -> int:
+        """Issue #133 — fan a master resource's definition edit out to the
+        linked resource instances across the project.
+
+        ``editor_position`` is the just-saved position. For each changed
+        resource ``code`` it only propagates when ``editor_position`` holds
+        the MASTER definition (the OLDEST position carrying that code —
+        same canonical rule as ``find_resource_by_code``). Other positions'
+        resources with the same code receive the changed DEFINITION fields
+        and have their ``total`` recomputed against THEIR OWN quantity
+        (never the master's). A target resource the user explicitly
+        diverged (``_code_overridden`` truthy) is left untouched and not
+        re-linked silently (the architecture guide: AI-augmented, human-confirmed).
+
+        Returns the number of resource instances updated. Best-effort —
+        never raises (a propagation hiccup must not fail the user's PATCH).
+        """
+        if not changed_by_code:
+            return 0
+        try:
+            project_id = await self.position_repo.project_id_for_boq(
+                editor_position.boq_id
+            )
+            if project_id is None:
+                return 0
+            # Capture editor identity NOW — per-instance ``update_fields``
+            # calls below run ``expire_all()`` and the async engine cannot
+            # lazy-refresh ``editor_position`` afterwards (MissingGreenlet).
+            editor_id = editor_position.id
+            editor_boq_id = editor_position.boq_id
+            # Oldest-first — the FIRST carrier of a code is its master.
+            positions = await self.position_repo.list_for_project(project_id)
+
+            # ── Snapshot EVERY position into plain values BEFORE any write.
+            # ``position_repo.update_fields`` ends in ``session.expire_all()``
+            # which expires every ORM instance in this unit of work; a later
+            # attribute read on a not-yet-processed row would lazy-load on
+            # the async engine → MissingGreenlet. (Same footgun + fix the
+            # #127 propagation uses — see ``_grp_snap``.)
+            snap: list[dict[str, Any]] = [
+                {
+                    "id": p.id,
+                    "boq_id": p.boq_id,
+                    "ordinal": p.ordinal,
+                    "quantity": p.quantity,
+                    "version": int(p.version or 0),
+                    "meta": (
+                        dict(p.metadata_)
+                        if isinstance(p.metadata_, dict)
+                        else {}
+                    ),
+                }
+                for p in positions
+            ]
+
+            def _has_code(meta: dict[str, Any], code: str) -> bool:
+                res = meta.get("resources")
+                if not isinstance(res, list):
+                    return False
+                return any(
+                    isinstance(rr, dict)
+                    and str(rr.get("code") or "").strip().casefold()
+                    == code.casefold()
+                    for rr in res
+                )
+
+            # Resolve which of the changed codes this editor actually owns
+            # (it must be the OLDEST carrier — first in the snapshot order).
+            owned_codes: set[str] = set()
+            for code in changed_by_code:
+                for s in snap:
+                    if _has_code(s["meta"], code):
+                        if s["id"] == editor_id:
+                            owned_codes.add(code)
+                        break  # first carrier decides ownership
+            if not owned_codes:
+                return 0
+            owned_cf = {c.casefold() for c in owned_codes}
+
+            updated = 0
+            affected_boqs: set[uuid.UUID] = set()
+            for s in snap:
+                if s["id"] == editor_id:
+                    continue
+                meta = s["meta"]
+                if not isinstance(meta, dict):
+                    continue
+                res_raw = meta.get("resources")
+                if not isinstance(res_raw, list):
+                    continue
+                new_res: list[Any] = [
+                    dict(r) if isinstance(r, dict) else r for r in res_raw
+                ]
+                touched = False
+                for r in new_res:
+                    if not isinstance(r, dict):
+                        continue
+                    rc = str(r.get("code") or "").strip()
+                    if not rc or rc.casefold() not in owned_cf:
+                        continue
+                    # Honour an explicit user divergence — never silently
+                    # overwrite an instance the user customised.
+                    if r.get("_code_overridden"):
+                        continue
+                    delta = None
+                    for c, d in changed_by_code.items():
+                        if c.casefold() == rc.casefold():
+                            delta = d
+                            break
+                    if not delta:
+                        continue
+                    for f, v in delta.items():
+                        r[f] = v
+                    # Recompute THIS resource's total against ITS OWN qty.
+                    r_qty = _str_to_float(r.get("quantity"))
+                    r_rate = _str_to_float(r.get("unit_rate"))
+                    r["total"] = round(r_qty * r_rate, 2)
+                    touched = True
+                if not touched:
+                    continue
+                new_meta = dict(meta)
+                new_meta["resources"] = new_res
+                # Recompute the position's derived unit_rate from resources
+                # (mirrors the frontend handleUpdateResourceFields rollup).
+                roll = 0.0
+                for r in new_res:
+                    if isinstance(r, dict):
+                        roll += _str_to_float(r.get("total")) or (
+                            _str_to_float(r.get("quantity"))
+                            * _str_to_float(r.get("unit_rate"))
+                        )
+                derived_rate = _quantize_money_str(round(roll, 4))
+                new_total = _compute_total(s["quantity"], derived_rate)
+                await self.position_repo.update_fields(
+                    s["id"],
+                    metadata_=new_meta,
+                    unit_rate=derived_rate,
+                    total=new_total,
+                    version=s["version"] + 1,
+                )
+                affected_boqs.add(s["boq_id"])
+                updated += 1
+                await _safe_publish(
+                    "boq.position.updated",
+                    {
+                        "position_id": str(s["id"]),
+                        "boq_id": str(s["boq_id"]),
+                        "ordinal": s["ordinal"],
+                        "changes": {
+                            "resource_code_propagation": sorted(owned_codes)
+                        },
+                        "kind": "linked_resource_propagation",
+                    },
+                    source_module="oe_boq",
+                )
+
+            if updated:
+                await self.session.flush()
+                if actor_id is not None:
+                    try:
+                        await self.log_activity(
+                            user_id=actor_id,
+                            action="resource.linked_propagation",
+                            target_type="position",
+                            description=(
+                                f"Propagated resource definition "
+                                f"({', '.join(sorted(owned_codes))}) to "
+                                f"{updated} linked instance(s)"
+                            ),
+                            project_id=project_id,
+                            boq_id=editor_boq_id,
+                            target_id=editor_id,
+                            changes={
+                                "codes": sorted(owned_codes),
+                                "instance_count": updated,
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 — best-effort
+                        logger.debug(
+                            "Activity-log for resource propagation failed",
+                            exc_info=True,
+                        )
+            return updated
+        except Exception:  # noqa: BLE001 — never break the user's PATCH
+            # ``editor_position`` may be expired here (a per-instance
+            # ``update_fields`` ran ``expire_all()``); avoid touching it.
+            logger.exception(
+                "Resource-definition propagation failed (editor %s)",
+                locals().get("editor_id", "?"),
+            )
+            return 0
 
     # ── Composite reads ───────────────────────────────────────────────────
 

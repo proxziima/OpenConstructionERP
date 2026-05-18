@@ -222,9 +222,13 @@ function vectorBandPalette(band: VectorReadiness['status_band']): {
 function VectorReadinessPill({
   readiness,
   isLoading,
+  onRetry,
+  isRetrying,
 }: {
   readiness: VectorReadiness | undefined;
   isLoading: boolean;
+  onRetry: () => void;
+  isRetrying: boolean;
 }) {
   const { t } = useTranslation();
   if (isLoading) {
@@ -311,12 +315,73 @@ function VectorReadinessPill({
       break;
   }
 
+  // Qdrant truly unreachable — replace the dead-end one-liner with an
+  // actionable explainer: what semantic search needs, how to bring it up
+  // (the QdrantHealthCard below has the one-click native installer), a
+  // retry, and the reassurance that matching still works without it.
+  if (readiness.status_band === 'disconnected') {
+    return (
+      <div
+        className={`flex flex-col gap-2.5 px-4 py-3 rounded-lg border text-xs ${palette.border} ${palette.bg}`}
+        role="status"
+        aria-live="polite"
+      >
+        <div className="flex items-start gap-2">
+          <Database className={`w-4 h-4 ${palette.text} shrink-0 mt-0.5`} />
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <span className={`font-medium ${palette.text}`}>{label}</span>
+            <span className="text-content-tertiary break-words">
+              {detail}
+            </span>
+          </div>
+        </div>
+        <p className="text-content-secondary leading-relaxed">
+          {t(
+            'match_elements.vector_status_disconnected_explainer',
+            'Semantic vector search is optional — it sharpens matches by meaning but needs a running Qdrant vector database. Use the "Vector database" panel below to start or install Qdrant natively (no Docker required), then retry.',
+          )}
+        </p>
+        <p className="text-content-secondary leading-relaxed">
+          {t(
+            'match_elements.vector_status_disconnected_fallback',
+            'You can still proceed now: matching automatically falls back to lexical (keyword) and rule-based scoring while the vector DB is offline.',
+          )}
+        </p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={isRetrying}
+            className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border font-medium ${palette.border} ${palette.text} hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            {isRetrying ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="w-3.5 h-3.5" />
+            )}
+            {t('match_elements.vector_status_retry', 'Retry connection')}
+          </button>
+          <Link
+            to="/costs"
+            className={`shrink-0 inline-flex items-center gap-1 underline ${palette.text} hover:opacity-80`}
+          >
+            {t(
+              'match_elements.vector_status_open_costs_long',
+              'Open cost-database tools',
+            )}
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   const isAmber = ['empty', 'missing', 'no_country', 'non_qdrant'].includes(
     readiness.status_band,
   );
-  // Only the no_country / non_qdrant / disconnected cases benefit from the
-  // raw "Open /costs" link; missing & empty are handled by the
-  // CatalogueAdvisor below with one-click bindable recommendations.
+  // Only the no_country / non_qdrant cases benefit from the raw
+  // "Open /costs" link; missing & empty are handled by the
+  // CatalogueAdvisor below with one-click bindable recommendations, and
+  // the disconnected band has its own actionable block above.
   const showCostsLink =
     isAmber &&
     readiness.status_band !== 'no_country' &&
@@ -518,6 +583,10 @@ function ProjectContextCard({
       <VectorReadinessPill
         readiness={readinessQ.data}
         isLoading={readinessQ.isLoading}
+        onRetry={() => {
+          void readinessQ.refetch();
+        }}
+        isRetrying={readinessQ.isFetching}
       />
       <CatalogueAdvisor
         projectRegion={project?.region ?? null}
@@ -1950,14 +2019,100 @@ export function MatchElementsPage() {
 
       <ProjectContextCard projectId={projectId} />
 
-      {/* Single guided flow. The old "Open the visible match pipeline"
-          entry card was removed — it duplicated the wizard as a second
-          competing step path. There is now exactly one stepper on the
-          page: MatchWizard drives Source → Scope → Run, then the same
-          journey continues into the visible 7-stage pipeline + review
-          (no second wizard). End goal: an accurate, project-adaptive
-          priced BoQ. The wizard's Resume strip (Step 1) covers the
-          "resume last session" affordance the old card offered. */}
+      {/* Single guided rail. There is exactly one stepper on the page —
+          MatchWizard drives Stage → Catalogue → Source → Run, then the
+          journey CONTINUES (not branches) into the visible deep 7-stage
+          pipeline (Convert → Load → Schema → Filter → Group → Match →
+          Rollup), each step tunable (editable LLM prompt, provider,
+          group keys). The doorway below is NOT a second competing
+          stepper: it only appears once prior sessions exist and is purely
+          the "resume straight into the deep pipeline" continuation that
+          was lost when the explicit pipeline entry card was removed in
+          v3.3.0. New matches still go through the single wizard rail. */}
+      {projectId && !sessionId && (sessionsQ.data?.length ?? 0) > 0 && (
+        <div className="mt-2 rounded-xl border border-indigo-200/70 dark:border-indigo-800/50 bg-gradient-to-br from-indigo-50/80 via-white to-white dark:from-indigo-950/30 dark:via-surface-primary dark:to-surface-primary p-4 shadow-sm">
+          <div className="flex items-start gap-3 flex-wrap">
+            <span className="w-9 h-9 rounded-xl bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-200 inline-flex items-center justify-center shrink-0">
+              <Layers className="w-5 h-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-base font-bold text-content-primary">
+                {t(
+                  'match_elements.pipeline.intro_title',
+                  'Open the visible match pipeline',
+                )}
+              </h3>
+              <p className="text-xs text-content-secondary mt-0.5 leading-relaxed">
+                {t(
+                  'match_elements.pipeline.intro_blurb',
+                  'Seven steps from CAD file to priced BoQ — Convert, Load, Schema, Filter, Group, Match, Rollup. Every step is visible, explained, and tunable (prompts, LLM provider, group keys).',
+                )}
+              </p>
+              <div className="flex items-center gap-1.5 flex-wrap mt-2">
+                {[
+                  'Convert',
+                  'Load',
+                  'Schema',
+                  'Filter',
+                  'Group',
+                  'Match',
+                  'Rollup',
+                ].map((s, i) => (
+                  <span
+                    key={s}
+                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-content-tertiary"
+                  >
+                    <span className="px-1.5 py-0.5 rounded bg-surface-secondary border border-border">
+                      {i + 1}.{' '}
+                      {t(
+                        `match_elements.pipeline.step_${s.toLowerCase()}`,
+                        s,
+                      )}
+                    </span>
+                    {i < 6 && (
+                      <ChevronsRight className="w-2.5 h-2.5 opacity-50" />
+                    )}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5 shrink-0">
+              <button
+                onClick={() => {
+                  const last = sessionsQ.data?.[0];
+                  if (last) {
+                    setSessionId(last.id);
+                    matchElementsApi.touchSession(last.id).catch(() => {});
+                  }
+                }}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-oe-blue text-white hover:opacity-90"
+              >
+                <PlayCircle className="w-4 h-4" />
+                {t(
+                  'match_elements.pipeline.intro_resume',
+                  'Resume last session',
+                )}
+              </button>
+              <button
+                onClick={() => createSessionMut.mutate()}
+                disabled={createSessionMut.isPending}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-content-secondary hover:bg-surface-secondary disabled:opacity-50"
+              >
+                {createSessionMut.isPending ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Layers className="w-3 h-3" />
+                )}
+                {t(
+                  'match_elements.pipeline.intro_cta',
+                  'Open the pipeline',
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {projectId && !sessionId && (
         <MatchWizard
           projectId={projectId}

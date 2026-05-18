@@ -938,7 +938,14 @@ async def vector_v3_status(
             payload["exists"] = True
             try:
                 col = client.get_collection(payload["collection"])
-                pc = int(col.points_count or 0)
+                # Version-tolerant: ``points_count`` → ``vectors_count``
+                # (older qdrant-client) → live count().
+                pc_raw = getattr(col, "points_count", None)
+                if pc_raw is None:
+                    pc_raw = getattr(col, "vectors_count", None)
+                if pc_raw is None:
+                    pc_raw = client.count(payload["collection"]).count
+                pc = int(pc_raw or 0)
                 payload["points_count"] = pc
                 payload["status_band"] = "ready" if pc > 0 else "empty"
             except Exception:
@@ -1638,10 +1645,19 @@ async def restore_qdrant_snapshot(
 
     duration = round(time.monotonic() - start, 1)
 
-    # Get collection info after restore
+    # Get collection info after restore. ``CollectionInfo.vectors_count``
+    # was removed in newer qdrant-client — read ``points_count`` first and
+    # fall back resiliently so a client version bump can't crash this.
     try:
         col_info = client.get_collection(collection_name)
-        vectors_count = col_info.vectors_count
+        vectors_count = getattr(col_info, "points_count", None)
+        if vectors_count is None:
+            vectors_count = getattr(col_info, "vectors_count", None)
+        if vectors_count is None:
+            try:
+                vectors_count = client.count(collection_name).count
+            except Exception:
+                vectors_count = None
     except Exception:
         vectors_count = None
 

@@ -8,7 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   X, FolderPlus, AlertTriangle, MapPin, Map as MapIcon, CloudSun,
   Check, ChevronLeft, ChevronRight, ChevronDown, Layers, Wand2, Zap,
-  ArrowRight, Plus,
+  ArrowRight, Plus, Globe, Hash, CalendarDays, FileText,
 } from 'lucide-react';
 import { Button, Input, InfoHint } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
@@ -1034,12 +1034,21 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
                   hidden={!optionalOpen}
                   className="space-y-4"
                 >
-                <div>
-                  <OptionalLabel
-                    htmlFor="qc-description"
-                    text={t('projects.description', { defaultValue: 'Description' })}
-                    optionalText={t('projects.create.optional_badge', { defaultValue: 'Optional' })}
-                  />
+                {/* Description & notes */}
+                <div className="rounded-xl border border-border-light bg-surface-primary/40 p-4 space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-oe-blue/10 text-oe-blue">
+                      <FileText size={15} />
+                    </span>
+                    <div>
+                      <p className="text-sm font-semibold text-content-primary">
+                        {t('projects.create.grp_description_title', { defaultValue: 'Description & notes' })}
+                      </p>
+                      <p className="text-[11px] text-content-tertiary">
+                        {t('projects.create.grp_description_sub', { defaultValue: 'Scope, context — anything useful later. Optional.' })}
+                      </p>
+                    </div>
+                  </div>
                   <textarea
                     id="qc-description"
                     value={form.description}
@@ -1050,7 +1059,22 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
                   />
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Classification & localization */}
+                <div className="rounded-xl border border-border-light bg-surface-primary/40 p-4 space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-oe-blue/10 text-oe-blue">
+                      <Globe size={15} />
+                    </span>
+                    <div>
+                      <p className="text-sm font-semibold text-content-primary">
+                        {t('projects.create.grp_localization_title', { defaultValue: 'Classification & localization' })}
+                      </p>
+                      <p className="text-[11px] text-content-tertiary">
+                        {t('projects.create.grp_localization_sub', { defaultValue: 'Region, standard, currency and language. Optional — editable later.' })}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <GroupedSelectField
                       label={t('projects.region', { defaultValue: 'Region' })}
@@ -1117,21 +1141,22 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
                     options={LANGUAGES}
                     onChange={(v) => set('locale', v)}
                   />
+                  </div>
                 </div>
 
-                {/* Progressive disclosure — the remaining optional
-                    fields stay hidden until the user opts in, so a
-                    fast project create needs no scrolling. */}
+                {/* Progressive disclosure — one click reveals every
+                    remaining optional group as visual cards. */}
                 {!showAllOptional && (
                   <button
                     type="button"
                     onClick={() => setShowAllOptional(true)}
                     aria-expanded={false}
                     aria-controls="qc-optional-more"
-                    className="flex items-center gap-1.5 text-xs font-medium text-oe-blue hover:underline"
+                    className="group flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-oe-blue/40 bg-oe-blue/5 px-4 py-3 text-sm font-medium text-oe-blue transition-colors hover:bg-oe-blue/10"
                   >
-                    <Plus size={14} />
-                    {t('projects.create.show_more', { defaultValue: 'Show more options' })}
+                    <Plus size={15} />
+                    {t('projects.create.show_more', { defaultValue: 'Show all options' })}
+                    <ChevronDown size={14} className="transition-transform group-hover:translate-y-0.5" />
                   </button>
                 )}
 
@@ -1140,7 +1165,22 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
                   hidden={!showAllOptional}
                   className="space-y-4"
                 >
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Identification */}
+                <div className="rounded-xl border border-border-light bg-surface-primary/40 p-4 space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-oe-blue/10 text-oe-blue">
+                      <Hash size={15} />
+                    </span>
+                    <div>
+                      <p className="text-sm font-semibold text-content-primary">
+                        {t('projects.create.grp_identification_title', { defaultValue: 'Identification' })}
+                      </p>
+                      <p className="text-[11px] text-content-tertiary">
+                        {t('projects.create.grp_identification_sub', { defaultValue: 'Code, type and client. Optional — auto-filled where possible.' })}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <OptionalLabel
                       htmlFor="qc-project-code"
@@ -1189,18 +1229,23 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
                       className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
                     />
                   </div>
+                  </div>
                 </div>
 
-                {/* Address — same shape the wizard models it. */}
-                <div className="rounded-xl border border-border-light bg-surface-primary/40 p-3 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <MapPin size={14} className="text-oe-blue" />
-                    <span className="text-sm font-semibold text-content-primary">
-                      {t('projects.address', { defaultValue: 'Site address' })}
+                {/* Site address */}
+                <div className="rounded-xl border border-border-light bg-surface-primary/40 p-4 space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-oe-blue/10 text-oe-blue">
+                      <MapPin size={15} />
                     </span>
-                    <span className="text-[10px] text-content-quaternary">
-                      {t('projects.address_hint', { defaultValue: 'Optional — enables the location map and weather forecast' })}
-                    </span>
+                    <div>
+                      <p className="text-sm font-semibold text-content-primary">
+                        {t('projects.address', { defaultValue: 'Site address' })}
+                      </p>
+                      <p className="text-[11px] text-content-tertiary">
+                        {t('projects.address_hint', { defaultValue: 'Optional — enables the location map and weather forecast' })}
+                      </p>
+                    </div>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <input type="text" value={addressStreet} onChange={(e) => setAddressStreet(e.target.value)} aria-label={t('projects.address_street', { defaultValue: 'Street & number' })} placeholder={t('projects.address_street', { defaultValue: 'Street & number' })} className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent" />
@@ -1225,7 +1270,22 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Schedule & budget */}
+                <div className="rounded-xl border border-border-light bg-surface-primary/40 p-4 space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-oe-blue/10 text-oe-blue">
+                      <CalendarDays size={15} />
+                    </span>
+                    <div>
+                      <p className="text-sm font-semibold text-content-primary">
+                        {t('projects.create.grp_schedule_title', { defaultValue: 'Schedule & budget' })}
+                      </p>
+                      <p className="text-[11px] text-content-tertiary">
+                        {t('projects.create.grp_schedule_sub', { defaultValue: 'Dates, budget, contract value and the regional cost factor. Optional.' })}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <OptionalLabel
                       htmlFor="qc-start"
@@ -1315,6 +1375,7 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
                   </p>
                 </div>
                 </div>
+                </div>
 
                 {showAllOptional && (
                   <button
@@ -1322,7 +1383,7 @@ export function CreateProjectModal({ open, onClose }: CreateProjectModalProps) {
                     onClick={() => setShowAllOptional(false)}
                     aria-expanded
                     aria-controls="qc-optional-more"
-                    className="flex items-center gap-1.5 text-xs font-medium text-content-tertiary hover:text-content-primary hover:underline"
+                    className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border-light px-4 py-2 text-xs font-medium text-content-tertiary transition-colors hover:bg-surface-secondary/40 hover:text-content-primary"
                   >
                     <ChevronDown size={14} className="rotate-180" />
                     {t('projects.create.show_less', { defaultValue: 'Show fewer options' })}

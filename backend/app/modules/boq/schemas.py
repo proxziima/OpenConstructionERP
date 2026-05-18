@@ -326,14 +326,26 @@ class PositionCreate(BaseModel):
 class SectionCreate(BaseModel):
     """Create a BOQ section (header row without pricing).
 
-    Sections are top-level grouping rows.  They have an ordinal and
-    description but no unit, quantity, or unit_rate.
+    Sections are grouping rows.  They have an ordinal and description but
+    no unit, quantity, or unit_rate.
+
+    Issue #136: a section MAY now nest under another section via
+    ``parent_id`` (sections-within-sections), bounded by the configurable
+    ``MAX_NESTING_DEPTH`` cap. Omitting ``parent_id`` keeps the legacy
+    top-level behaviour, so existing callers are unaffected.
     """
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
     ordinal: str = Field(..., min_length=1, max_length=50)
     description: str = Field(default="", max_length=5000)
+    parent_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Parent section UUID for nested sections (Issue #136). "
+            "None = top-level section."
+        ),
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -1755,8 +1755,17 @@ export function TakeoffPage() {
         // visible without scrolling the page: the viewer takes the
         // remaining height and scrolls internally; the filmstrip is a
         // shrink-0 footer pinned in view.
-        <div className="flex flex-col h-[calc(100vh-var(--oe-header-height,56px)-8rem)] min-h-0 overflow-x-hidden">
-          <div className="flex-1 min-h-0 overflow-auto">
+        //
+        // Height budget: the column already sits below the sticky header
+        // (--oe-header-height, 52px), the <main> pt-6 (1.5rem) and the
+        // takeoff tabs bar (~3.25rem incl. its mb-3) — all of which the
+        // 100vh calc must NOT count again. Empirically, 7rem total is the
+        // smallest reservation that keeps the column fully inside the
+        // viewport (no page-level scrollbar) while giving the viewer the
+        // most internal height — 8rem wasted ~1rem that was shrinking the
+        // viewer enough to force an internal scrollbar on laptop screens.
+        <div className="flex flex-col h-[calc(100vh-var(--oe-header-height,52px)-7rem)] min-h-0 overflow-x-hidden">
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
             <Suspense
               fallback={
                 <div className="flex items-center justify-center py-20">

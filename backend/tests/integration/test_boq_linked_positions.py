@@ -849,3 +849,332 @@ async def test_resource_code_lookup_finds_and_misses(
     )
     assert miss.status_code == 200, miss.text
     assert miss.json()["found"] is False
+
+
+# ── Issue #136 — multi-level section / partida hierarchy ──────────────────
+
+
+async def _add_section(
+    client: AsyncClient,
+    auth: dict[str, str],
+    boq_id: str,
+    ordinal: str,
+    *,
+    parent_id: str | None = None,
+):
+    body: dict = {"boq_id": boq_id, "ordinal": ordinal, "description": ordinal}
+    if parent_id is not None:
+        body["parent_id"] = parent_id
+    return await client.post(
+        f"/api/v1/boq/boqs/{boq_id}/sections/", json=body, headers=auth
+    )
+
+
+@pytest.mark.asyncio
+async def test_limits_endpoint_reports_max_nesting_depth(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    r = await client.get("/api/v1/boq/limits/", headers=auth)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert isinstance(body.get("max_nesting_depth"), int)
+    assert body["max_nesting_depth"] >= 3  # at least the legacy 3 tiers
+
+
+@pytest.mark.asyncio
+async def test_deep_section_and_partida_nesting_is_allowed(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    """Sections-within-sections and partidas-within-partidas may nest
+    several tiers deep (Issue #136 — up to MAX_NESTING_DEPTH)."""
+    from app.modules.boq.service import MAX_NESTING_DEPTH
+
+    project_id = await _create_project(client, auth)
+    boq_id = await _create_boq(client, auth, project_id)
+
+    # Build a chain of nested sections down to tier 3.
+    s1 = (await _add_section(client, auth, boq_id, "01")).json()
+    s2 = (
+        await _add_section(client, auth, boq_id, "01.01", parent_id=s1["id"])
+    ).json()
+    s3 = (
+        await _add_section(client, auth, boq_id, "01.01.01", parent_id=s2["id"])
+    ).json()
+    assert s2["parent_id"] == s1["id"]
+    assert s3["parent_id"] == s2["id"]
+
+    # Partidas-within-partidas: a child partida under a partida under s3.
+    p1 = (
+        await _add_position(
+            client, auth, boq_id, ordinal="P-A", description="lvl4",
+            unit="m3", quantity=1.0, parent_id=s3["id"],
+        )
+    ).json()
+    p2 = (
+        await _add_position(
+            client, auth, boq_id, ordinal="P-B", description="lvl5",
+            unit="m3", quantity=1.0, parent_id=p1["id"],
+        )
+    ).json()
+    assert p2["parent_id"] == p1["id"]
+    # We've placed 5 tiers; the configurable cap must be comfortably > 2.
+    assert MAX_NESTING_DEPTH >= 5
+
+
+@pytest.mark.asyncio
+async def test_nesting_beyond_cap_is_rejected_422(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    """A create that would exceed MAX_NESTING_DEPTH tiers is rejected."""
+    from app.modules.boq.service import MAX_NESTING_DEPTH
+
+    project_id = await _create_project(client, auth)
+    boq_id = await _create_boq(client, auth, project_id)
+
+    # Build a maximal-depth chain of partidas (tier 1 .. MAX).
+    parent_id: str | None = None
+    last_id: str | None = None
+    for tier in range(1, MAX_NESTING_DEPTH + 1):
+        r = await _add_position(
+            client, auth, boq_id,
+            ordinal=f"D{tier}", description=f"tier {tier}",
+            unit="m3", quantity=1.0,
+            **({"parent_id": parent_id} if parent_id else {}),
+        )
+        assert r.status_code == 201, (
+            f"tier {tier} within cap must succeed: {r.text}"
+        )
+        last_id = r.json()["id"]
+        parent_id = last_id
+
+    # One more level would be tier MAX+1 → rejected.
+    over = await _add_position(
+        client, auth, boq_id,
+        ordinal="DOVER", description="over the cap",
+        unit="m3", quantity=1.0, parent_id=last_id,
+    )
+    assert over.status_code == 422, (
+        f"expected 422 over the cap, got {over.status_code}: {over.text}"
+    )
+    assert "nesting depth" in over.text.lower()
+
+    # A sub-section over the cap is rejected too.
+    over_sec = await _add_section(
+        client, auth, boq_id, "OVER.SEC", parent_id=last_id
+    )
+    assert over_sec.status_code == 422, over_sec.text
+
+
+@pytest.mark.asyncio
+async def test_top_level_section_still_works_unchanged(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    """Legacy behaviour: omitting parent_id makes a top-level section."""
+    project_id = await _create_project(client, auth)
+    boq_id = await _create_boq(client, auth, project_id)
+    s = await _add_section(client, auth, boq_id, "ALPHA")
+    assert s.status_code == 201, s.text
+    assert s.json()["parent_id"] is None
+
+
+# ── Issue #133 (full) — resource master→instance live propagation ─────────
+
+
+async def _set_resources(
+    client: AsyncClient,
+    auth: dict[str, str],
+    position_id: str,
+    resources: list[dict],
+):
+    return await client.patch(
+        f"/api/v1/boq/positions/{position_id}",
+        json={"metadata": {"resources": resources}},
+        headers=auth,
+    )
+
+
+def _resources_of(pos_json: dict) -> list[dict]:
+    return (pos_json.get("metadata") or {}).get("resources") or []
+
+
+@pytest.mark.asyncio
+async def test_master_resource_edit_propagates_to_other_positions(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    """Editing the master (oldest) resource definition for a shared code
+    fans the changed definition out to every other position carrying that
+    code — but never the per-instance quantity."""
+    project_id = await _create_project(client, auth)
+    boq_id = await _create_boq(client, auth, project_id)
+
+    master_pos = (
+        await _add_position(
+            client, auth, boq_id, ordinal="RP-1",
+            description="host A", unit="m3", quantity=2.0,
+        )
+    ).json()
+    inst_pos = (
+        await _add_position(
+            client, auth, boq_id, ordinal="RP-2",
+            description="host B", unit="m3", quantity=3.0,
+        )
+    ).json()
+
+    # Master carries the canonical resource (oldest position wins).
+    r1 = await _set_resources(
+        client, auth, master_pos["id"],
+        [{
+            "name": "Cement", "code": "RES-9", "type": "material",
+            "unit": "kg", "quantity": 100.0, "unit_rate": 0.5,
+            "currency": "EUR", "total": 50.0,
+        }],
+    )
+    assert r1.status_code == 200, r1.text
+
+    # Instance position re-uses the same code with its OWN quantity.
+    r2 = await _set_resources(
+        client, auth, inst_pos["id"],
+        [{
+            "name": "Cement", "code": "RES-9", "type": "material",
+            "unit": "kg", "quantity": 7.0, "unit_rate": 0.5,
+            "currency": "EUR", "total": 3.5,
+        }],
+    )
+    assert r2.status_code == 200, r2.text
+
+    # Edit the MASTER resource's definition (rate + name).
+    patch = await _set_resources(
+        client, auth, master_pos["id"],
+        [{
+            "name": "Cement CEM II", "code": "RES-9", "type": "material",
+            "unit": "kg", "quantity": 100.0, "unit_rate": 0.8,
+            "currency": "EUR", "total": 80.0,
+        }],
+    )
+    assert patch.status_code == 200, patch.text
+    prop = (patch.json().get("metadata") or {}).get("link_propagation") or {}
+    assert prop.get("resource_propagated_to") == 1, patch.json().get("metadata")
+
+    # Instance resource picked up the new definition, kept its quantity.
+    gi = (
+        await client.get(
+            f"/api/v1/boq/positions/{inst_pos['id']}", headers=auth
+        )
+    ).json()
+    res = _resources_of(gi)
+    assert len(res) == 1
+    assert res[0]["name"] == "Cement CEM II"
+    assert abs(float(res[0]["unit_rate"]) - 0.8) < 0.001
+    assert abs(float(res[0]["quantity"]) - 7.0) < 0.001  # per-instance kept
+    assert abs(float(res[0]["total"]) - 7.0 * 0.8) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_user_overridden_resource_instance_is_not_clobbered(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    """A resource instance the user explicitly diverged
+    (``_code_overridden``) must NOT be silently overwritten by a master
+    edit (the architecture guide: AI-augmented, human-confirmed)."""
+    project_id = await _create_project(client, auth)
+    boq_id = await _create_boq(client, auth, project_id)
+
+    master_pos = (
+        await _add_position(
+            client, auth, boq_id, ordinal="OV-1",
+            description="host", unit="m3", quantity=1.0,
+        )
+    ).json()
+    inst_pos = (
+        await _add_position(
+            client, auth, boq_id, ordinal="OV-2",
+            description="host2", unit="m3", quantity=1.0,
+        )
+    ).json()
+    await _set_resources(
+        client, auth, master_pos["id"],
+        [{
+            "name": "Steel", "code": "OVR-1", "type": "material",
+            "unit": "kg", "quantity": 10.0, "unit_rate": 1.0,
+            "total": 10.0,
+        }],
+    )
+    await _set_resources(
+        client, auth, inst_pos["id"],
+        [{
+            "name": "Steel custom", "code": "OVR-1", "type": "material",
+            "unit": "kg", "quantity": 5.0, "unit_rate": 9.99,
+            "total": 49.95, "_code_overridden": True,
+        }],
+    )
+
+    patch = await _set_resources(
+        client, auth, master_pos["id"],
+        [{
+            "name": "Steel S355", "code": "OVR-1", "type": "material",
+            "unit": "kg", "quantity": 10.0, "unit_rate": 2.0,
+            "total": 20.0,
+        }],
+    )
+    assert patch.status_code == 200, patch.text
+
+    gi = (
+        await client.get(
+            f"/api/v1/boq/positions/{inst_pos['id']}", headers=auth
+        )
+    ).json()
+    res = _resources_of(gi)
+    assert res[0]["name"] == "Steel custom"  # untouched
+    assert abs(float(res[0]["unit_rate"]) - 9.99) < 0.001
+
+
+@pytest.mark.asyncio
+async def test_non_master_resource_edit_does_not_propagate(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    """Editing the resource on the NON-master (newer) position must not
+    fan out to the master / others (only the master definition owner
+    propagates — mirrors the #127 contract)."""
+    project_id = await _create_project(client, auth)
+    boq_id = await _create_boq(client, auth, project_id)
+
+    master_pos = (
+        await _add_position(
+            client, auth, boq_id, ordinal="NM-1",
+            description="m", unit="m3", quantity=1.0,
+        )
+    ).json()
+    other_pos = (
+        await _add_position(
+            client, auth, boq_id, ordinal="NM-2",
+            description="o", unit="m3", quantity=1.0,
+        )
+    ).json()
+    await _set_resources(
+        client, auth, master_pos["id"],
+        [{"name": "Sand", "code": "SND-1", "type": "material",
+          "unit": "t", "quantity": 1.0, "unit_rate": 1.0, "total": 1.0}],
+    )
+    await _set_resources(
+        client, auth, other_pos["id"],
+        [{"name": "Sand", "code": "SND-1", "type": "material",
+          "unit": "t", "quantity": 1.0, "unit_rate": 1.0, "total": 1.0}],
+    )
+
+    # Edit the NON-master (other_pos, created later).
+    patch = await _set_resources(
+        client, auth, other_pos["id"],
+        [{"name": "Sand washed", "code": "SND-1", "type": "material",
+          "unit": "t", "quantity": 1.0, "unit_rate": 5.0, "total": 5.0}],
+    )
+    assert patch.status_code == 200, patch.text
+    prop = (patch.json().get("metadata") or {}).get("link_propagation") or {}
+    assert prop.get("resource_propagated_to", 0) in (0, None)
+
+    # Master untouched.
+    gm = (
+        await client.get(
+            f"/api/v1/boq/positions/{master_pos['id']}", headers=auth
+        )
+    ).json()
+    assert _resources_of(gm)[0]["name"] == "Sand"
