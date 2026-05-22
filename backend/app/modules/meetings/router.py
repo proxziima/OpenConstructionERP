@@ -448,6 +448,28 @@ _DUE_DATE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# ``ActionItemEntry.due_date`` is locked to a strict ISO ^\d{4}-\d{2}-\d{2}$
+# regex by pydantic.  The heuristic extractor however captures human
+# phrases ("Friday", "next week", "end of month") and stuffs them into
+# the same slot — which would 500 the endpoint on validation if we
+# handed it through unfiltered.  This sentinel strips anything that
+# isn't an ISO date; the original hint is parked on the action item's
+# free-form description so reviewers can still see the speaker's
+# intent.
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _coerce_iso_due_date(raw: str | None) -> str | None:
+    """Return ``raw`` if it matches ISO YYYY-MM-DD, else ``None``.
+
+    Used to scrub heuristic / LLM-extracted hints like ``"Friday"`` or
+    ``"next week"`` that would otherwise trip ``ActionItemEntry``'s
+    strict pattern validator and raise a 500 from the import endpoint.
+    """
+    if raw is None:
+        return None
+    return raw if _ISO_DATE_RE.match(str(raw).strip()) else None
+
 
 def _extract_meeting_data_heuristic(
     segments: list[dict[str, str]],
@@ -938,16 +960,28 @@ async def import_meeting_summary(
         for idx, item in enumerate(extracted.get("agenda_items", []))
     ]
 
-    action_data = [
-        {
-            "description": item.get("description", ""),
-            "owner_id": item.get("owner_id"),
-            "due_date": item.get("due_date"),
-            "status": item.get("status", "open"),
-        }
-        for item in extracted.get("action_items", [])
-        if item.get("description")
-    ]
+    # Coerce free-form due_date hints ("Friday", "next week", ...) to
+    # ``None`` so we don't trip ``ActionItemEntry``'s ISO-date regex
+    # when materialising the action items below. The raw hint is folded
+    # into the description so the reviewer can still see the intent.
+    action_data: list[dict] = []
+    for item in extracted.get("action_items", []):
+        if not item.get("description"):
+            continue
+        raw_due = item.get("due_date")
+        iso_due = _coerce_iso_due_date(raw_due)
+        description = item.get("description", "")
+        if raw_due and iso_due is None:
+            # Surface the speaker's intent without breaking validation.
+            description = f"{description} (due: {raw_due})"[:1000]
+        action_data.append(
+            {
+                "description": description,
+                "owner_id": item.get("owner_id"),
+                "due_date": iso_due,
+                "status": item.get("status", "open"),
+            }
+        )
 
     meeting_type = extracted.get("meeting_type", "progress")
     if meeting_type not in ("progress", "design", "safety", "subcontractor", "kickoff", "closeout"):

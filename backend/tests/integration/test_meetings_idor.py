@@ -314,6 +314,58 @@ async def test_owner_can_still_import_summary(http_client, two_meetings_tenants)
 
 
 @pytest.mark.asyncio
+async def test_import_summary_handles_nonstandard_due_date_hints(
+    http_client, two_meetings_tenants,
+):
+    """Transcript heuristic must NOT crash the endpoint when the speaker
+    says "by Friday" / "by next week" / "by end of month".
+
+    Pre-fix the heuristic extractor matched these phrases via
+    ``_DUE_DATE_PATTERN`` and stuffed the captured weekday/keyword
+    straight into ``ActionItemEntry.due_date`` — which enforces a
+    strict ``^\\d{4}-\\d{2}-\\d{2}$`` regex.  The pydantic validation
+    error escaped as a 500, leaving the project with a half-imported
+    transcript (the heuristic step had already cross-linked the file
+    into Documents before the crash).
+
+    The fix coerces any non-ISO due_date hint to ``None`` and parks
+    the raw phrase on metadata for downstream review.
+    """
+    a = two_meetings_tenants["a"]
+
+    transcript = (
+        "Alice: Update on foundation works.\n"
+        "Bob: Action: order rebar by Friday.\n"
+        "Alice: Action: send drawings by next week.\n"
+        "Bob: Action: file permit by end of month.\n"
+    )
+    files = {"file": (
+        "weekday-actions.txt", io.BytesIO(transcript.encode()), "text/plain",
+    )}
+
+    resp = await http_client.post(
+        f"/api/v1/meetings/import-summary/?project_id={a['project_id']}",
+        files=files,
+        headers=a["headers"],
+    )
+    assert resp.status_code in (200, 201), (
+        f"CRASH: heuristic-extracted weekday due_date crashed import: "
+        f"{resp.status_code} {resp.text!r}"
+    )
+    body = resp.json()
+    # All action items must round-trip; none can have a non-ISO due_date.
+    for ai in body.get("action_items", []):
+        due = ai.get("due_date")
+        if due is not None:
+            assert (
+                isinstance(due, str)
+                and len(due) == 10
+                and due[4] == "-"
+                and due[7] == "-"
+            ), f"non-ISO due_date leaked into response: {due!r}"
+
+
+@pytest.mark.asyncio
 async def test_owner_can_still_read_own_meeting(http_client, two_meetings_tenants):
     a = two_meetings_tenants["a"]
     resp = await http_client.get(
