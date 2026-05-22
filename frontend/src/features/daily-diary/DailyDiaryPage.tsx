@@ -200,6 +200,7 @@ function WorkflowIntro() {
 
 export function DailyDiaryPage() {
   const { t, i18n } = useTranslation();
+  const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('diaries');
   const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
   const [projectId, setProjectId] = useState<string>('');
