@@ -10,7 +10,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type {
   CurrencyAmount,
-  SalesVelocityBucket,
   SalesVelocityResponse,
 } from '../api';
 import { getSalesVelocity } from '../api';

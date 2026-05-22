@@ -185,6 +185,16 @@ class TileGenerateRequest(BaseModel):
     force: bool = False
 
 
+class CanonicalToTilesetRequest(BaseModel):
+    """Optional body for the canonical -> tileset packaging endpoint."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    heading_deg: Decimal = Field(default=Decimal("0"), ge=-360, le=720)
+    name: str | None = Field(default=None, max_length=255)
+    tags: list[str] = Field(default_factory=list)
+
+
 # ── ImageryLayer ─────────────────────────────────────────────────────────
 
 
@@ -435,6 +445,7 @@ class MapConfigResponse(BaseModel):
 
 
 __all__ = [
+    "CanonicalToTilesetRequest",
     "GeoAnchorCreate",
     "GeoAnchorResponse",
     "GeoAnchorUpdate",

@@ -5,6 +5,31 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.0] - 2026-05-22
+
+PropDev R6 rollup + new Geo Hub module + canonical→3D Tiles pipeline.
+
+### Added
+- Property Development R6 wave: Lead → Reservation → SPA → PaymentSchedule entities with multi-buyer ContractParty (ownership_pct sum=100), Broker + Commission + Escrow + PriceMatrix + Phase/Block hierarchy, ValidationRules + regulator PDF reports (RERA / MAHARERA / 214-FZ / CMA in 6 locales), buyer journey dashboards (heatmap / velocity / cashflow waterfall / inventory ageing / funnel conversion / buyer journey timeline), document templates (SPA / reservation / handover / warranty / NOC, 6 locales, jurisdiction-aware clauses, DRAFT watermark, multi-buyer SPA with ownership_pct), tax engine for 12 jurisdictions (GB/DE/AT/CH/AE/SA/IN/RU/BR/SG/US/AU). Alembic v3103 + v3104 → v3105 merge.
+- `geo_hub` module — Cesium 3D Tiles 1.1 + cross-module geospatial integration: 7 entities, 34 REST endpoints, pure-Python pygltflib tile pipeline (no C++ deps, no IfcOpenShell). Routes `/geo`, `/projects/:id/geo`, `/property-dev/developments/:id/geo`. Sidebar entry under CAD/BIM analytics with NEW badge. Alembic v3106_geo_hub_init.
+- `POST /api/v1/geo-hub/from-canonical/{cad_import_id}` — package a converted CAD/BIM canonical-JSON model as a Cesium 3D Tileset, georeferenced against the project anchor. Optional `heading_deg` for orientation; 5 integration tests pass.
+- "View on map" entry buttons in BIM Hub toolbar (when project scoped) and Property Dev development toolbar (when development selected) — navigates to the matching Geo Hub page. New `geo_hub.view_on_map` i18n key in 27 locales.
+- CesiumJS frontend dependency wired via lazy `import('cesium')` + Vite `vendor-cesium` manualChunk (4.7 MB raw / 1.3 MB gzip, isolated from main bundle). `window.CESIUM_BASE_URL` set before any cesium import resolves; static assets (Workers / Widgets / Assets / ThirdParty) copied to `dist/cesium/` during build.
+
+### Changed
+- `RequestValidationError` handler in `app/main.py` now recursively coerces all non-JSON-native types (Decimal, UUID, datetime, ...) to JSON-safe forms before responding — fixes 500 in 422 responses when Pydantic input echoed a Decimal.
+- `_resolve_doc_type_or_404` in property_dev now returns 404 (matches its name), not 400.
+
+### Fixed
+- R6 `MissingGreenlet` in `convert_lead_to_reservation` and `convert_reservation_to_spa` — surgical `session.expire(obj)` per row instead of session-wide `expire_all()`, and snapshot scalar attrs before `update_fields` so post-write reads don't lazy-load on expired rows.
+- 24 locale files (ar/bg/cs/da/es/fi/fr/hi/hr/id/it/ja/ko/mn/nl/no/pl/pt/ro/sv/th/tr/vi/zh) had a missing comma at line ~5626 before the propdev block (regression from d7431ac1).
+- `/v1/projects/{id}/profile` 404 spam (50/64 errors per user log) — auto-retrofit + CRM/users limit caps + bug_report whitelist + converter install timeout.
+- 6 stale tsc errors in `CesiumViewer.test.tsx` (vi.doMock 3-arg signature), `InventoryAgeing.tsx` (unused `num`), `SalesVelocity.tsx` (unused `SalesVelocityBucket`).
+- Redundant `from fastapi.responses import Response` inside `stream_propdev_document` — already imported at module top.
+
+### Tests
+- 31 ValidationRule tests + 24 geo_hub tile pipeline tests + 5 from-canonical integration tests + R6 lead-to-SPA suite (12/12) pass.
+
 ## [4.3.2] - 2026-05-22
 
 Admin UX hotfix — audit log full rewrite + sidebar polish + developer guide refresh.

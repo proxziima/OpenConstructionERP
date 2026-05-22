@@ -2729,6 +2729,19 @@ export function BIMPage() {
                 </button>
               )}
 
+              {projectId && (
+                <button
+                  onClick={() => navigate(`/projects/${projectId}/geo`)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors border text-content-secondary bg-surface-secondary border-border-light hover:bg-surface-tertiary"
+                  title={t('geo_hub.view_on_map', { defaultValue: 'View on map' })}
+                  aria-label={t('geo_hub.view_on_map', { defaultValue: 'View on map' })}
+                  data-testid="bim-view-on-map"
+                >
+                  <Globe2 size={13} />
+                  {t('geo_hub.view_on_map', { defaultValue: 'View on map' })}
+                </button>
+              )}
+
               <button
                 onClick={() => setAssetCardEnabled(!assetCardEnabled)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors border ${

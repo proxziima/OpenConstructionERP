@@ -56,15 +56,8 @@ interface CesiumLike {
 
 async function loadCesium(): Promise<CesiumLike | null> {
   try {
-    // Optional runtime dependency — the community installer does not
-    // ship Cesium. The import specifier is held in a variable so the
-    // bundler's static analysis cannot try to resolve it at build
-    // time when the package is absent; the runtime ``import()`` falls
-    // through to a friendly error in that case.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const moduleName = 'cesium' as string;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mod = (await import(/* @vite-ignore */ moduleName)) as any;
+    const mod = (await import('cesium')) as any;
     return mod as CesiumLike;
   } catch {
     return null;

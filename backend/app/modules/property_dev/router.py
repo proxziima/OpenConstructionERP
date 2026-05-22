@@ -2979,7 +2979,7 @@ def _normalise_locale(locale: str) -> str:
 def _resolve_doc_type_or_404(doc_type: str) -> str:
     if doc_type not in _VALID_DOC_TYPES_HTTP:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Unknown doc_type '{doc_type}'",
         )
     return doc_type
@@ -3022,8 +3022,6 @@ async def stream_propdev_document(
     filename. The endpoint is gated by ``property_dev.read`` and
     enforces cross-tenant IDOR via the owner-resolution helper.
     """
-    from fastapi.responses import Response
-
     doc_type = _resolve_doc_type_or_404(doc_type)
     locale = _normalise_locale(locale)
     await _enforce_propdev_doc_owner(

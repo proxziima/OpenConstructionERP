@@ -7,6 +7,8 @@ import { useToastStore } from '@/stores/useToastStore';
 import './app/i18n';
 import './index.css';
 
+(window as unknown as { CESIUM_BASE_URL: string }).CESIUM_BASE_URL = '/cesium/';
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

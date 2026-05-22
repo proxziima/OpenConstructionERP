@@ -1032,16 +1032,17 @@ def create_app() -> FastAPI:
         # entries — not JSON-serialisable — so always coerce to ``str``
         # before emitting (regression seen with custom ``field_validator``
         # raises in BUG-MATH03 unit-catalogue checks).
+        def _json_safe(v: object) -> object:
+            if isinstance(v, (str, int, float, bool, type(None))):
+                return v
+            if isinstance(v, (list, tuple)):
+                return [_json_safe(x) for x in v]
+            if isinstance(v, dict):
+                return {str(k): _json_safe(x) for k, x in v.items()}
+            return str(v)
+
         def _scrub(err: dict) -> dict:
-            out = dict(err)
-            ctx = out.get("ctx")
-            if isinstance(ctx, dict) and "error" in ctx and not isinstance(
-                ctx["error"], (str, int, float, bool, type(None))
-            ):
-                ctx = dict(ctx)
-                ctx["error"] = str(ctx["error"])
-                out["ctx"] = ctx
-            return out
+            return _json_safe(dict(err))
 
         if settings.app_debug:
             safe_errors = [_scrub(e) for e in errors]

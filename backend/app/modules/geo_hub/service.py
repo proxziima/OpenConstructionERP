@@ -33,6 +33,7 @@ from app.modules.geo_hub.repository import (
     ViewpointRepository,
 )
 from app.modules.geo_hub.schemas import (
+    CanonicalToTilesetRequest,
     GeoAnchorCreate,
     GeoAnchorUpdate,
     GeoJSONImportRequest,
@@ -48,6 +49,10 @@ from app.modules.geo_hub.schemas import (
     TilesetUpdate,
     ViewpointCreate,
     ViewpointUpdate,
+)
+from app.modules.geo_hub.tile_pipeline import (
+    build_tile_artifacts,
+    upload_artifacts,
 )
 
 logger = logging.getLogger(__name__)
@@ -744,6 +749,180 @@ class GeoHubService:
         )
         await self.overlays.delete(overlay_id)
 
+    # ── Canonical -> 3D Tileset packaging ───────────────────────────────
+
+    async def package_canonical_as_tileset(
+        self,
+        cad_import_id: uuid.UUID,
+        *,
+        development_id: uuid.UUID | None = None,
+        project_id: uuid.UUID | None = None,
+        request: CanonicalToTilesetRequest | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> Tileset:
+        """Convert an already-canonical BIM/CAD import into a 3D Tileset.
+
+        Resolves the anchor (development -> project fallback) then runs
+        the existing ``tile_pipeline`` end-to-end and persists a Tileset
+        row pointing at the uploaded ``tileset.json``.
+        """
+        from app.modules.bim_hub.repository import (
+            BIMElementRepository,
+            BIMModelRepository,
+        )
+
+        bim_model = await BIMModelRepository(self.session).get(cad_import_id)
+        if bim_model is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="cad_import_not_found",
+            )
+
+        resolved_project_id = project_id or bim_model.project_id
+        if str(resolved_project_id) != str(bim_model.project_id):
+            # IDOR — project mismatch collapses to 404.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="cad_import_not_found",
+            )
+        await self._verify_project_owner(
+            resolved_project_id,
+            payload,
+            not_found_detail="cad_import_not_found",
+        )
+
+        if development_id is not None:
+            from app.modules.property_dev.models import Development
+
+            dev = await self.session.get(Development, development_id)
+            if dev is None or str(dev.project_id) != str(resolved_project_id):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="development_not_found",
+                )
+
+        anchor = await self.anchors.get_by_project(resolved_project_id)
+        if anchor is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="no_anchor_for_project",
+            )
+
+        elements = await self._load_canonical_elements_for_bim_model(
+            bim_model, BIMElementRepository(self.session),
+        )
+        if not elements:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="canonical_elements_empty",
+            )
+
+        req = request or CanonicalToTilesetRequest()
+        anchor_lat = float(anchor.lat)
+        anchor_lon = float(anchor.lon)
+        anchor_alt = float(anchor.alt)
+        heading = float(req.heading_deg or Decimal("0"))
+
+        rotated = (
+            [_rotate_element(e, heading) for e in elements]
+            if heading
+            else elements
+        )
+
+        tileset_json, b3dm_bytes, build = build_tile_artifacts(
+            rotated,
+            anchor_lat=anchor_lat,
+            anchor_lon=anchor_lon,
+            anchor_alt=anchor_alt,
+        )
+        tileset_id = uuid.uuid4()
+        tileset_uri, _content_uri = await upload_artifacts(
+            tileset_id=tileset_id,
+            tileset_json=tileset_json,
+            b3dm_bytes=b3dm_bytes,
+        )
+
+        meta: dict[str, Any] = {
+            "cad_import_id": str(cad_import_id),
+            "anchor_id": str(anchor.id),
+            "heading_deg": float(req.heading_deg or Decimal("0")),
+            "feature_count": build.feature_count,
+            "triangle_count": build.triangle_count,
+        }
+        if development_id is not None:
+            meta["development_id"] = str(development_id)
+        if req.tags:
+            meta["tags"] = list(req.tags)
+
+        obj = Tileset(
+            id=tileset_id,
+            project_id=resolved_project_id,
+            source_kind="bim_model",
+            source_id=cad_import_id,
+            name=req.name or bim_model.name or "",
+            bucket="",
+            prefix=f"tilesets/{tileset_id}",
+            tileset_json_uri=tileset_uri,
+            bounding_volume={
+                "region": tileset_json["root"]["boundingVolume"]["region"],
+            },
+            geometric_error=Decimal(
+                str(tileset_json.get("geometricError", 0)),
+            ),
+            tile_format="b3dm",
+            tile_count=1,
+            total_bytes=len(b3dm_bytes),
+            status="ready",
+            generated_at=datetime.now(UTC),
+            metadata_=meta,
+        )
+        obj = await self.tilesets.create(obj)
+        await event_bus.publish(
+            "geo_hub.tileset.packaged_from_canonical",
+            {
+                "tileset_id": str(obj.id),
+                "project_id": str(resolved_project_id),
+                "cad_import_id": str(cad_import_id),
+                "feature_count": build.feature_count,
+            },
+            source_module="geo_hub",
+        )
+        return obj
+
+    async def _load_canonical_elements_for_bim_model(
+        self,
+        bim_model: Any,
+        element_repo: Any,
+    ) -> list[dict[str, Any]]:
+        """Resolve canonical-format elements for a BIMModel.
+
+        Prefers the converter's emitted canonical JSON file (when
+        ``canonical_file_path`` is set) and falls back to synthesising
+        elements from the ``BIMElement`` rows stored in the DB.
+        """
+        import json as _json
+
+        if bim_model.canonical_file_path:
+            try:
+                from app.core.storage import get_storage_backend
+
+                backend = get_storage_backend()
+                blob = await backend.get(bim_model.canonical_file_path)
+                parsed = _json.loads(blob.decode("utf-8"))
+                elems = parsed.get("elements") or []
+                if isinstance(elems, list) and elems:
+                    return [e for e in elems if isinstance(e, dict)]
+            except (FileNotFoundError, ValueError, OSError, _json.JSONDecodeError):
+                logger.warning(
+                    "geo_hub: canonical_file_path unreadable for bim_model %s",
+                    bim_model.id,
+                )
+
+        elements, _total = await element_repo.list_for_model(
+            bim_model.id, offset=0, limit=10_000,
+        )
+        return [_bim_element_to_canonical(e) for e in elements]
+
     # ── Map-config one-shot bundle ──────────────────────────────────────
 
     async def map_config(
@@ -776,6 +955,92 @@ class GeoHubService:
             "viewpoints": viewpoints,
             "active_jobs": active_jobs,
         }
+
+
+def _bim_element_to_canonical(element: Any) -> dict[str, Any]:
+    """Project a BIMElement ORM row onto the canonical-format element dict."""
+    props = element.properties or {}
+    quantities = element.quantities or {}
+    bbox = element.bounding_box or {}
+    classification: dict[str, Any] = {}
+    for key in ("din276", "nrm", "masterformat", "uniclass"):
+        val = (
+            props.get(key)
+            or props.get(key.upper())
+            or props.get(f"classification.{key}")
+        )
+        if val:
+            classification[key] = val
+
+    geometry: dict[str, Any] = {}
+    if isinstance(bbox, dict):
+        min_pt = bbox.get("min") or bbox.get("min_point")
+        max_pt = bbox.get("max") or bbox.get("max_point")
+        if (
+            isinstance(min_pt, (list, tuple))
+            and isinstance(max_pt, (list, tuple))
+            and len(min_pt) >= 3
+            and len(max_pt) >= 3
+        ):
+            try:
+                geometry["aabb"] = [
+                    float(min_pt[0]), float(min_pt[1]), float(min_pt[2]),
+                    float(max_pt[0]), float(max_pt[1]), float(max_pt[2]),
+                ]
+            except (TypeError, ValueError):
+                pass
+    if "area_m2" in quantities:
+        geometry["area_m2"] = quantities.get("area_m2")
+    if "volume_m3" in quantities:
+        geometry["volume_m3"] = quantities.get("volume_m3")
+    if "length_m" in quantities:
+        geometry["length_m"] = quantities.get("length_m")
+    if "height_m" in quantities:
+        geometry["height_m"] = quantities.get("height_m")
+
+    return {
+        "id": element.stable_id,
+        "category": element.element_type or "unknown",
+        "classification": classification,
+        "geometry": geometry,
+        "quantities": dict(quantities),
+        "relations": {"level": element.storey, "discipline": element.discipline},
+        "validation_status": "passed",
+    }
+
+
+def _rotate_element(element: dict[str, Any], heading_deg: float) -> dict[str, Any]:
+    """Rotate a canonical element's AABB around the local Z (up) axis.
+
+    Replaces the AABB with the axis-aligned envelope of the rotated box
+    so the downstream pipeline still sees an AABB. Loses orientation
+    fidelity by design — heading is a coarse hint, not a transform.
+    """
+    import math as _math
+
+    geom = element.get("geometry") or {}
+    aabb = geom.get("aabb")
+    if not (isinstance(aabb, list) and len(aabb) == 6):
+        return element
+    try:
+        min_x, min_y, min_z, max_x, max_y, max_z = (float(v) for v in aabb)
+    except (TypeError, ValueError):
+        return element
+    rad = _math.radians(heading_deg)
+    cos_r = _math.cos(rad)
+    sin_r = _math.sin(rad)
+    corners_xy = [
+        (min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y),
+    ]
+    xs = [cx * cos_r - cy * sin_r for cx, cy in corners_xy]
+    ys = [cx * sin_r + cy * cos_r for cx, cy in corners_xy]
+    new_geom = dict(geom)
+    new_geom["aabb"] = [
+        min(xs), min(ys), min_z, max(xs), max(ys), max_z,
+    ]
+    new_element = dict(element)
+    new_element["geometry"] = new_geom
+    return new_element
 
 
 def _extract_user_id(

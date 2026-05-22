@@ -5623,7 +5623,7 @@ const resource = {
     "admin.permissions.preset_error_title": "Preset failed",
     "admin.permissions.preset_error": "Could not apply preset",
     "admin.permissions.noop_title": "No change",
-    "admin.permissions.noop_message": "{{key}} is already minimum {{role}}"
+    "admin.permissions.noop_message": "{{key}} is already minimum {{role}}",
     // --- propdev (task #141) ---
     "propdev.title": "การพัฒนาอสังหาริมทรัพย์",
     "propdev.subtitle": "โครงการ แปลงที่ดิน เส้นทางผู้ซื้อ การส่งมอบ และข้อร้องเรียนการรับประกัน",

@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import {
@@ -16,6 +17,7 @@ import {
   Clock,
   AlertOctagon,
   Pencil,
+  Globe2,
 } from 'lucide-react';
 import {
   Button,
@@ -154,6 +156,7 @@ function daysUntil(iso: string | null | undefined): number | null {
 
 export function PropertyDevPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('developments');
   const [selectedDevId, setSelectedDevId] = useState<string>('');
   const [search, setSearch] = useState('');
@@ -351,6 +354,19 @@ export function PropertyDevPage() {
                 className={clsx(inputCls, 'pl-8')}
               />
             </div>
+          )}
+          {selectedDevId && (
+            <button
+              type="button"
+              onClick={() => navigate(`/property-dev/developments/${selectedDevId}/geo`)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border-light bg-surface-primary px-2.5 py-1.5 text-xs font-medium text-content-secondary hover:bg-surface-secondary hover:text-oe-blue focus:outline-none focus:ring-2 focus:ring-oe-blue/40"
+              title={t('geo_hub.view_on_map', { defaultValue: 'View on map' })}
+              aria-label={t('geo_hub.view_on_map', { defaultValue: 'View on map' })}
+              data-testid="propdev-view-on-map"
+            >
+              <Globe2 size={13} />
+              {t('geo_hub.view_on_map', { defaultValue: 'View on map' })}
+            </button>
           )}
         </div>
       )}

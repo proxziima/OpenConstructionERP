@@ -1,7 +1,7 @@
 {
   "name": "openestimate-frontend",
   "private": true,
-  "version": "4.3.2",
+  "version": "4.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -27,6 +27,7 @@
     "@xyflow/react": "^12.10.2",
     "ag-grid-community": "^32.3.0",
     "ag-grid-react": "^32.3.9",
+    "cesium": "^1.141.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "exceljs": "^4.4.0",

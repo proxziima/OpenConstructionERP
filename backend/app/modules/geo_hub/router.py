@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Query, Response
 
 from app.dependencies import CurrentUserPayload, RequirePermission, SessionDep
 from app.modules.geo_hub.schemas import (
+    CanonicalToTilesetRequest,
     GeoAnchorCreate,
     GeoAnchorResponse,
     GeoAnchorUpdate,
@@ -247,6 +248,33 @@ async def list_tile_jobs(
         limit=limit,
     )
     return [TileJobResponse.model_validate(j) for j in jobs]
+
+
+# ── Canonical -> 3D Tileset (one-shot packaging) ────────────────────────
+
+
+@router.post(
+    "/from-canonical/{cad_import_id}",
+    response_model=TilesetResponse,
+    status_code=200,
+)
+async def package_canonical_as_tileset(
+    cad_import_id: uuid.UUID,
+    data: CanonicalToTilesetRequest | None = None,
+    development_id: uuid.UUID | None = Query(default=None),
+    project_id: uuid.UUID | None = Query(default=None),
+    service: GeoHubService = Depends(_svc),
+    payload: CurrentUserPayload = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("geo_hub.job_run")),
+) -> TilesetResponse:
+    obj = await service.package_canonical_as_tileset(
+        cad_import_id,
+        development_id=development_id,
+        project_id=project_id,
+        request=data,
+        payload=payload,
+    )
+    return TilesetResponse.model_validate(obj)
 
 
 # ── Imagery layers ───────────────────────────────────────────────────────

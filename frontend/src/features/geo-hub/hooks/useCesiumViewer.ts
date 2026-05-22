@@ -44,9 +44,8 @@ export function useCesiumViewer(_mapConfig?: MapConfig) {
     (async () => {
       let cesium: CesiumLike | null = null;
       try {
-        const moduleName = 'cesium' as string;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        cesium = (await import(/* @vite-ignore */ moduleName)) as any;
+        cesium = (await import('cesium')) as any;
       } catch {
         cesium = null;
       }

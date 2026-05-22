@@ -52,7 +52,7 @@ afterEach(() => {
 
 describe('CesiumViewer', () => {
   it('renders a Cesium container element', async () => {
-    vi.doMock('cesium', () => ({}), { virtual: true });
+    vi.doMock('cesium', () => ({}));
     render(<CesiumViewer mode="global" />);
     const container = await screen.findByTestId('geo-hub-cesium-container');
     expect(container).toBeTruthy();
@@ -70,7 +70,7 @@ describe('CesiumViewer', () => {
 
   it('flies to the anchor when mapConfig has one', async () => {
     const stub = makeCesiumStub();
-    vi.doMock('cesium', () => stub.module, { virtual: true });
+    vi.doMock('cesium', () => stub.module);
     const cfg: MapConfig = {
       project_id: 'p1',
       anchor: {
@@ -102,7 +102,7 @@ describe('CesiumViewer', () => {
 
   it('attempts to load every ready tileset', async () => {
     const stub = makeCesiumStub();
-    vi.doMock('cesium', () => stub.module, { virtual: true });
+    vi.doMock('cesium', () => stub.module);
     const cfg: MapConfig = {
       project_id: 'p1',
       anchor: null,
@@ -168,7 +168,7 @@ describe('CesiumViewer', () => {
 
   it('destroys the viewer on unmount', async () => {
     const stub = makeCesiumStub();
-    vi.doMock('cesium', () => stub.module, { virtual: true });
+    vi.doMock('cesium', () => stub.module);
     const { unmount } = render(<CesiumViewer mode="global" />);
     await waitFor(() => {
       expect(stub.module.Viewer).toHaveBeenCalled();

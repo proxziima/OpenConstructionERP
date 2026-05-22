@@ -88,6 +88,7 @@ data/exports/
 data/cwicr/cache/
 data/approvals/
 data/transmittals/
+data/tilesets/
 frontend/debug-bim/
 
 # Claude Code / MCP — keep instruction files (internal-notes/*.md) but

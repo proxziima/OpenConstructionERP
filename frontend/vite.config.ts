@@ -4,7 +4,28 @@ import react from '@vitejs/plugin-react';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
-import { readFileSync } from 'fs';
+import { cpSync, existsSync, readFileSync } from 'fs';
+import type { Plugin } from 'vite';
+
+const cesiumSource = path.resolve(__dirname, 'node_modules/cesium/Build/Cesium');
+
+function copyCesiumAssets(): Plugin {
+  return {
+    name: 'copy-cesium-assets',
+    apply: 'build',
+    writeBundle(options) {
+      const outDir = options.dir ?? path.resolve(__dirname, 'dist');
+      if (!existsSync(cesiumSource)) return;
+      for (const sub of ['Workers', 'ThirdParty', 'Assets', 'Widgets']) {
+        const src = path.join(cesiumSource, sub);
+        const dest = path.join(outDir, 'cesium', sub);
+        if (existsSync(src)) {
+          cpSync(src, dest, { recursive: true });
+        }
+      }
+    },
+  };
+}
 
 // Read the version from package.json once at build time so the entire app
 // (sidebar, About page, error reports, update checker) stays in sync.
@@ -22,6 +43,7 @@ export default defineConfig({
       brotliSize: true,
       open: false,
     }),
+    copyCesiumAssets(),
     // ── Mobile PWA — Slice 1 ────────────────────────────────────────────
     // Installable PWA with offline-app-shell + i18n bundle caching.
     //
@@ -201,6 +223,7 @@ export default defineConfig({
   // and BIM pages.  Including them up-front keeps the version hash stable
   // across the dev session.
   optimizeDeps: {
+    exclude: ['cesium'],
     include: [
       'pdfjs-dist',
       'pdfjs-dist/build/pdf.worker.min.mjs',

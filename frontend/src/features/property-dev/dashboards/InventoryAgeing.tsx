@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { InventoryAgeingResponse } from '../api';
 import { getInventoryAgeing } from '../api';
-import { DashboardEmpty, DashboardLoading, num } from './_shared';
+import { DashboardEmpty, DashboardLoading } from './_shared';
 
 interface InventoryAgeingProps {
   developmentId: string;
