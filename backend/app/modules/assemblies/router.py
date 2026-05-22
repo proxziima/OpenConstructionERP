@@ -479,7 +479,13 @@ async def update_assembly(
 ) -> AssemblyResponse:
     """Update assembly metadata fields."""
     await _verify_assembly_owner(session, assembly_id, user_id, payload)
-    assembly = await service.update_assembly(assembly_id, data)
+    is_admin = bool(payload and payload.get("role") == "admin")
+    assembly = await service.update_assembly(
+        assembly_id,
+        data,
+        caller_user_id=user_id,
+        caller_is_admin=is_admin,
+    )
     return _assembly_to_response(assembly)
 
 

@@ -543,6 +543,124 @@ async def test_apply_to_boq_valid_regional_factor_still_applies(session):
     assert _str_to_float(pos.unit_rate) == pytest.approx(110.0)
 
 
+# ── NEW-ASM-106 — PATCH /assemblies/{id} cross-tenant project re-parent ──
+
+
+@pytest.mark.asyncio
+async def test_update_assembly_rejects_cross_tenant_project_reparent(session):
+    """NEW-ASM-106: PATCH cannot move an assembly into another tenant's
+    project. Returns 404 (not 403) to keep the existence oracle closed.
+    """
+    from app.modules.assemblies.schemas import AssemblyUpdate
+    from app.modules.projects.models import Project
+    from app.modules.users.models import User
+
+    other_owner = User(
+        id=uuid.uuid4(),
+        email=f"o2-{uuid.uuid4().hex[:6]}@test.io",
+        hashed_password="x",
+        full_name="O2",
+    )
+    session.add(other_owner)
+    await session.flush()
+    foreign_project = Project(
+        id=uuid.uuid4(),
+        name="Foreign",
+        owner_id=other_owner.id,
+        currency="EUR",
+    )
+    session.add(foreign_project)
+    await session.flush()
+
+    svc = AssemblyService(session)
+    asm = await svc.create_assembly(
+        AssemblyCreate(code="ASM-XP", name="X", unit="m"),
+        owner_id=str(OWNER_ID),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.update_assembly(
+            asm.id,
+            AssemblyUpdate(project_id=foreign_project.id),
+            caller_user_id=str(OWNER_ID),
+            caller_is_admin=False,
+        )
+    assert exc.value.status_code == 404
+    # The DB row was NOT re-parented.
+    refreshed = await svc.assembly_repo.get_by_id(asm.id)
+    assert refreshed is not None
+    assert refreshed.project_id is None  # still detached / unchanged
+
+
+@pytest.mark.asyncio
+async def test_update_assembly_allows_own_project_reparent(session):
+    """NEW-ASM-106 control: re-parenting into a project the caller owns
+    still works (no regression on the happy path)."""
+    from app.modules.assemblies.schemas import AssemblyUpdate
+    from app.modules.projects.models import Project
+
+    my_project = Project(
+        id=uuid.uuid4(),
+        name="Mine",
+        owner_id=OWNER_ID,
+        currency="EUR",
+    )
+    session.add(my_project)
+    await session.flush()
+
+    svc = AssemblyService(session)
+    asm = await svc.create_assembly(
+        AssemblyCreate(code="ASM-MP", name="MP", unit="m"),
+        owner_id=str(OWNER_ID),
+    )
+    updated = await svc.update_assembly(
+        asm.id,
+        AssemblyUpdate(project_id=my_project.id),
+        caller_user_id=str(OWNER_ID),
+        caller_is_admin=False,
+    )
+    assert updated.project_id == my_project.id
+
+
+@pytest.mark.asyncio
+async def test_update_assembly_admin_bypasses_reparent_check(session):
+    """NEW-ASM-106 control: admin role bypasses the project-owner check
+    (admins manage global templates)."""
+    from app.modules.assemblies.schemas import AssemblyUpdate
+    from app.modules.projects.models import Project
+    from app.modules.users.models import User
+
+    other_owner = User(
+        id=uuid.uuid4(),
+        email=f"o3-{uuid.uuid4().hex[:6]}@test.io",
+        hashed_password="x",
+        full_name="O3",
+    )
+    session.add(other_owner)
+    await session.flush()
+    foreign_project = Project(
+        id=uuid.uuid4(),
+        name="Foreign2",
+        owner_id=other_owner.id,
+        currency="EUR",
+    )
+    session.add(foreign_project)
+    await session.flush()
+
+    svc = AssemblyService(session)
+    asm = await svc.create_assembly(
+        AssemblyCreate(code="ASM-ADM", name="Adm", unit="m"),
+        owner_id=str(OWNER_ID),
+    )
+    updated = await svc.update_assembly(
+        asm.id,
+        AssemblyUpdate(project_id=foreign_project.id),
+        caller_user_id=str(OWNER_ID),
+        caller_is_admin=True,
+    )
+    assert updated.project_id == foreign_project.id
+
+
 # ── NEW-ASM-107 — regional_factors schema sanitisation ───────────────────
 
 

@@ -376,18 +376,33 @@ class AssemblyService:
             limit=limit,
         )
 
-    async def update_assembly(self, assembly_id: uuid.UUID, data: AssemblyUpdate) -> Assembly:
+    async def update_assembly(
+        self,
+        assembly_id: uuid.UUID,
+        data: AssemblyUpdate,
+        *,
+        caller_user_id: str | None = None,
+        caller_is_admin: bool = False,
+    ) -> Assembly:
         """Update assembly metadata fields.
 
         Args:
             assembly_id: Target assembly identifier.
             data: Partial update payload.
+            caller_user_id: ID of the calling user (for project re-parent
+                ownership check — NEW-ASM-106).
+            caller_is_admin: When True, skip the cross-tenant project
+                ownership check (admins manage global templates).
 
         Returns:
             Updated Assembly.
 
         Raises:
             HTTPException 404 if assembly not found.
+            HTTPException 404 if a new ``project_id`` refers to a project
+                the caller does not own (returned as 404 not 403 to keep
+                the existence-oracle closed — matches the rest of this
+                module).
             HTTPException 409 if new code conflicts with an existing assembly.
         """
         assembly = await self.get_assembly(assembly_id)
@@ -401,6 +416,36 @@ class AssemblyService:
         # Convert bid_factor float to string for storage
         if "bid_factor" in fields:
             fields["bid_factor"] = str(fields["bid_factor"])
+
+        # NEW-ASM-106 — verify the caller owns the *new* project before
+        # re-parenting. Without this, an authenticated owner of assembly
+        # X could PATCH ``{"project_id": "<other-tenant's-project-id>"}``
+        # and pollute the other tenant's per-project assembly listing
+        # (``GET /assemblies/?project_id=...``). The owner_id of the
+        # assembly is unchanged — but the project filter is keyed off
+        # ``project_id``, so the assembly would show up under another
+        # tenant's project. 404 (not 403) — see docstring.
+        if (
+            "project_id" in fields
+            and fields["project_id"] is not None
+            and not caller_is_admin
+            and caller_user_id is not None
+        ):
+            new_pid = fields["project_id"]
+            current_pid = assembly.project_id
+            if str(new_pid) != str(current_pid or ""):
+                from app.modules.projects.repository import ProjectRepository
+
+                project_repo = ProjectRepository(self.session)
+                target_project = await project_repo.get_by_id(new_pid)
+                if (
+                    target_project is None
+                    or str(getattr(target_project, "owner_id", "")) != str(caller_user_id)
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Project not found",
+                    )
 
         # Check code uniqueness if code is being changed
         if "code" in fields and fields["code"] != assembly.code:
