@@ -176,4 +176,50 @@ describe('CesiumViewer', () => {
     unmount();
     expect(stub.destroy).toHaveBeenCalled();
   });
+
+  it('does not rebuild the viewer when only the mapConfig object reference changes', async () => {
+    // Regression: React Query produces a new ``mapConfig`` reference on
+    // every poll. The viewer effect must key off a stable signature
+    // (anchor + ready-tileset uris) so a refetch with identical content
+    // does NOT destroy and re-create the entire Cesium viewer — that
+    // would wipe the user's camera state and re-download the 3 MB
+    // runtime every 30 s.
+    const stub = makeCesiumStub();
+    vi.doMock('cesium', () => stub.module);
+    const makeCfg = (): MapConfig => ({
+      project_id: 'p1',
+      anchor: {
+        id: 'a1',
+        project_id: 'p1',
+        lat: '52.52',
+        lon: '13.40',
+        alt: '10',
+        epsg_code: 4326,
+        region_code: 'DE-BE',
+        address: null,
+        accuracy_m: null,
+        metadata: {},
+        created_at: '',
+        updated_at: '',
+      },
+      imagery_layers: [],
+      terrain_source: null,
+      tilesets: [],
+      overlays: [],
+      viewpoints: [],
+      active_jobs: [],
+    });
+
+    const { rerender } = render(
+      <CesiumViewer mode="project" mapConfig={makeCfg()} />,
+    );
+    await waitFor(() => {
+      expect(stub.module.Viewer).toHaveBeenCalledTimes(1);
+    });
+    // Identical content, fresh reference — must NOT rebuild.
+    rerender(<CesiumViewer mode="project" mapConfig={makeCfg()} />);
+    // Give any pending effect a tick to run; the viewer count must stay 1.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(stub.module.Viewer).toHaveBeenCalledTimes(1);
+  });
 });

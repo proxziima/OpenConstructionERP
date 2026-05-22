@@ -19,7 +19,7 @@
  *   absent so a freshly-anchored project doesn't error out.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { MapConfig } from './types';
@@ -29,6 +29,29 @@ type ViewerMode = 'global' | 'project' | 'development';
 interface CesiumViewerProps {
   mode: ViewerMode;
   mapConfig?: MapConfig;
+}
+
+/** Stable signature for the viewer effect: rebuild only when the
+ * inputs that actually matter for the Cesium scene change. Without
+ * this, React Query produces a fresh ``mapConfig`` reference every
+ * refetch (every 30 s on stale revalidation) which would tear down
+ * the entire Cesium viewer — wiping camera state and forcing the
+ * ~3 MB runtime to reinitialise.
+ */
+function _viewerSignature(
+  mode: ViewerMode,
+  mapConfig?: MapConfig,
+): string {
+  if (!mapConfig) return `${mode}|nil`;
+  const anchor = mapConfig.anchor
+    ? `${mapConfig.anchor.lat},${mapConfig.anchor.lon},${mapConfig.anchor.alt}`
+    : 'nil';
+  const tilesets = (mapConfig.tilesets ?? [])
+    .filter((t) => t.status === 'ready' && t.tileset_json_uri)
+    .map((t) => `${t.id}:${t.tileset_json_uri}`)
+    .sort()
+    .join(';');
+  return `${mode}|${mapConfig.project_id ?? ''}|${anchor}|${tilesets}`;
 }
 
 interface CesiumLike {
@@ -85,6 +108,16 @@ export function CesiumViewer({ mode, mapConfig }: CesiumViewerProps) {
   const [cesiumStatus, setCesiumStatus] = useState<
     'pending' | 'loaded' | 'absent'
   >('pending');
+
+  // Stable string signature of the viewer-relevant inputs. Re-running
+  // the effect on every parent re-render (React Query returns a new
+  // ``mapConfig`` object reference on each refetch) would destroy and
+  // re-create the entire Cesium viewer — wiping camera state and
+  // re-downloading the 3 MB runtime.
+  const signature = useMemo(
+    () => _viewerSignature(mode, mapConfig),
+    [mode, mapConfig],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -166,7 +199,10 @@ export function CesiumViewer({ mode, mapConfig }: CesiumViewerProps) {
       }
       viewerRef.current = null;
     };
-  }, [mode, mapConfig]);
+    // ``signature`` collapses ``mapConfig`` into a stable string that
+    // only changes when something the viewer actually renders changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature]);
 
   return (
     <div className="relative h-full w-full">
