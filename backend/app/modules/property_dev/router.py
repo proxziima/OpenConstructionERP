@@ -125,6 +125,14 @@ from app.modules.property_dev.schemas import (
     ComplianceRegulatorReportResponse,
     ComplianceRuleResult,
 )
+from app.modules.property_dev.schemas import (
+    BuyerJourneyResponse,
+    CashflowWaterfallResponse,
+    FunnelConversionResponse,
+    InventoryAgeingResponse,
+    InventoryHeatmapResponse,
+    SalesVelocityResponse,
+)
 from app.modules.property_dev.service import (
     PropertyDevService,
     compute_plot_final_price,
@@ -3109,3 +3117,116 @@ async def compliance_regulator_report(
         payload_base64=base64.b64encode(report.payload_bytes).decode("ascii"),
         summary=report.summary,
     )
+
+
+# ── Dashboards (task #140) ──────────────────────────────────────────────
+
+
+@router.get(
+    "/dashboards/inventory-heatmap",
+    response_model=InventoryHeatmapResponse,
+)
+async def dashboard_inventory_heatmap(
+    session: SessionDep,
+    payload: CurrentUserPayload,
+    dev_id: uuid.UUID = Query(...),
+    service: PropertyDevService = Depends(_svc),
+    _perm: None = Depends(RequirePermission("property_dev.read")),
+) -> InventoryHeatmapResponse:
+    """Inventory heatmap grouped by Phase -> Block -> Plot."""
+    await _verify_owner_via_development(session, dev_id, payload)
+    data = await service.dashboard_inventory_heatmap(dev_id)
+    return InventoryHeatmapResponse.model_validate(data)
+
+
+@router.get(
+    "/dashboards/sales-velocity",
+    response_model=SalesVelocityResponse,
+)
+async def dashboard_sales_velocity(
+    session: SessionDep,
+    payload: CurrentUserPayload,
+    dev_id: uuid.UUID = Query(...),
+    granularity: str = Query(default="month", pattern=r"^(week|month|quarter)$"),
+    service: PropertyDevService = Depends(_svc),
+    _perm: None = Depends(RequirePermission("property_dev.read")),
+) -> SalesVelocityResponse:
+    """Sales velocity: SPAs signed by period (week/month/quarter)."""
+    await _verify_owner_via_development(session, dev_id, payload)
+    data = await service.dashboard_sales_velocity(dev_id, granularity=granularity)
+    return SalesVelocityResponse.model_validate(data)
+
+
+@router.get(
+    "/dashboards/cashflow-waterfall",
+    response_model=CashflowWaterfallResponse,
+)
+async def dashboard_cashflow_waterfall(
+    session: SessionDep,
+    payload: CurrentUserPayload,
+    dev_id: uuid.UUID = Query(...),
+    start_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    months: int = Query(default=12, ge=1, le=60),
+    service: PropertyDevService = Depends(_svc),
+    _perm: None = Depends(RequirePermission("property_dev.read")),
+) -> CashflowWaterfallResponse:
+    """Monthly cash-flow: scheduled instalments + actual escrow flows."""
+    await _verify_owner_via_development(session, dev_id, payload)
+    data = await service.dashboard_cashflow_waterfall(
+        dev_id, start_month=start_month, months=months,
+    )
+    return CashflowWaterfallResponse.model_validate(data)
+
+
+@router.get(
+    "/dashboards/inventory-ageing",
+    response_model=InventoryAgeingResponse,
+)
+async def dashboard_inventory_ageing(
+    session: SessionDep,
+    payload: CurrentUserPayload,
+    dev_id: uuid.UUID = Query(...),
+    service: PropertyDevService = Depends(_svc),
+    _perm: None = Depends(RequirePermission("property_dev.read")),
+) -> InventoryAgeingResponse:
+    """Days-on-market buckets + reserved-no-contract list."""
+    await _verify_owner_via_development(session, dev_id, payload)
+    data = await service.dashboard_inventory_ageing(dev_id)
+    return InventoryAgeingResponse.model_validate(data)
+
+
+@router.get(
+    "/dashboards/funnel-conversion",
+    response_model=FunnelConversionResponse,
+)
+async def dashboard_funnel_conversion(
+    session: SessionDep,
+    payload: CurrentUserPayload,
+    dev_id: uuid.UUID = Query(...),
+    period_days: int = Query(default=90, ge=1, le=365),
+    service: PropertyDevService = Depends(_svc),
+    _perm: None = Depends(RequirePermission("property_dev.read")),
+) -> FunnelConversionResponse:
+    """5-stage funnel: Lead -> Reservation -> SPA draft -> SPA signed -> Handover."""
+    await _verify_owner_via_development(session, dev_id, payload)
+    data = await service.dashboard_funnel_conversion(
+        dev_id, period_days=period_days,
+    )
+    return FunnelConversionResponse.model_validate(data)
+
+
+@router.get(
+    "/dashboards/buyer-journey",
+    response_model=BuyerJourneyResponse,
+)
+async def dashboard_buyer_journey(
+    session: SessionDep,
+    payload: CurrentUserPayload,
+    buyer_id: uuid.UUID = Query(...),
+    service: PropertyDevService = Depends(_svc),
+    _perm: None = Depends(RequirePermission("property_dev.read")),
+) -> BuyerJourneyResponse:
+    """Cross-entity timeline: Lead -> Reservation -> SPA -> Payments -> Handover -> Warranty."""
+    await _verify_buyer_owner(session, buyer_id, payload)
+    data = await service.dashboard_buyer_journey(buyer_id)
+    return BuyerJourneyResponse.model_validate(data)

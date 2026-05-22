@@ -1,0 +1,128 @@
+/**
+ * Property Development — Dashboard full-view route (task #140).
+ *
+ * Renders one dashboard at a time based on the URL slug (e.g.
+ * /property-dev/dashboards/inventory-heatmap) and a development selector.
+ */
+
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
+import { Link, useParams } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
+import { listDevelopments, type Development } from '../api';
+import { InventoryHeatmap } from './InventoryHeatmap';
+import { SalesVelocity } from './SalesVelocity';
+import { CashFlowWaterfall } from './CashFlowWaterfall';
+import { InventoryAgeing } from './InventoryAgeing';
+import { FunnelConversion } from './FunnelConversion';
+import { DashboardEmpty, DashboardLoading } from './_shared';
+
+const VALID_KEYS = new Set([
+  'inventory-heatmap',
+  'sales-velocity',
+  'cashflow-waterfall',
+  'inventory-ageing',
+  'funnel-conversion',
+]);
+
+export function FullViewPage() {
+  const { t } = useTranslation();
+  const params = useParams<{ key?: string }>();
+  const key = params.key ?? '';
+  const [developmentId, setDevelopmentId] = useState<string>('');
+
+  const { data: developments, isLoading } = useQuery({
+    queryKey: ['propdev-developments'],
+    queryFn: () => listDevelopments({ limit: 100 }),
+  });
+
+  const first = developments?.[0];
+  if (first && !developmentId) {
+    setDevelopmentId(first.id);
+  }
+
+  if (!VALID_KEYS.has(key)) {
+    return (
+      <DashboardEmpty
+        title={t('propdev.dashboards.full.unknown_title', {
+          defaultValue: 'Unknown dashboard',
+        })}
+        description={t('propdev.dashboards.full.unknown_desc', {
+          defaultValue:
+            'The dashboard you tried to open doesn\'t exist.',
+        })}
+      />
+    );
+  }
+  if (isLoading) return <DashboardLoading />;
+  if (!developments || developments.length === 0) {
+    return (
+      <DashboardEmpty
+        title={t('propdev.dashboards.hub.no_developments_title', {
+          defaultValue: 'No developments yet',
+        })}
+      />
+    );
+  }
+
+  const renderActive = () => {
+    if (!developmentId) return null;
+    switch (key) {
+      case 'inventory-heatmap':
+        return <InventoryHeatmap developmentId={developmentId} />;
+      case 'sales-velocity':
+        return <SalesVelocity developmentId={developmentId} />;
+      case 'cashflow-waterfall':
+        return <CashFlowWaterfall developmentId={developmentId} />;
+      case 'inventory-ageing':
+        return <InventoryAgeing developmentId={developmentId} />;
+      case 'funnel-conversion':
+        return <FunnelConversion developmentId={developmentId} />;
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="space-y-4 p-4">
+      <header className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-3">
+          <Link
+            to="/property-dev/dashboards"
+            className="flex items-center gap-1 text-2xs text-content-tertiary hover:text-content-primary"
+          >
+            <ArrowLeft size={12} />
+            {t('propdev.dashboards.full.back_to_hub', {
+              defaultValue: 'Back to hub',
+            })}
+          </Link>
+          <h1 className="text-lg font-semibold text-content-primary">
+            {t(`propdev.dashboards.full.${key.replace(/-/g, '_')}`, {
+              defaultValue: key.replace(/-/g, ' '),
+            })}
+          </h1>
+        </div>
+        <label className="flex items-center gap-2 text-xs">
+          <span className="text-content-secondary">
+            {t('propdev.dashboards.hub.development', {
+              defaultValue: 'Development',
+            })}
+          </span>
+          <select
+            value={developmentId}
+            onChange={(e) => setDevelopmentId(e.target.value)}
+            className="rounded border border-border-light bg-surface-elevated px-2 py-1"
+          >
+            {developments.map((d: Development) => (
+              <option key={d.id} value={d.id}>
+                {d.code} — {d.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </header>
+      <div>{renderActive()}</div>
+    </div>
+  );
+}

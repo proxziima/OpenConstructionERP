@@ -2421,3 +2421,214 @@ __all_task_138__ = (
     "TaxQuoteLineItem",
     "TaxQuotePayload",
 )
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Task #140 — Dashboards (heatmap / velocity / cashflow / ageing / funnel
+# / buyer-journey). All sourced from the full R6 schema (Phase / Block /
+# Lead / Reservation / SalesContract / Instalment / Escrow).
+# ════════════════════════════════════════════════════════════════════════
+
+
+class HeatmapUnit(BaseModel):
+    """One Plot cell inside a Block of the inventory heatmap."""
+
+    plot_id: str
+    plot_number: str
+    status: str
+    area_m2: Decimal = Decimal("0")
+    price_base: Decimal = Decimal("0")
+    currency: str = ""
+    level_in_block: int | None = None
+    position_on_floor: str | None = None
+    house_type_id: str | None = None
+
+
+class HeatmapBlock(BaseModel):
+    """One Block under a Phase."""
+
+    block_id: str | None = None
+    code: str = ""
+    name: str = ""
+    levels_count: int = 1
+    units_per_level: int = 1
+    orientation: str | None = None
+    units: list[HeatmapUnit] = Field(default_factory=list)
+
+
+class HeatmapPhase(BaseModel):
+    """One Phase containing zero or more Blocks."""
+
+    phase_id: str | None = None
+    code: str = ""
+    name: str = ""
+    sequence: int = 0
+    status: str = ""
+    blocks: list[HeatmapBlock] = Field(default_factory=list)
+
+
+class InventoryHeatmapResponse(BaseModel):
+    """Heatmap: development -> phases -> blocks -> units."""
+
+    development_id: UUID
+    currency: str = ""
+    phases: list[HeatmapPhase] = Field(default_factory=list)
+    total_units: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class CurrencyAmount(BaseModel):
+    """One currency / amount pair (multi-currency aware totals)."""
+
+    currency: str = ""
+    amount: Decimal = Decimal("0")
+
+
+class SalesVelocityBucket(BaseModel):
+    """One time-bucket on the velocity chart."""
+
+    period: str
+    units: int = 0
+    area_m2: Decimal = Decimal("0")
+    revenue: list[CurrencyAmount] = Field(default_factory=list)
+
+
+class SalesVelocityTotals(BaseModel):
+    units: int = 0
+    area_m2: Decimal = Decimal("0")
+    revenue: list[CurrencyAmount] = Field(default_factory=list)
+
+
+class SalesVelocityResponse(BaseModel):
+    """Sales velocity time series."""
+
+    development_id: UUID
+    granularity: str = "month"
+    series: list[SalesVelocityBucket] = Field(default_factory=list)
+    currencies: list[str] = Field(default_factory=list)
+    totals: SalesVelocityTotals = Field(default_factory=SalesVelocityTotals)
+
+
+class CashflowMonthBucket(BaseModel):
+    """One month bucket on the cash-flow waterfall."""
+
+    month: str  # YYYY-MM
+    scheduled: list[CurrencyAmount] = Field(default_factory=list)
+    actual_collected: list[CurrencyAmount] = Field(default_factory=list)
+    actual_disbursed: list[CurrencyAmount] = Field(default_factory=list)
+
+
+class CashflowTotals(BaseModel):
+    scheduled: list[CurrencyAmount] = Field(default_factory=list)
+    actual_collected: list[CurrencyAmount] = Field(default_factory=list)
+    actual_disbursed: list[CurrencyAmount] = Field(default_factory=list)
+
+
+class CashflowWaterfallResponse(BaseModel):
+    """Cash-flow waterfall over the requested month window."""
+
+    development_id: UUID
+    start_month: str
+    months: int = 12
+    currencies: list[str] = Field(default_factory=list)
+    series: list[CashflowMonthBucket] = Field(default_factory=list)
+    totals: CashflowTotals = Field(default_factory=CashflowTotals)
+
+
+class InventoryAgeingPlot(BaseModel):
+    """One Plot in an ageing bucket."""
+
+    plot_id: str
+    plot_number: str
+    status: str
+    days_on_market: int = 0
+    block_id: str | None = None
+    house_type_id: str | None = None
+    price_base: Decimal = Decimal("0")
+    currency: str = ""
+
+
+class InventoryAgeingBucket(BaseModel):
+    """One days-on-market bucket."""
+
+    label: str
+    count: int = 0
+    plots: list[InventoryAgeingPlot] = Field(default_factory=list)
+
+
+class InventoryAgeingResponse(BaseModel):
+    """Ageing histogram for unsold inventory."""
+
+    development_id: UUID
+    as_of: str
+    buckets: list[InventoryAgeingBucket] = Field(default_factory=list)
+    total_unsold: int = 0
+
+
+class FunnelStage(BaseModel):
+    """One funnel stage."""
+
+    code: str
+    label: str
+    count: int = 0
+    drop_pct: Decimal = Decimal("0")
+
+
+class FunnelTotals(BaseModel):
+    leads: int = 0
+    conversion_pct: Decimal = Decimal("0")
+
+
+class FunnelConversionResponse(BaseModel):
+    """Lead -> Reservation -> SPA draft -> SPA signed -> Handover."""
+
+    development_id: UUID
+    period_days: int = 90
+    stages: list[FunnelStage] = Field(default_factory=list)
+    totals: FunnelTotals = Field(default_factory=FunnelTotals)
+
+
+class BuyerJourneyEvent(BaseModel):
+    """One event in a buyer's cross-entity timeline."""
+
+    code: str
+    label: str
+    timestamp: str | None = None
+    state: str = "completed"  # completed | in_progress | upcoming
+    entity: str | None = None
+    entity_id: str | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class BuyerJourneyResponse(BaseModel):
+    """Chronological cross-entity events for one buyer."""
+
+    buyer_id: UUID
+    development_id: UUID
+    full_name: str = ""
+    status: str = ""
+    events: list[BuyerJourneyEvent] = Field(default_factory=list)
+    event_count: int = 0
+
+
+__all_task_140__ = (
+    "BuyerJourneyEvent",
+    "BuyerJourneyResponse",
+    "CashflowMonthBucket",
+    "CashflowTotals",
+    "CashflowWaterfallResponse",
+    "CurrencyAmount",
+    "FunnelConversionResponse",
+    "FunnelStage",
+    "FunnelTotals",
+    "HeatmapBlock",
+    "HeatmapPhase",
+    "HeatmapUnit",
+    "InventoryAgeingBucket",
+    "InventoryAgeingPlot",
+    "InventoryAgeingResponse",
+    "InventoryHeatmapResponse",
+    "SalesVelocityBucket",
+    "SalesVelocityResponse",
+    "SalesVelocityTotals",
+)

@@ -130,6 +130,8 @@ from app.modules.property_dev.schemas import (
 
 logger = logging.getLogger(__name__)
 
+_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+
 
 # ── State machines ──────────────────────────────────────────────────────
 
@@ -3141,6 +3143,996 @@ class PropertyDevService:
             },
             source_module="property_dev",
         )
+
+    # ── Dashboards (task #140) ──────────────────────────────────────────
+    #
+    # All six endpoints below read from the *full* R6 schema:
+    #   Phase / Block / Lead / Reservation / SalesContract / PaymentSchedule
+    #   / Instalment / EscrowAccount / EscrowTransaction.
+    # Legacy Buyer-only data is supported as a fallback so existing
+    # rows render even before they are wired to the new entities.
+
+    async def dashboard_inventory_heatmap(
+        self, dev_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        """Plot grid grouped by Phase -> Block (heat-map data source).
+
+        Each cell is one Plot, coloured by ``status``. Layout follows
+        ``Phase.sequence`` then ``Block.code``. Plots without ``block_id``
+        fall back to a synthetic "Unassigned" block under the synthetic
+        "—" phase so legacy data still renders.
+        """
+        from sqlalchemy import select as _select
+
+        dev = await self.get_development(dev_id)
+
+        phases = await self.phases.list_for_dev_ordered(dev_id)
+        blocks = await self.blocks.list_for_development(dev_id)
+        plots, _ = await self.plots.list_for_development(
+            dev_id, offset=0, limit=10_000,
+        )
+        # House-type names (legacy fallback display).
+        house_types = await self.house_types.list_for_development(dev_id)
+        ht_by_id = {ht.id: ht for ht in house_types}
+
+        blocks_by_id: dict[Any, Any] = {b.id: b for b in blocks}
+        phases_by_id: dict[Any, Any] = {p.id: p for p in phases}
+        # Phase id -> list[Block].
+        phase_to_blocks: dict[Any, list[Any]] = {p.id: [] for p in phases}
+        for b in blocks:
+            phase_to_blocks.setdefault(b.phase_id, []).append(b)
+        # Sort blocks inside each phase by code.
+        for blist in phase_to_blocks.values():
+            blist.sort(key=lambda b: (b.code or ""))
+
+        # Bucket plots: (phase_id, block_id) -> [plot]
+        plot_buckets: dict[tuple[Any, Any], list[Plot]] = {}
+        legacy_by_ht: dict[Any, list[Plot]] = {}
+        for plot in plots:
+            block = blocks_by_id.get(plot.block_id) if plot.block_id else None
+            if block is None:
+                # Legacy: group by house_type as a fallback.
+                legacy_by_ht.setdefault(plot.house_type_id, []).append(plot)
+                continue
+            key = (block.phase_id, block.id)
+            plot_buckets.setdefault(key, []).append(plot)
+
+        def _cell(plot: Plot) -> dict[str, Any]:
+            return {
+                "plot_id": str(plot.id),
+                "plot_number": plot.plot_number,
+                "status": plot.status,
+                "area_m2": Decimal(str(plot.area_m2 or 0)),
+                "price_base": Decimal(str(plot.price_base or 0)),
+                "currency": plot.currency or "",
+                "level_in_block": plot.level_in_block,
+                "position_on_floor": plot.position_on_floor,
+                "house_type_id": (
+                    str(plot.house_type_id) if plot.house_type_id else None
+                ),
+            }
+
+        phase_rows: list[dict[str, Any]] = []
+        for phase in phases:
+            ph_blocks = phase_to_blocks.get(phase.id, [])
+            block_rows: list[dict[str, Any]] = []
+            for block in ph_blocks:
+                cells = plot_buckets.get((phase.id, block.id), [])
+                cells.sort(
+                    key=lambda p: (
+                        (p.level_in_block or 0),
+                        (p.position_on_floor or ""),
+                        p.plot_number,
+                    )
+                )
+                block_rows.append(
+                    {
+                        "block_id": str(block.id),
+                        "code": block.code,
+                        "name": block.name,
+                        "levels_count": int(block.levels_count or 1),
+                        "units_per_level": int(block.units_per_level or 1),
+                        "orientation": block.orientation,
+                        "units": [_cell(p) for p in cells],
+                    }
+                )
+            phase_rows.append(
+                {
+                    "phase_id": str(phase.id),
+                    "code": phase.code,
+                    "name": phase.name,
+                    "sequence": int(phase.sequence or 0),
+                    "status": phase.status,
+                    "blocks": block_rows,
+                }
+            )
+
+        # Legacy fallback groups (no Block linkage).
+        legacy_blocks: list[dict[str, Any]] = []
+        for ht_id, lp in legacy_by_ht.items():
+            ht = ht_by_id.get(ht_id) if ht_id is not None else None
+            lp.sort(key=lambda p: p.plot_number)
+            legacy_blocks.append(
+                {
+                    "block_id": None,
+                    "code": (ht.code if ht else "—"),
+                    "name": (ht.name if ht else "Unassigned"),
+                    "levels_count": 1,
+                    "units_per_level": len(lp),
+                    "orientation": None,
+                    "units": [_cell(p) for p in lp],
+                }
+            )
+        if legacy_blocks:
+            phase_rows.append(
+                {
+                    "phase_id": None,
+                    "code": "—",
+                    "name": "Legacy (no phase)",
+                    "sequence": 9999,
+                    "status": "planned",
+                    "blocks": legacy_blocks,
+                }
+            )
+
+        # Status colour legend (matches the order plots advance through).
+        status_counts: dict[str, int] = {}
+        for plot in plots:
+            status_counts[plot.status] = status_counts.get(plot.status, 0) + 1
+
+        _ = _select  # ruff: prevent unused-import bombs (helper kept handy)
+        return {
+            "development_id": dev.id,
+            "currency": dev.metadata_.get("currency", "") if dev.metadata_ else "",
+            "phases": phase_rows,
+            "total_units": len(plots),
+            "status_counts": status_counts,
+        }
+
+    async def dashboard_sales_velocity(
+        self,
+        dev_id: uuid.UUID,
+        granularity: str = "month",
+    ) -> dict[str, Any]:
+        """Time-series of signed SPAs (primary source) per period.
+
+        Primary source = ``SalesContract.signing_date`` for status in
+        {signed, countersigned}. Falls back to ``Buyer.contract_signed_at``
+        for legacy buyer rows that predate the SalesContract table.
+
+        Currency is per-bucket: a list of ``{currency, revenue}`` entries
+        so mixed-currency portfolios stay correct (no FX cross-conversion
+        at the dashboard layer).
+        """
+        from sqlalchemy import select as _select
+
+        await self.get_development(dev_id)
+
+        # Pull SPAs (signed + countersigned) for this dev's plots.
+        stmt = (
+            _select(SalesContract, Plot)
+            .join(Plot, Plot.id == SalesContract.plot_id)
+            .where(Plot.development_id == dev_id)
+            .where(SalesContract.status.in_(("signed", "countersigned")))
+        )
+        rows = (await self.session.execute(stmt)).all()
+        spa_keys: set[uuid.UUID] = set()  # plot_ids already counted via SPA
+
+        def _bucket(date_iso: str) -> str:
+            d = date_iso[:10]
+            if granularity == "quarter":
+                try:
+                    y, m, _ = d.split("-")
+                    q = (int(m) - 1) // 3 + 1
+                    return f"{y}-Q{q}"
+                except Exception:  # noqa: BLE001
+                    return d[:7]
+            if granularity == "week":
+                try:
+                    dt = date.fromisoformat(d)
+                    y, w, _ = dt.isocalendar()
+                    return f"{y:04d}-W{w:02d}"
+                except Exception:  # noqa: BLE001
+                    return d
+            return d[:7]  # month
+
+        buckets: dict[str, dict[str, Any]] = {}
+        currencies_seen: set[str] = set()
+
+        for spa, plot in rows:
+            signed = spa.signing_date
+            if not signed:
+                continue
+            spa_keys.add(plot.id)
+            key = _bucket(signed)
+            currency = spa.currency or ""
+            currencies_seen.add(currency)
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "period": key,
+                    "units": 0,
+                    "area_m2": Decimal("0"),
+                    "revenue_by_currency": {},
+                },
+            )
+            bucket["units"] += 1
+            bucket["area_m2"] += Decimal(str(plot.area_m2 or 0))
+            cur_revenue = bucket["revenue_by_currency"].setdefault(
+                currency, Decimal("0"),
+            )
+            bucket["revenue_by_currency"][currency] = (
+                cur_revenue + Decimal(str(spa.total_value or 0))
+            )
+
+        # Legacy Buyer fallback — skip any buyer whose plot already has a
+        # signed SPA above.
+        legacy_rows = await self.pipeline.kanban_for_development(dev_id)
+        for buyer, plot in legacy_rows:
+            if not buyer.contract_signed_at:
+                continue
+            if plot is not None and plot.id in spa_keys:
+                continue
+            key = _bucket(buyer.contract_signed_at)
+            currency = buyer.currency or ""
+            currencies_seen.add(currency)
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "period": key,
+                    "units": 0,
+                    "area_m2": Decimal("0"),
+                    "revenue_by_currency": {},
+                },
+            )
+            bucket["units"] += 1
+            if plot is not None:
+                bucket["area_m2"] += Decimal(str(plot.area_m2 or 0))
+            cur_revenue = bucket["revenue_by_currency"].setdefault(
+                currency, Decimal("0"),
+            )
+            bucket["revenue_by_currency"][currency] = (
+                cur_revenue + Decimal(str(buyer.contract_value or 0))
+            )
+
+        series = sorted(buckets.values(), key=lambda b: b["period"])
+        # Project revenue dict -> list for JSON friendliness.
+        for s in series:
+            s["revenue"] = [
+                {
+                    "currency": cur,
+                    "amount": amt.quantize(Decimal("0.01")),
+                }
+                for cur, amt in sorted(s["revenue_by_currency"].items())
+            ]
+            s["area_m2"] = s["area_m2"].quantize(Decimal("0.01"))
+            del s["revenue_by_currency"]
+
+        total_units = sum(int(s["units"]) for s in series)
+        total_area = sum(
+            (Decimal(s["area_m2"]) for s in series), start=Decimal("0"),
+        )
+        total_by_currency: dict[str, Decimal] = {}
+        for s in series:
+            for entry in s["revenue"]:
+                total_by_currency[entry["currency"]] = (
+                    total_by_currency.get(entry["currency"], Decimal("0"))
+                    + Decimal(str(entry["amount"]))
+                )
+
+        _ = _select  # keep the import alias alive across method scope
+        return {
+            "development_id": dev_id,
+            "granularity": granularity,
+            "series": series,
+            "currencies": sorted(currencies_seen),
+            "totals": {
+                "units": int(total_units),
+                "area_m2": total_area.quantize(Decimal("0.01")),
+                "revenue": [
+                    {
+                        "currency": cur,
+                        "amount": amt.quantize(Decimal("0.01")),
+                    }
+                    for cur, amt in sorted(total_by_currency.items())
+                ],
+            },
+        }
+
+    async def dashboard_cashflow_waterfall(
+        self,
+        dev_id: uuid.UUID,
+        start_month: str | None = None,
+        months: int = 12,
+    ) -> dict[str, Any]:
+        """Monthly cash-flow projection from Instalments + Escrow.
+
+        Three series per month bucket:
+          * ``scheduled``       — sum of Instalment.amount due in month
+          * ``actual_collected``— sum of EscrowTransaction direction=credit
+          * ``actual_disbursed``— sum of EscrowTransaction direction=debit
+        """
+        from sqlalchemy import select as _select
+
+        await self.get_development(dev_id)
+
+        # Resolve window — default = current month + N-1 forward months.
+        if not start_month or not _MONTH_RE.match(start_month):
+            today = datetime.now(UTC).date()
+            start_month = f"{today.year:04d}-{today.month:02d}"
+        if months < 1:
+            months = 1
+        if months > 60:
+            months = 60
+
+        sy, sm = (int(x) for x in start_month.split("-"))
+        month_keys: list[str] = []
+        for i in range(months):
+            mm = sm - 1 + i
+            yy = sy + mm // 12
+            mo = mm % 12 + 1
+            month_keys.append(f"{yy:04d}-{mo:02d}")
+        first_key = month_keys[0]
+        last_key = month_keys[-1]
+
+        # Fetch all relevant Instalments via PaymentSchedule -> SPA -> Plot.
+        ins_stmt = (
+            _select(Instalment, SalesContract, Plot)
+            .join(
+                PaymentSchedule,
+                PaymentSchedule.id == Instalment.schedule_id,
+            )
+            .join(
+                SalesContract,
+                SalesContract.id == PaymentSchedule.sales_contract_id,
+            )
+            .join(Plot, Plot.id == SalesContract.plot_id)
+            .where(Plot.development_id == dev_id)
+        )
+        ins_rows = (await self.session.execute(ins_stmt)).all()
+
+        # Build empty buckets.
+        buckets: dict[str, dict[str, Any]] = {
+            k: {
+                "month": k,
+                "scheduled_by_currency": {},
+                "collected_by_currency": {},
+                "disbursed_by_currency": {},
+            }
+            for k in month_keys
+        }
+        currencies_seen: set[str] = set()
+
+        for ins, spa, _plot in ins_rows:
+            due = ins.due_date
+            if not due or len(due) < 7:
+                continue
+            key = due[:7]
+            if not (first_key <= key <= last_key):
+                continue
+            currency = spa.currency or ""
+            currencies_seen.add(currency)
+            sched = buckets[key]["scheduled_by_currency"]
+            sched[currency] = (
+                sched.get(currency, Decimal("0"))
+                + Decimal(str(ins.amount or 0))
+            )
+
+        # Fetch all escrow transactions for this development.
+        esc_stmt = (
+            _select(EscrowTransaction, EscrowAccount)
+            .join(
+                EscrowAccount,
+                EscrowAccount.id == EscrowTransaction.escrow_account_id,
+            )
+            .where(EscrowAccount.development_id == dev_id)
+        )
+        esc_rows = (await self.session.execute(esc_stmt)).all()
+
+        for tx, acct in esc_rows:
+            td = tx.transaction_date
+            if not td or len(td) < 7:
+                continue
+            key = td[:7]
+            if not (first_key <= key <= last_key):
+                continue
+            currency = tx.currency or acct.currency or ""
+            currencies_seen.add(currency)
+            target = (
+                buckets[key]["collected_by_currency"]
+                if tx.direction == "credit"
+                else buckets[key]["disbursed_by_currency"]
+            )
+            target[currency] = (
+                target.get(currency, Decimal("0"))
+                + Decimal(str(tx.amount or 0))
+            )
+
+        def _flatten(by_cur: dict[str, Decimal]) -> list[dict[str, Any]]:
+            return [
+                {
+                    "currency": cur,
+                    "amount": amt.quantize(Decimal("0.01")),
+                }
+                for cur, amt in sorted(by_cur.items())
+            ]
+
+        series = []
+        totals_scheduled: dict[str, Decimal] = {}
+        totals_collected: dict[str, Decimal] = {}
+        totals_disbursed: dict[str, Decimal] = {}
+        for k in month_keys:
+            b = buckets[k]
+            for cur, amt in b["scheduled_by_currency"].items():
+                totals_scheduled[cur] = (
+                    totals_scheduled.get(cur, Decimal("0")) + amt
+                )
+            for cur, amt in b["collected_by_currency"].items():
+                totals_collected[cur] = (
+                    totals_collected.get(cur, Decimal("0")) + amt
+                )
+            for cur, amt in b["disbursed_by_currency"].items():
+                totals_disbursed[cur] = (
+                    totals_disbursed.get(cur, Decimal("0")) + amt
+                )
+            series.append(
+                {
+                    "month": k,
+                    "scheduled": _flatten(b["scheduled_by_currency"]),
+                    "actual_collected": _flatten(b["collected_by_currency"]),
+                    "actual_disbursed": _flatten(b["disbursed_by_currency"]),
+                }
+            )
+
+        _ = _select  # keep alias referenced
+        return {
+            "development_id": dev_id,
+            "start_month": first_key,
+            "months": months,
+            "currencies": sorted(currencies_seen),
+            "series": series,
+            "totals": {
+                "scheduled": _flatten(totals_scheduled),
+                "actual_collected": _flatten(totals_collected),
+                "actual_disbursed": _flatten(totals_disbursed),
+            },
+        }
+
+    async def dashboard_inventory_ageing(
+        self, dev_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        """Days-on-market histogram for unsold inventory.
+
+        Source of the start-date: Plot doesn't have a ``listed_at``
+        column today, so we fall back to ``created_at``. (Migrate to
+        ``listed_at`` once #138.2 lands — code is already prepared.)
+        Adds a new bucket ``reserved_no_contract`` for Plots that have
+        an active Reservation but no SalesContract yet.
+        """
+        from sqlalchemy import select as _select
+
+        await self.get_development(dev_id)
+        plots, _ = await self.plots.list_for_development(
+            dev_id, offset=0, limit=10_000,
+        )
+        today = datetime.now(UTC).date()
+        today_iso = today.isoformat()
+
+        # Plots with active Reservation but no signed SPA.
+        # Build set via subqueries.
+        active_res_stmt = (
+            _select(Reservation.plot_id)
+            .join(Plot, Plot.id == Reservation.plot_id)
+            .where(Plot.development_id == dev_id)
+            .where(Reservation.status == "active")
+            .where(
+                (Reservation.expires_at.is_(None))
+                | (Reservation.expires_at >= today_iso)
+            )
+        )
+        active_res_plot_ids: set[Any] = set(
+            (await self.session.execute(active_res_stmt)).scalars().all(),
+        )
+        signed_spa_stmt = (
+            _select(SalesContract.plot_id)
+            .join(Plot, Plot.id == SalesContract.plot_id)
+            .where(Plot.development_id == dev_id)
+            .where(
+                SalesContract.status.in_(
+                    ("signed", "countersigned", "draft", "sent_for_signature",
+                     "partially_signed")
+                )
+            )
+        )
+        with_spa_plot_ids: set[Any] = set(
+            (await self.session.execute(signed_spa_stmt)).scalars().all(),
+        )
+
+        buckets: dict[str, dict[str, Any]] = {
+            "0-30": {"label": "0–30", "count": 0, "plots": []},
+            "30-60": {"label": "30–60", "count": 0, "plots": []},
+            "60-90": {"label": "60–90", "count": 0, "plots": []},
+            "90+": {"label": "90+", "count": 0, "plots": []},
+            "reserved_no_contract": {
+                "label": "Reserved, no contract",
+                "count": 0,
+                "plots": [],
+            },
+        }
+
+        for plot in plots:
+            # Exclude already-sold inventory.
+            if plot.status in {"sold", "handed_over"}:
+                continue
+            # Reserved-but-no-contract takes priority over ageing buckets.
+            if (
+                plot.id in active_res_plot_ids
+                and plot.id not in with_spa_plot_ids
+            ):
+                key = "reserved_no_contract"
+            else:
+                listed_attr = getattr(plot, "listed_at", None) or plot.created_at
+                try:
+                    listed_date = (
+                        listed_attr.date()
+                        if hasattr(listed_attr, "date")
+                        else today
+                    )
+                except Exception:  # noqa: BLE001
+                    listed_date = today
+                days = (today - listed_date).days
+                if days < 30:
+                    key = "0-30"
+                elif days < 60:
+                    key = "30-60"
+                elif days < 90:
+                    key = "60-90"
+                else:
+                    key = "90+"
+            buckets[key]["count"] += 1
+            listed_attr = getattr(plot, "listed_at", None) or plot.created_at
+            try:
+                listed_date = (
+                    listed_attr.date()
+                    if hasattr(listed_attr, "date")
+                    else today
+                )
+            except Exception:  # noqa: BLE001
+                listed_date = today
+            days_on_market = (today - listed_date).days
+            buckets[key]["plots"].append(
+                {
+                    "plot_id": str(plot.id),
+                    "plot_number": plot.plot_number,
+                    "status": plot.status,
+                    "days_on_market": int(days_on_market),
+                    "block_id": (
+                        str(plot.block_id) if plot.block_id else None
+                    ),
+                    "house_type_id": (
+                        str(plot.house_type_id) if plot.house_type_id else None
+                    ),
+                    "price_base": Decimal(str(plot.price_base or 0)),
+                    "currency": plot.currency or "",
+                }
+            )
+
+        _ = _select
+        return {
+            "development_id": dev_id,
+            "as_of": today_iso,
+            "buckets": list(buckets.values()),
+            "total_unsold": sum(int(b["count"]) for b in buckets.values()),
+        }
+
+    async def dashboard_funnel_conversion(
+        self,
+        dev_id: uuid.UUID,
+        period_days: int = 90,
+    ) -> dict[str, Any]:
+        """5-stage funnel: Lead -> Reservation -> SPA draft -> SPA signed -> Handover.
+
+        Counts respect ``period_days``: only entities created within the
+        last N days count. Drop-off ratios drive colour quartiles on the
+        frontend.
+        """
+        from sqlalchemy import func as _func
+        from sqlalchemy import select as _select
+
+        await self.get_development(dev_id)
+        if period_days < 1:
+            period_days = 1
+        cutoff = datetime.now(UTC) - timedelta(days=int(period_days))
+        cutoff_iso = cutoff.date().isoformat()
+
+        # Stage 1 — Lead (any source, this development, created within window).
+        lead_count = (
+            await self.session.execute(
+                _select(_func.count())
+                .select_from(Lead)
+                .where(Lead.development_id == dev_id)
+                .where(Lead.created_at >= cutoff)
+            )
+        ).scalar_one() or 0
+
+        # Stage 2 — Reservation (plots in this dev, created within window).
+        res_count = (
+            await self.session.execute(
+                _select(_func.count())
+                .select_from(Reservation)
+                .join(Plot, Plot.id == Reservation.plot_id)
+                .where(Plot.development_id == dev_id)
+                .where(Reservation.created_at >= cutoff)
+            )
+        ).scalar_one() or 0
+
+        # Stage 3 — SPA in draft/sent/partially_signed within window.
+        spa_draft_count = (
+            await self.session.execute(
+                _select(_func.count())
+                .select_from(SalesContract)
+                .join(Plot, Plot.id == SalesContract.plot_id)
+                .where(Plot.development_id == dev_id)
+                .where(SalesContract.created_at >= cutoff)
+            )
+        ).scalar_one() or 0
+
+        # Stage 4 — SPA signed (signing_date within window).
+        spa_signed_count = (
+            await self.session.execute(
+                _select(_func.count())
+                .select_from(SalesContract)
+                .join(Plot, Plot.id == SalesContract.plot_id)
+                .where(Plot.development_id == dev_id)
+                .where(SalesContract.status.in_(("signed", "countersigned")))
+                .where(
+                    (SalesContract.signing_date.is_not(None))
+                    & (SalesContract.signing_date >= cutoff_iso)
+                )
+            )
+        ).scalar_one() or 0
+
+        # Stage 5 — Handover completed within window.
+        handover_count = (
+            await self.session.execute(
+                _select(_func.count())
+                .select_from(Handover)
+                .join(Plot, Plot.id == Handover.plot_id)
+                .where(Plot.development_id == dev_id)
+                .where(Handover.completed_at.is_not(None))
+                .where(Handover.completed_at >= cutoff_iso)
+            )
+        ).scalar_one() or 0
+
+        def _drop(prev: int, cur: int) -> Decimal:
+            if prev <= 0:
+                return Decimal("0")
+            return (
+                Decimal(prev - cur) / Decimal(prev) * Decimal("100")
+            ).quantize(Decimal("0.1"))
+
+        stages = [
+            {
+                "code": "lead",
+                "label": "Lead",
+                "count": int(lead_count),
+                "drop_pct": Decimal("0"),
+            },
+            {
+                "code": "reservation",
+                "label": "Reservation",
+                "count": int(res_count),
+                "drop_pct": _drop(int(lead_count), int(res_count)),
+            },
+            {
+                "code": "spa_draft",
+                "label": "SPA draft",
+                "count": int(spa_draft_count),
+                "drop_pct": _drop(int(res_count), int(spa_draft_count)),
+            },
+            {
+                "code": "spa_signed",
+                "label": "SPA signed",
+                "count": int(spa_signed_count),
+                "drop_pct": _drop(int(spa_draft_count), int(spa_signed_count)),
+            },
+            {
+                "code": "handover",
+                "label": "Handover",
+                "count": int(handover_count),
+                "drop_pct": _drop(int(spa_signed_count), int(handover_count)),
+            },
+        ]
+
+        # Final conversion = handover / lead.
+        conv = (
+            (Decimal(int(handover_count)) / Decimal(int(lead_count)) * Decimal("100"))
+            .quantize(Decimal("0.1"))
+            if lead_count > 0
+            else Decimal("0")
+        )
+
+        return {
+            "development_id": dev_id,
+            "period_days": int(period_days),
+            "stages": stages,
+            "totals": {
+                "leads": int(lead_count),
+                "conversion_pct": conv,
+            },
+        }
+
+    async def dashboard_buyer_journey(
+        self, buyer_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        """Cross-entity chronological timeline for one buyer.
+
+        Walks Lead -> Reservation -> SalesContract (+ revisions) ->
+        PaymentSchedule + Instalments (clustered) -> Handover -> Snags ->
+        Warranty. Each event carries an ``entity`` / ``entity_id`` so the
+        UI can deep-link.
+        """
+        from sqlalchemy import select as _select
+
+        buyer = await self.buyers.get_by_id(buyer_id)
+        if buyer is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Buyer not found",
+            )
+
+        events: list[dict[str, Any]] = []
+
+        def _push(
+            code: str,
+            label: str,
+            ts: str | None,
+            state: str,
+            *,
+            entity: str | None = None,
+            entity_id: str | None = None,
+            detail: dict[str, Any] | None = None,
+        ) -> None:
+            events.append(
+                {
+                    "code": code,
+                    "label": label,
+                    "timestamp": ts,
+                    "state": state,
+                    "entity": entity,
+                    "entity_id": entity_id,
+                    "detail": detail or {},
+                }
+            )
+
+        # 1) Lead — match by email, dev scope (if dev is known).
+        lead_row = None
+        if buyer.email:
+            lead_stmt = (
+                _select(Lead)
+                .where(Lead.development_id == buyer.development_id)
+                .where(Lead.email == buyer.email)
+                .order_by(Lead.created_at)
+                .limit(1)
+            )
+            lead_row = (await self.session.execute(lead_stmt)).scalar_one_or_none()
+        if lead_row is not None:
+            ts = (
+                lead_row.created_at.isoformat()
+                if hasattr(lead_row.created_at, "isoformat")
+                else None
+            )
+            _push(
+                "lead_created",
+                "Lead created",
+                ts,
+                "completed",
+                entity="lead",
+                entity_id=str(lead_row.id),
+                detail={"source": lead_row.source, "status": lead_row.status},
+            )
+        else:
+            ts = (
+                buyer.created_at.isoformat()
+                if hasattr(buyer.created_at, "isoformat")
+                else None
+            )
+            _push(
+                "lead_created",
+                "Lead created",
+                ts,
+                "completed",
+                entity="buyer",
+                entity_id=str(buyer.id),
+            )
+
+        # 2) Reservation — via ContractParty? simpler: by buyer_id on Reservation.
+        res_stmt = (
+            _select(Reservation)
+            .where(Reservation.buyer_id == buyer_id)
+            .order_by(Reservation.created_at)
+        )
+        reservations = list(
+            (await self.session.execute(res_stmt)).scalars().all()
+        )
+        for res in reservations:
+            ts = (
+                res.deposit_paid_at.isoformat()
+                if res.deposit_paid_at is not None
+                else (
+                    res.created_at.isoformat()
+                    if hasattr(res.created_at, "isoformat")
+                    else None
+                )
+            )
+            res_state = "completed" if res.status != "active" else "in_progress"
+            _push(
+                "reservation",
+                "Reservation " + res.reservation_number,
+                ts,
+                res_state,
+                entity="reservation",
+                entity_id=str(res.id),
+                detail={
+                    "status": res.status,
+                    "deposit_amount": str(res.deposit_amount),
+                    "currency": res.currency,
+                },
+            )
+
+        # 3) SalesContract via ContractParty (multi-buyer support).
+        spa_stmt = (
+            _select(SalesContract, ContractParty)
+            .join(
+                ContractParty,
+                ContractParty.sales_contract_id == SalesContract.id,
+            )
+            .where(ContractParty.buyer_id == buyer_id)
+            .order_by(SalesContract.created_at)
+        )
+        spa_rows = (await self.session.execute(spa_stmt)).all()
+        spa_ids: list[uuid.UUID] = []
+        for spa, party in spa_rows:
+            spa_ids.append(spa.id)
+            sig_state = (
+                "completed"
+                if spa.status in {"signed", "countersigned"}
+                else (
+                    "in_progress"
+                    if spa.status in {"sent_for_signature", "partially_signed"}
+                    else "upcoming"
+                )
+            )
+            _push(
+                "spa_signed" if spa.status in {"signed", "countersigned"} else "spa_draft",
+                f"SPA {spa.contract_number}",
+                spa.signing_date or None,
+                sig_state,
+                entity="sales_contract",
+                entity_id=str(spa.id),
+                detail={
+                    "status": spa.status,
+                    "total_value": str(spa.total_value),
+                    "currency": spa.currency,
+                    "ownership_pct": str(party.ownership_pct),
+                    "party_role": party.party_role,
+                },
+            )
+
+        # 4) PaymentSchedule + Instalments (clustered, not one-per-line).
+        if spa_ids:
+            sched_stmt = (
+                _select(PaymentSchedule)
+                .where(PaymentSchedule.sales_contract_id.in_(spa_ids))
+            )
+            schedules = list(
+                (await self.session.execute(sched_stmt)).scalars().all()
+            )
+            for sched in schedules:
+                instalments = await self.instalments.list_for_schedule(sched.id)
+                paid = sum(
+                    (1 for ins in instalments if ins.status == "paid"),
+                    start=0,
+                )
+                total = len(instalments)
+                state = (
+                    "completed" if paid == total and total > 0
+                    else "in_progress" if paid > 0
+                    else "upcoming"
+                )
+                # Anchor timestamp = earliest pending due_date else last paid_at.
+                upcoming_dates = [
+                    ins.due_date for ins in instalments if ins.due_date
+                ]
+                anchor_ts = min(upcoming_dates) if upcoming_dates else None
+                _push(
+                    "payment_schedule",
+                    f"Payment schedule ({paid}/{total} paid)",
+                    anchor_ts,
+                    state,
+                    entity="payment_schedule",
+                    entity_id=str(sched.id),
+                    detail={
+                        "paid": int(paid),
+                        "total_lines": int(total),
+                        "currency": sched.currency,
+                        "status": sched.status,
+                    },
+                )
+
+        # 5) Handover — by plot.
+        if buyer.plot_id:
+            handovers = await self.handovers.list_for_plot(buyer.plot_id)
+            for h in handovers:
+                if h.scheduled_at:
+                    _push(
+                        "handover_scheduled",
+                        "Handover scheduled",
+                        h.scheduled_at,
+                        "in_progress" if not h.completed_at else "completed",
+                        entity="handover",
+                        entity_id=str(h.id),
+                    )
+                if h.completed_at:
+                    _push(
+                        "handover_completed",
+                        "Handover completed",
+                        h.completed_at,
+                        "completed",
+                        entity="handover",
+                        entity_id=str(h.id),
+                    )
+                # 6) Snags raised at this handover.
+                snags = await self.snags.list_for_handover(h.id)
+                for s in snags:
+                    if s.reported_at:
+                        s_state = (
+                            "completed"
+                            if s.status in {"fixed", "wont_fix"}
+                            else "in_progress"
+                        )
+                        _push(
+                            "snag_raised",
+                            f"Snag ({s.severity})",
+                            s.reported_at,
+                            s_state,
+                            entity="snag",
+                            entity_id=str(s.id),
+                            detail={"status": s.status},
+                        )
+
+        # 7) Warranty claims.
+        warranties = await self.warranty.list_for_buyer(buyer_id)
+        for w in warranties:
+            if w.raised_at:
+                _push(
+                    "warranty_raised",
+                    f"Warranty: {w.category}",
+                    w.raised_at,
+                    "completed" if w.closed_at else "in_progress",
+                    entity="warranty",
+                    entity_id=str(w.id),
+                )
+            if w.closed_at:
+                _push(
+                    "warranty_closed",
+                    "Warranty closed",
+                    w.closed_at,
+                    "completed",
+                    entity="warranty",
+                    entity_id=str(w.id),
+                )
+
+        # Chronological sort — missing timestamps go last.
+        events.sort(key=lambda e: e["timestamp"] or "9999-99-99")
+        return {
+            "buyer_id": buyer.id,
+            "development_id": buyer.development_id,
+            "full_name": buyer.full_name,
+            "status": buyer.status,
+            "events": events,
+            "event_count": len(events),
+        }
 
 
 

@@ -261,6 +261,16 @@ const ProjectGeoPage = lazy(() =>
 const DevelopmentGeoPage = lazy(() =>
   import('@/features/geo-hub').then((m) => ({ default: m.DevelopmentGeoPage }))
 );
+const PropertyDevDashboardsHub = lazy(() =>
+  import('@/features/property-dev/dashboards').then((m) => ({
+    default: m.DashboardsHub,
+  })),
+);
+const PropertyDevDashboardFullView = lazy(() =>
+  import('@/features/property-dev/dashboards').then((m) => ({
+    default: m.FullViewPage,
+  })),
+);
 const BidManagementPage = lazy(() =>
   import('@/features/bid-management').then((m) => ({ default: m.BidManagementPage }))
 );
@@ -731,6 +741,8 @@ export default function App() {
         <Route path="/crm" element={<P title="CRM"><CRMPage /></P>} />
         <Route path="/property-dev" element={<P title="Property Development"><PropertyDevPage /></P>} />
         <Route path="/property-dev/developments/:devId/geo" element={<P title="Development map"><DevelopmentGeoPage /></P>} />
+        <Route path="/property-dev/dashboards" element={<P title="Property Development Dashboards"><PropertyDevDashboardsHub /></P>} />
+        <Route path="/property-dev/dashboards/:key" element={<P title="Property Development Dashboard"><PropertyDevDashboardFullView /></P>} />
         <Route path="/supplier-catalogs" element={<P title="Supplier Catalogs"><SupplierCatalogsPage /></P>} />
 
         {/* Geo Hub — Cesium 3D Tiles + cross-module geo. */}

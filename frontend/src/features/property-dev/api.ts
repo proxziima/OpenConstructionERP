@@ -58,10 +58,14 @@ export interface Plot {
   plot_number: string;
   house_type_id: string | null;
   house_type_variant_id: string | null;
+  block_id?: string | null;
+  level_in_block?: number | null;
+  position_on_floor?: string | null;
   orientation: string | null;
   area_m2: number | string;
   garden_area_m2: number | string | null;
   price_base: number | string;
+  computed_price?: number | string | null;
   currency: string;
   status: PlotStatus;
   reservation_deadline: string | null;
@@ -1648,4 +1652,205 @@ export function complianceRegulatorReportPdfUrl(
     as: 'pdf',
   });
   return `${BASE}/compliance/regulator-reports?${qs}`;
+}
+
+/* ── R6 Dashboards (task #140) ─────────────────────────────────────────── */
+
+export interface HeatmapUnit {
+  plot_id: string;
+  plot_number: string;
+  status: PlotStatus;
+  area_m2: number | string;
+  price_base: number | string;
+  currency: string;
+  level_in_block: number | null;
+  position_on_floor: string | null;
+  house_type_id: string | null;
+}
+
+export interface HeatmapBlock {
+  block_id: string | null;
+  code: string;
+  name: string;
+  levels_count: number;
+  units_per_level: number;
+  orientation: string | null;
+  units: HeatmapUnit[];
+}
+
+export interface HeatmapPhase {
+  phase_id: string | null;
+  code: string;
+  name: string;
+  sequence: number;
+  status: string;
+  blocks: HeatmapBlock[];
+}
+
+export interface InventoryHeatmapResponse {
+  development_id: string;
+  currency: string;
+  phases: HeatmapPhase[];
+  total_units: number;
+  status_counts: Record<string, number>;
+}
+
+export interface CurrencyAmount {
+  currency: string;
+  amount: number | string;
+}
+
+export interface SalesVelocityBucket {
+  period: string;
+  units: number;
+  area_m2: number | string;
+  revenue: CurrencyAmount[];
+}
+
+export interface SalesVelocityResponse {
+  development_id: string;
+  granularity: 'week' | 'month' | 'quarter';
+  series: SalesVelocityBucket[];
+  currencies: string[];
+  totals: {
+    units: number;
+    area_m2: number | string;
+    revenue: CurrencyAmount[];
+  };
+}
+
+export interface CashflowMonthBucket {
+  month: string;
+  scheduled: CurrencyAmount[];
+  actual_collected: CurrencyAmount[];
+  actual_disbursed: CurrencyAmount[];
+}
+
+export interface CashflowWaterfallResponse {
+  development_id: string;
+  start_month: string;
+  months: number;
+  currencies: string[];
+  series: CashflowMonthBucket[];
+  totals: {
+    scheduled: CurrencyAmount[];
+    actual_collected: CurrencyAmount[];
+    actual_disbursed: CurrencyAmount[];
+  };
+}
+
+export interface InventoryAgeingPlot {
+  plot_id: string;
+  plot_number: string;
+  status: PlotStatus;
+  days_on_market: number;
+  block_id: string | null;
+  house_type_id: string | null;
+  price_base: number | string;
+  currency: string;
+}
+
+export interface InventoryAgeingBucket {
+  label: string;
+  count: number;
+  plots: InventoryAgeingPlot[];
+}
+
+export interface InventoryAgeingResponse {
+  development_id: string;
+  as_of: string;
+  buckets: InventoryAgeingBucket[];
+  total_unsold: number;
+}
+
+export interface FunnelStage {
+  code: 'lead' | 'reservation' | 'spa_draft' | 'spa_signed' | 'handover';
+  label: string;
+  count: number;
+  drop_pct: number | string;
+}
+
+export interface FunnelConversionResponse {
+  development_id: string;
+  period_days: number;
+  stages: FunnelStage[];
+  totals: { leads: number; conversion_pct: number | string };
+}
+
+export interface BuyerJourneyEvent {
+  code: string;
+  label: string;
+  timestamp: string | null;
+  state: 'completed' | 'in_progress' | 'upcoming';
+  entity: string | null;
+  entity_id: string | null;
+  detail: Record<string, unknown>;
+}
+
+export interface BuyerJourneyResponse {
+  buyer_id: string;
+  development_id: string;
+  full_name: string;
+  status: string;
+  events: BuyerJourneyEvent[];
+  event_count: number;
+}
+
+export function getInventoryHeatmap(
+  developmentId: string,
+): Promise<InventoryHeatmapResponse> {
+  const qs = new URLSearchParams({ dev_id: developmentId });
+  return apiGet<InventoryHeatmapResponse>(
+    `${BASE}/dashboards/inventory-heatmap?${qs.toString()}`,
+  );
+}
+
+export function getSalesVelocity(
+  developmentId: string,
+  params: { granularity?: 'week' | 'month' | 'quarter' } = {},
+): Promise<SalesVelocityResponse> {
+  const qs = new URLSearchParams({ dev_id: developmentId });
+  if (params.granularity) qs.set('granularity', params.granularity);
+  return apiGet<SalesVelocityResponse>(
+    `${BASE}/dashboards/sales-velocity?${qs.toString()}`,
+  );
+}
+
+export function getCashflowWaterfall(
+  developmentId: string,
+  params: { start_month?: string; months?: number } = {},
+): Promise<CashflowWaterfallResponse> {
+  const qs = new URLSearchParams({ dev_id: developmentId });
+  if (params.start_month) qs.set('start_month', params.start_month);
+  if (params.months) qs.set('months', String(params.months));
+  return apiGet<CashflowWaterfallResponse>(
+    `${BASE}/dashboards/cashflow-waterfall?${qs.toString()}`,
+  );
+}
+
+export function getInventoryAgeing(
+  developmentId: string,
+): Promise<InventoryAgeingResponse> {
+  const qs = new URLSearchParams({ dev_id: developmentId });
+  return apiGet<InventoryAgeingResponse>(
+    `${BASE}/dashboards/inventory-ageing?${qs.toString()}`,
+  );
+}
+
+export function getFunnelConversion(
+  developmentId: string,
+  params: { period_days?: number } = {},
+): Promise<FunnelConversionResponse> {
+  const qs = new URLSearchParams({ dev_id: developmentId });
+  if (params.period_days) qs.set('period_days', String(params.period_days));
+  return apiGet<FunnelConversionResponse>(
+    `${BASE}/dashboards/funnel-conversion?${qs.toString()}`,
+  );
+}
+
+export function getBuyerJourney(buyerId: string): Promise<BuyerJourneyResponse> {
+  const qs = new URLSearchParams({ buyer_id: buyerId });
+  return apiGet<BuyerJourneyResponse>(
+    `${BASE}/dashboards/buyer-journey?${qs.toString()}`,
+  );
 }
