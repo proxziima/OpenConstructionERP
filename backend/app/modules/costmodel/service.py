@@ -961,12 +961,20 @@ class CostModelService:
         Each BOQ position becomes a budget line with planned_amount = position total.
         Existing budget lines for the project are NOT deleted — new lines are appended.
 
+        Idempotency (R5 audit, May 2026):
+            Positions already wired to a budget line for this project are
+            skipped. Re-running the endpoint after editing the BOQ creates
+            lines only for the *new* positions. Pre-audit each call appended
+            a fresh duplicate row per position, silently doubling BAC and
+            poisoning every downstream EVM rollup.
+
         Args:
             project_id: Target project.
             boq_id: Source BOQ to generate budget from.
 
         Returns:
-            List of newly created budget lines.
+            List of newly created budget lines (empty if every position is
+            already represented).
         """
         from app.modules.boq.repository import PositionRepository
 
@@ -979,8 +987,17 @@ class CostModelService:
                 detail="No positions found in the specified BOQ",
             )
 
+        # ── Idempotency guard ────────────────────────────────────────────
+        # Skip positions that already have a budget line for this project.
+        # This makes the endpoint safe to re-run after a BOQ edit; the
+        # DB-level unique index added in the same migration is the belt to
+        # this in-process suspenders.
+        existing = await self.budget_repo.existing_position_ids(project_id)
+
         lines: list[BudgetLine] = []
         for pos in positions:
+            if pos.id in existing:
+                continue
             total = _str_to_float(pos.total)
             line = BudgetLine(
                 project_id=project_id,
@@ -994,6 +1011,15 @@ class CostModelService:
                 currency="",
             )
             lines.append(line)
+
+        if not lines:
+            logger.info(
+                "generate_budget_from_boq: every BOQ position already wired "
+                "(project=%s boq=%s); no-op.",
+                project_id,
+                boq_id,
+            )
+            return []
 
         created = await self.budget_repo.bulk_create(lines)
 

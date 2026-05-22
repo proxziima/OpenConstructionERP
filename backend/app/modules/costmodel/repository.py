@@ -211,6 +211,22 @@ class BudgetLineRepository:
         await self.session.flush()
         return lines
 
+    async def existing_position_ids(
+        self, project_id: uuid.UUID
+    ) -> set[uuid.UUID]:
+        """Return the set of BOQ position IDs already wired to a budget line.
+
+        Used by ``generate_budget_from_boq`` to make the auto-generation
+        endpoint idempotent — re-running it must not silently double the
+        BAC by re-creating lines for the same positions.
+        """
+        stmt = select(BudgetLine.boq_position_id).where(
+            BudgetLine.project_id == project_id,
+            BudgetLine.boq_position_id.is_not(None),
+        )
+        result = await self.session.execute(stmt)
+        return {row for row in result.scalars().all() if row is not None}
+
     async def update_fields(self, line_id: uuid.UUID, **fields: object) -> None:
         """Update specific fields on a budget line."""
         stmt = update(BudgetLine).where(BudgetLine.id == line_id).values(**fields)
