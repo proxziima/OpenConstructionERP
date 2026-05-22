@@ -61,10 +61,11 @@ describe('CesiumViewer', () => {
   it('shows install hint when cesium import fails', async () => {
     // No vi.doMock — the missing import triggers the absent branch.
     render(<CesiumViewer mode="global" />);
+    // After the visual elevation pass the absent state shows both a
+    // heading and a paragraph mentioning Cesium, so target the
+    // ``npm install cesium`` <code> element which is unique.
     await waitFor(() => {
-      expect(
-        screen.getByText(/CesiumJS is not installed/i),
-      ).toBeInTheDocument();
+      expect(screen.getByText('npm install cesium')).toBeInTheDocument();
     });
   });
 

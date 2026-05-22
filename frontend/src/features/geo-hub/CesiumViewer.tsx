@@ -19,8 +19,9 @@
  *   absent so a freshly-anchored project doesn't error out.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Globe2, Download } from 'lucide-react';
 
 import type { MapConfig } from './types';
 
@@ -29,6 +30,14 @@ type ViewerMode = 'global' | 'project' | 'development';
 interface CesiumViewerProps {
   mode: ViewerMode;
   mapConfig?: MapConfig;
+  /**
+   * Optional overlay rendered above the Cesium canvas (HUD, empty
+   * states, custom badges). Rendered inside the same relative wrapper
+   * so absolute-positioned children compose naturally.
+   *
+   * Purely a chrome hook — does not touch viewer lifecycle.
+   */
+  overlay?: ReactNode;
 }
 
 /** Stable signature for the viewer effect: rebuild only when the
@@ -99,7 +108,7 @@ async function loadCesium(): Promise<CesiumLike | null> {
   }
 }
 
-export function CesiumViewer({ mode, mapConfig }: CesiumViewerProps) {
+export function CesiumViewer({ mode, mapConfig, overlay }: CesiumViewerProps) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<ReturnType<CesiumLike['Viewer']['prototype']['destroy']> | null>(
@@ -212,25 +221,64 @@ export function CesiumViewer({ mode, mapConfig }: CesiumViewerProps) {
         className="h-full w-full bg-slate-900"
       />
       {cesiumStatus === 'pending' && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-300">
-          {t('geo_hub.cesium_loading', {
-            defaultValue: 'Loading Cesium...',
-          })}
+        <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-slate-950/40 text-sm text-slate-200 backdrop-blur-sm">
+          <div className="relative">
+            <Globe2
+              size={28}
+              strokeWidth={1.5}
+              className="text-emerald-300/80 animate-pulse"
+            />
+            <span
+              aria-hidden
+              className="absolute -inset-2 rounded-full bg-emerald-400/10 blur-xl"
+            />
+          </div>
+          <span className="font-medium tracking-wide">
+            {t('geo_hub.cesium_loading', {
+              defaultValue: 'Loading Cesium...',
+            })}
+          </span>
+          <span className="text-xs text-slate-400">
+            {t('geo_hub.cesium_loading_hint', {
+              defaultValue: 'Streaming the 3D globe runtime (~3 MB).',
+            })}
+          </span>
         </div>
       )}
       {cesiumStatus === 'absent' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center text-sm text-slate-300">
-          <p>
-            {t('geo_hub.cesium_not_installed', {
-              defaultValue:
-                'CesiumJS is not installed in this build. Geo viewer is in degraded mode.',
-            })}
-          </p>
-          <code className="rounded bg-slate-700 px-2 py-1 text-xs">
-            npm install cesium
-          </code>
+        <div className="absolute inset-0 z-20 flex items-center justify-center p-6">
+          <div className="relative w-full max-w-md overflow-hidden rounded-xl border border-white/10 bg-slate-900/70 p-6 text-center text-slate-100 shadow-xl backdrop-blur-md ring-1 ring-white/5">
+            <div
+              aria-hidden
+              className="pointer-events-none absolute -inset-px rounded-xl bg-gradient-to-br from-amber-500/30 to-orange-500/20 opacity-60 blur-2xl ring-1 ring-amber-400/20"
+            />
+            <div className="relative">
+              <div className="mx-auto mb-4 inline-flex h-10 w-10 items-center justify-center rounded-md bg-amber-500/15 text-amber-300 ring-1 ring-amber-400/30">
+                <Download size={18} strokeWidth={2} />
+              </div>
+              <h3 className="text-base font-semibold text-white">
+                {t('geo_hub.cesium_not_installed_title', {
+                  defaultValue: 'CesiumJS is not installed',
+                })}
+              </h3>
+              <p className="mt-1.5 text-sm leading-relaxed text-slate-300">
+                {t('geo_hub.cesium_not_installed', {
+                  defaultValue:
+                    'CesiumJS is not installed in this build. Geo viewer is in degraded mode.',
+                })}
+              </p>
+              <code className="mt-4 inline-block rounded-sm bg-slate-800/80 px-2 py-1 font-mono text-xs text-slate-200 ring-1 ring-white/10">
+                npm install cesium
+              </code>
+            </div>
+          </div>
         </div>
       )}
+      {/* Overlay slot — HUD, empty states, badges. Mounted last so it
+          paints over the canvas; ``cesium`` canvas listens for input
+          via its own event handlers and is therefore unaffected by
+          ``pointer-events-none`` placement of HUD chrome above it. */}
+      {overlay}
     </div>
   );
 }
