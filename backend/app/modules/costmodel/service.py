@@ -1086,6 +1086,13 @@ class CostModelService:
         is evenly distributed across the months in that range.  Lines without a
         schedule are placed into a single 'unscheduled' entry.
 
+        Currency handling (R5 audit, May 2026): every line is converted to
+        the project base currency via ``fx_rates`` before being added to
+        the period bucket. Pre-audit cash flow totals silently mixed USD,
+        EUR, JPY values into one ``Decimal`` and the S-curve plotted the
+        result as if they were all base — a 100 % bug for any multi-
+        currency project.
+
         Args:
             project_id: Target project.
 
@@ -1100,11 +1107,17 @@ class CostModelService:
                 detail="No budget lines found for the project",
             )
 
-        # Aggregate outflows per period
+        # FX context for currency conversion below.
+        base_currency, fx_map = await self.budget_repo._project_fx_context(project_id)
+
+        # Aggregate outflows per period (Decimal end-to-end, base currency)
+        from app.modules.costmodel.repository import _amount_in_base
+
         period_outflows: dict[str, Decimal] = {}
 
         for bl in budget_lines:
-            amount = Decimal(str(_str_to_float(bl.planned_amount)))
+            line_ccy = (bl.currency or "").strip().upper()
+            amount = _amount_in_base(bl.planned_amount, line_ccy, base_currency, fx_map)
             if amount == 0:
                 continue
 

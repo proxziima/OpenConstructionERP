@@ -241,6 +241,83 @@ async def test_dashboard_currency_is_project_base(
     assert dashboard.currency == "USD"
 
 
+@pytest.mark.asyncio
+async def test_aggregate_by_project_converts_foreign_currency_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-currency rollup regression: aggregate_by_project used to
+    SUM(CAST(planned_amount AS Float)) at the SQL layer, completely
+    ignoring the per-row ``currency`` column. A project with EUR as base
+    and one USD line at 1000 (rate 0.9 EUR/USD) plus one EUR line at
+    1000 would silently report a planned total of 2000.0 instead of the
+    real 1900.0 EUR equivalent.
+
+    Post-audit: aggregate_by_project converts via the project's
+    ``fx_rates`` map (same convention as ``_resource_total_in_base``)
+    before summing.
+    """
+    from app.modules.costmodel.models import BudgetLine
+    from app.modules.costmodel.repository import BudgetLineRepository
+
+    project_id = uuid.uuid4()
+
+    # Two budget lines, one EUR (base), one USD with FX rate 0.9 EUR/USD.
+    eur_line = BudgetLine(
+        project_id=project_id,
+        category="material",
+        description="EUR line",
+        planned_amount="1000",
+        committed_amount="0",
+        actual_amount="0",
+        forecast_amount="0",
+        currency="EUR",
+    )
+    usd_line = BudgetLine(
+        project_id=project_id,
+        category="material",
+        description="USD line",
+        planned_amount="1000",
+        committed_amount="0",
+        actual_amount="0",
+        forecast_amount="0",
+        currency="USD",
+    )
+
+    # Build a fake session that returns these two rows and provides a
+    # project with the right fx_rates map.
+    class _FakeSession:
+        async def execute(self, stmt: Any) -> Any:
+            raise AssertionError("aggregation must go through repo helpers")
+
+    repo = BudgetLineRepository(_FakeSession())  # type: ignore[arg-type]
+
+    async def _fake_list_lines_currency_aware(
+        _self: Any, _pid: uuid.UUID
+    ) -> list[Any]:
+        return [eur_line, usd_line]
+
+    monkeypatch.setattr(
+        BudgetLineRepository,
+        "_list_lines_for_rollup",
+        _fake_list_lines_currency_aware,
+    )
+
+    async def _fake_get_project(_self: Any, _pid: uuid.UUID) -> Any:
+        return SimpleNamespace(
+            currency="EUR",
+            fx_rates=[{"code": "USD", "rate": "0.9"}],
+        )
+
+    from app.modules.projects import repository as proj_repo_mod
+
+    monkeypatch.setattr(proj_repo_mod.ProjectRepository, "get_by_id", _fake_get_project)
+
+    aggregates = await repo.aggregate_by_project(project_id)
+
+    # 1000 EUR + (1000 USD * 0.9) = 1900 EUR
+    assert float(aggregates["total_planned"]) == pytest.approx(1900.0, abs=0.01)
+
+
 # ── Fix #3: duplicate (project_id, period) snapshot rejected ──────────────
 
 
