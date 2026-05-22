@@ -919,11 +919,14 @@ async def complete_handover(
 
 @router.get("/snags/", response_model=list[SnagResponse])
 async def list_snags(
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     handover_id: uuid.UUID = Query(...),
     status: str | None = Query(default=None),
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.read")),
 ) -> list[SnagResponse]:
+    await _verify_owner_via_handover(session, handover_id, user_payload)
     rows = await service.snags.list_for_handover(handover_id, status=status)
     return [SnagResponse.model_validate(r) for r in rows]
 
@@ -931,18 +934,24 @@ async def list_snags(
 @router.post("/snags/", response_model=SnagResponse, status_code=201)
 async def create_snag(
     data: SnagCreate,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.handover")),
 ) -> SnagResponse:
+    await _verify_owner_via_handover(session, data.handover_id, user_payload)
     return SnagResponse.model_validate(await service.create_snag(data))
 
 
 @router.get("/snags/{s_id}", response_model=SnagResponse)
 async def get_snag(
     s_id: uuid.UUID,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.read")),
 ) -> SnagResponse:
+    await _verify_owner_via_snag(session, s_id, user_payload)
     return SnagResponse.model_validate(await service.get_snag(s_id))
 
 
@@ -950,28 +959,37 @@ async def get_snag(
 async def update_snag(
     s_id: uuid.UUID,
     data: SnagUpdate,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.fix_snag")),
 ) -> SnagResponse:
+    await _verify_owner_via_snag(session, s_id, user_payload)
     return SnagResponse.model_validate(await service.update_snag(s_id, data))
 
 
 @router.delete("/snags/{s_id}", status_code=204)
 async def delete_snag(
     s_id: uuid.UUID,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.delete")),
 ) -> None:
+    await _verify_owner_via_snag(session, s_id, user_payload)
     await service.delete_snag(s_id)
 
 
 @router.post("/snags/{s_id}/fix", response_model=SnagResponse)
 async def fix_snag(
     s_id: uuid.UUID,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     payload: dict[str, Any] | None = None,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.fix_snag")),
 ) -> SnagResponse:
+    await _verify_owner_via_snag(session, s_id, user_payload)
     fix_notes = (payload or {}).get("fix_notes")
     return SnagResponse.model_validate(
         await service.mark_snag_fixed(s_id, fix_notes=fix_notes)
@@ -981,10 +999,13 @@ async def fix_snag(
 @router.post("/snags/{s_id}/wont-fix", response_model=SnagResponse)
 async def wont_fix_snag(
     s_id: uuid.UUID,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     payload: dict[str, Any] | None = None,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.fix_snag")),
 ) -> SnagResponse:
+    await _verify_owner_via_snag(session, s_id, user_payload)
     fix_notes = (payload or {}).get("fix_notes")
     return SnagResponse.model_validate(
         await service.mark_snag_wont_fix(s_id, fix_notes=fix_notes)
@@ -996,6 +1017,8 @@ async def wont_fix_snag(
 
 @router.get("/warranty-claims/", response_model=list[WarrantyClaimResponse])
 async def list_warranty_claims(
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     buyer_id: uuid.UUID | None = Query(default=None),
     plot_id: uuid.UUID | None = Query(default=None),
     status: str | None = Query(default=None),
@@ -1003,8 +1026,10 @@ async def list_warranty_claims(
     _perm: None = Depends(RequirePermission("property_dev.read")),
 ) -> list[WarrantyClaimResponse]:
     if buyer_id is not None:
+        await _verify_owner_via_buyer(session, buyer_id, user_payload)
         rows = await service.warranty.list_for_buyer(buyer_id, status=status)
     elif plot_id is not None:
+        await _verify_owner_via_plot(session, plot_id, user_payload)
         rows = await service.warranty.list_for_plot(plot_id, status=status)
     else:
         rows = []
@@ -1016,9 +1041,13 @@ async def list_warranty_claims(
 )
 async def create_warranty_claim(
     data: WarrantyClaimCreate,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.process_warranty")),
 ) -> WarrantyClaimResponse:
+    await _verify_owner_via_plot(session, data.plot_id, user_payload)
+    await _verify_owner_via_buyer(session, data.buyer_id, user_payload)
     return WarrantyClaimResponse.model_validate(
         await service.raise_warranty_claim(data.plot_id, data.buyer_id, data)
     )
@@ -1029,9 +1058,12 @@ async def create_warranty_claim(
 )
 async def get_warranty_claim(
     w_id: uuid.UUID,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.read")),
 ) -> WarrantyClaimResponse:
+    await _verify_owner_via_warranty(session, w_id, user_payload)
     return WarrantyClaimResponse.model_validate(await service.get_warranty(w_id))
 
 
@@ -1041,9 +1073,12 @@ async def get_warranty_claim(
 async def update_warranty_claim(
     w_id: uuid.UUID,
     data: WarrantyClaimUpdate,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.process_warranty")),
 ) -> WarrantyClaimResponse:
+    await _verify_owner_via_warranty(session, w_id, user_payload)
     return WarrantyClaimResponse.model_validate(
         await service.update_warranty(w_id, data)
     )
@@ -1052,9 +1087,12 @@ async def update_warranty_claim(
 @router.delete("/warranty-claims/{w_id}", status_code=204)
 async def delete_warranty_claim(
     w_id: uuid.UUID,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.delete")),
 ) -> None:
+    await _verify_owner_via_warranty(session, w_id, user_payload)
     await service.delete_warranty(w_id)
 
 
@@ -1063,9 +1101,12 @@ async def delete_warranty_claim(
 )
 async def accept_warranty_claim(
     w_id: uuid.UUID,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.process_warranty")),
 ) -> WarrantyClaimResponse:
+    await _verify_owner_via_warranty(session, w_id, user_payload)
     return WarrantyClaimResponse.model_validate(await service.warranty_accept(w_id))
 
 
@@ -1074,9 +1115,12 @@ async def accept_warranty_claim(
 )
 async def reject_warranty_claim(
     w_id: uuid.UUID,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.process_warranty")),
 ) -> WarrantyClaimResponse:
+    await _verify_owner_via_warranty(session, w_id, user_payload)
     return WarrantyClaimResponse.model_validate(await service.warranty_reject(w_id))
 
 
@@ -1085,9 +1129,12 @@ async def reject_warranty_claim(
 )
 async def close_warranty_claim(
     w_id: uuid.UUID,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
     _perm: None = Depends(RequirePermission("property_dev.process_warranty")),
 ) -> WarrantyClaimResponse:
+    await _verify_owner_via_warranty(session, w_id, user_payload)
     return WarrantyClaimResponse.model_validate(await service.warranty_close(w_id))
 
 
@@ -1387,6 +1434,65 @@ async def _verify_owner_via_party(
     if party is None:
         raise HTTPException(status_code=404, detail="Resource not found")
     await _verify_owner_via_spa(session, party.sales_contract_id, payload)
+
+
+async def _verify_owner_via_handover(
+    session: SessionDep,
+    handover_id: uuid.UUID,
+    payload: dict[str, Any],
+) -> None:
+    """IDOR closure for Handover (handover → plot → development → project).
+
+    Collapses "exists but not yours" to 404. Admins bypass.
+    """
+    from app.modules.property_dev.repository import HandoverRepository
+
+    handover = await HandoverRepository(session).get_by_id(handover_id)
+    if handover is None:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    await _verify_owner_via_plot(session, handover.plot_id, payload)
+
+
+async def _verify_owner_via_snag(
+    session: SessionDep,
+    snag_id: uuid.UUID,
+    payload: dict[str, Any],
+) -> None:
+    """IDOR closure for Snag (snag → handover → plot → development → project)."""
+    from app.modules.property_dev.repository import SnagRepository
+
+    snag = await SnagRepository(session).get_by_id(snag_id)
+    if snag is None:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    await _verify_owner_via_handover(session, snag.handover_id, payload)
+
+
+async def _verify_owner_via_warranty(
+    session: SessionDep,
+    claim_id: uuid.UUID,
+    payload: dict[str, Any],
+) -> None:
+    """IDOR closure for WarrantyClaim (claim → plot → development → project)."""
+    from app.modules.property_dev.repository import WarrantyClaimRepository
+
+    claim = await WarrantyClaimRepository(session).get_by_id(claim_id)
+    if claim is None:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    await _verify_owner_via_plot(session, claim.plot_id, payload)
+
+
+async def _verify_owner_via_buyer(
+    session: SessionDep,
+    buyer_id: uuid.UUID,
+    payload: dict[str, Any],
+) -> None:
+    """IDOR closure for Buyer (buyer → development → project owner)."""
+    from app.modules.property_dev.repository import BuyerRepository
+
+    buyer = await BuyerRepository(session).get_by_id(buyer_id)
+    if buyer is None:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    await _verify_owner_via_development(session, buyer.development_id, payload)
 
 
 # ── Leads ───────────────────────────────────────────────────────────────
