@@ -506,7 +506,13 @@ class TestIDORShape:
         import app.modules.integrations.router as router_mod
 
         source = Path(router_mod.__file__).read_text(encoding="utf-8")
-        assert source.count("Webhook not found") >= 4, (
+        # After the i18n migration (commit 2504a688) the literal
+        # ``"Webhook not found"`` was replaced by
+        # ``translate("errors.webhook_not_found", ...)``. The security
+        # guard itself is unchanged — every handler that loads a webhook
+        # by id still returns 404 on a user-id mismatch — but we now
+        # assert the i18n key instead of the English literal.
+        assert source.count("errors.webhook_not_found") >= 4, (
             "every webhook handler that loads by id must 404 on a "
             "cross-tenant mismatch — fewer than 4 occurrences means "
             "an endpoint dropped the guard"

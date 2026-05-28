@@ -6,6 +6,9 @@ export type { FileTypeChipsProps } from './FileTypeChips';
 
 export { AIDisclaimerBanner } from './AIDisclaimerBanner';
 
+export { BetaBanner } from './BetaBanner';
+export type { BetaBannerProps } from './BetaBanner';
+
 export { Input } from './Input';
 export type { InputProps } from './Input';
 

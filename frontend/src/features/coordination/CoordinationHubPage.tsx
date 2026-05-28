@@ -35,7 +35,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
 import { DateDisplay } from '@/shared/ui/DateDisplay';
-import { EmptyState, RecoveryCard } from '@/shared/ui';
+import { BetaBanner, EmptyState, RecoveryCard } from '@/shared/ui';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
 import { useActiveProjectProfile } from '@/features/projects/useProjectProfile';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
@@ -337,6 +337,7 @@ export function CoordinationHubPage() {
       data-testid="coordination-hub-page"
       className="relative min-h-full overflow-hidden"
     >
+      <BetaBanner moduleKey="coordination-hub" className="mt-3" />
       {/* Page-level gradient backdrop. Layered so the glass cards
           above pick up a tint without us needing per-card gradients. */}
       <div

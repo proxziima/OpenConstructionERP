@@ -25,6 +25,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
+import { BetaBanner } from '@/shared/ui/BetaBanner';
 import { Button } from '@/shared/ui/Button';
 import { Card } from '@/shared/ui/Card';
 import { EmptyState } from '@/shared/ui/EmptyState';
@@ -392,6 +393,7 @@ export function RequirementsMatrixPage() {
 
   return (
     <div className="flex flex-col gap-4 p-4 md:p-6">
+      <BetaBanner moduleKey="requirements" className="mt-3" />
       {/* Header */}
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">

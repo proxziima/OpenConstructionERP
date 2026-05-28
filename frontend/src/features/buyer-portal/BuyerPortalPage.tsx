@@ -66,6 +66,8 @@ import {
   X,
 } from 'lucide-react';
 
+import { BetaBanner } from '@/shared/ui';
+
 import {
   contactPortalAgent,
   fetchPortalOverview,
@@ -454,6 +456,7 @@ export function BuyerPortalPage() {
       <main
         className="w-full max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-6 pb-32 sm:pb-6"
       >
+        <BetaBanner moduleKey="buyer-portal" className="mt-3" />
         {/* 1. Welcome hero with project banner + quick links */}
         <HeroSection
           firstName={firstName}

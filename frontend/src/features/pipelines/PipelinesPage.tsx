@@ -21,7 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
 
-import { EmptyState, OnboardingTour } from '@/shared/ui';
+import { BetaBanner, EmptyState, OnboardingTour } from '@/shared/ui';
 import type { TourStep } from '@/shared/ui';
 import { getErrorMessage } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
@@ -302,6 +302,7 @@ export function PipelinesPage() {
       data-tour="pipelines"
       className="flex h-[calc(100vh-var(--oe-header-height,56px))] w-full overflow-hidden bg-surface-primary"
     >
+      <BetaBanner moduleKey="pipelines" className="mt-3" />
       <NodePalette
         nodeTypes={nodeTypes}
         loading={nodeTypesQuery.isLoading}

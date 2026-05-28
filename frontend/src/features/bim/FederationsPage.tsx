@@ -30,6 +30,7 @@ import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost, apiDelete } from '@/shared/lib/api';
 import {
   Badge,
+  BetaBanner,
   Button,
   Card,
   CardContent,
@@ -926,6 +927,7 @@ export function FederationsPage() {
 
   return (
     <div className="w-full animate-fade-in">
+      <BetaBanner moduleKey="bim-federations" className="mt-3" />
       <header className="mb-4 rounded-xl border border-border-light bg-surface-primary px-5 py-4">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="min-w-0">

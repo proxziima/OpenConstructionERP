@@ -5,6 +5,103 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.5.2] - 2026-05-28
+
+**Quality wave on v5.5.1.** Closes the FX-popover UX gap from issue #157
+(the v5.5.1 attempt only added a post-save badge — this one fixes the
+write-time flow so users can actually enter the FX rate without losing
+their dropdown selection). Ships the Wave-2 Epic A approval-routes
+engine (generic templates → instances → step states, mounted on
+`/approval-routes` and integrated into `/markups`). Honest
+document-template locales — chips now show native + English names with
+source-coded badges (override / bundled / fallback) and a built-in
+editor for tenant-owned overrides. Three BIM viewer UX fixes (default
+mode shows full geometry on `?sel=` deep-link instead of auto-isolating,
+property search works in federation viewer via per-model picker,
+Begehung moved to the top toolbar and duplicate ruler/section dropped
+from the bottom). `/integrations` 404s gone (orphan "Example webhook
+(disabled)" rows removed from the showcase snapshot, and the test
+endpoint trailing-slash was normalised). AI Quick Estimate i18n keys
+filled, `useLLMRun` shared hook, formatters lifted to `shared/lib/`.
+
+### Fixed
+- **#157 BOQ currency popover — auto-close on foreign currency + no
+  way to enter the FX rate** — `cellRenderers.tsx`: keep the popover
+  open when the picked currency has no FX rate yet, auto-focus the
+  rate input (`PopoverFxRateRow`), and show a "SET RATE" badge with a
+  required-hint paragraph so the next action is obvious. Closes the
+  v5.5.1 attempt that only surfaced a post-save warning at the
+  section level.
+- **`/integrations` "Operation failed / Not Found / Test failed" on
+  Example webhook rows** — removed 6 orphan
+  `Example webhook (disabled)` seed rows from the showcase snapshot
+  (they pointed at no real config so every action 404'd), and changed
+  the test endpoint route from `…/test/` to `…/test` to match the
+  rest of the module's slash style. Real configs unaffected.
+- **`/bim` viewer trio**: (1) `?sel=…` deep-links now render the full
+  geometry by default — the old behaviour auto-isolated the picked
+  element and made the rest of the model invisible; (2) Property
+  search supports the federation viewer through a per-model picker so
+  searching by `Pset_*.Property` finds matches across linked models;
+  (3) Begehung (walk mode) moved to the top toolbar where the rest of
+  the camera tools live, and the duplicate ruler/section dropdowns
+  that were stacked on the bottom toolbar were removed.
+- **`/property-dev/settings/document-templates` Locale picker** — the
+  chip list used to be a flat row of code stubs (`EN` / `DE` / `RU`)
+  with no indication of what was actually translated. Now each chip
+  shows native + English name (`Deutsch (German)` / `日本語 (Japanese)`)
+  with a colour-coded source badge: green = tenant override active,
+  blue = built-in translation, amber = no translation, falls back to
+  English. Clicking any chip (or the new `+ Add / edit translation`
+  button) opens an inline JSON editor that loads English as a
+  starter, lets the tenant edit + save the override, and offers a
+  one-click revert to the bundled copy.
+
+### Added
+- **Approval routes engine (Wave-2 Epic A)** — generic, polymorphic
+  approval workflow. New module `backend/app/modules/approval_routes/`
+  with tables `oe_approval_route` / `_step` / `_instance` /
+  `_step_state` (alembic v3147). REST API exposes route templates,
+  instance lifecycle (start / decide / cancel), and step-state queries
+  filterable by target kind + status. Frontend module
+  `frontend/src/features/approval-routes/` ships an admin page
+  (templates + history tabs), a polymorphic `ApprovalInstanceCard`
+  drop-in, and a `RouteEditor` modal with role-or-user mutex toggle,
+  mode dropdown, SLA hours, and reorderable steps. Already integrated
+  into `/markups`.
+- **AI Quick Estimate refactor + i18n fill** — `useLLMRun` shared
+  hook (commit `0eb16ac3`), formatters lifted from `features/ai/` to
+  `shared/lib/formatters/` (`9c234ca8`), and the missing `ai.*` keys
+  filled in `en.ts` (`d133889e`).
+- **Tenant document-template locale overrides** — backend stores
+  uploaded JSON at `uploads/property_dev/document_locales/{code}.json`,
+  takes precedence over bundled JSON at render time; GET/PUT/DELETE
+  endpoints exposed at `/property-dev/document-templates/locales/{code}`.
+
+### Changed
+- **Showcase snapshot trimmed** — removed the orphan
+  `Example webhook (disabled)` rows (6 from
+  `oe_integrations_config`). Snapshot is still gzipped and lives at
+  `backend/app/scripts/showcase_snapshot.json.gz` with the same
+  filename, so existing seed/SEED_SHOWCASE flows are unaffected.
+- **Markups module** — assignee FK added (alembic v3146,
+  `4763fe64`), prev/next chevron navigation with keyboard shortcuts
+  (`ae1639b4`), back-to-document deep-link with scroll + pulse
+  highlight (`d5cc56f2`), `EditMarkupModal` for title/description/
+  colour (`0f436982`).
+- **Geo Hub** — auto-zoom camera fits overlays + 3D tiles on load
+  (`d0b72773`), 2D / 3D / Columbus scene-mode toggle with persistence
+  (`ec2448b0`), per-overlay visibility + opacity controls
+  (`b7cde60b`), left sidebar listing overlays + tilesets with fly-to
+  (`fc46f5fd`).
+- **i18n coverage push** — `ko` ≥75%, `zh` ≥75%, `cs`/`hr`/`pl`/`ro`
+  ≥70%, `da`/`no`/`sv` ≥70%, `fi` ≥70% on high-traffic surfaces.
+
+### Migration
+- Alembic chain v3144 → v3145 (demo_project_addresses) → v3146
+  (markup_assignee) → v3147 (approval_routes). All forward-only,
+  idempotent on existing installs. No data migration needed.
+
 ## [5.5.1] - 2026-05-28
 
 **README CLI-name patch — re-ships the v5.5.0 wheel with the long-description that PyPI renders on the project page.** The v5.5.0 wheel was tagged from a commit that still showed the legacy `openestimate` CLI binary name in the quickstart and the `doctor` invocation hint. Both binaries continue to work (pyproject.toml exposes `openestimate` and `openconstructionerp` as parallel entry points), but the canonical command on the rendered README should match the package name. No code changes. No migration. Same `5.5.0` runtime.

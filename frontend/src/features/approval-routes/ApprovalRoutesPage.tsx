@@ -15,6 +15,7 @@ import { Edit3, Plus, ShieldCheck, Trash2, Workflow } from 'lucide-react';
 
 import {
   Badge,
+  BetaBanner,
   Breadcrumb,
   Button,
   Card,
@@ -100,6 +101,7 @@ export function ApprovalRoutesPage() {
           },
         ]}
       />
+      <BetaBanner moduleKey="approval-routes" className="mt-3" />
 
       <div className="mt-3 flex items-center justify-between gap-3 flex-wrap">
         <div>
