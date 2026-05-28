@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import {
@@ -30,6 +30,7 @@ import {
   LayoutGrid,
   FileText,
   TriangleRight,
+  ExternalLink,
 } from 'lucide-react';
 import { Button, Card, Badge, EmptyState, Breadcrumb, ConfirmDialog, RecoveryCard, SkeletonTable } from '@/shared/ui';
 import { useTabKeyboardNav } from '@/shared/hooks/useTabKeyboardNav';
@@ -628,6 +629,7 @@ function MarkupDetail({
   onEdit,
   siblings,
   onNavigate,
+  onOpenInDocument,
 }: {
   markup: Markup;
   documentName?: string;
@@ -640,6 +642,12 @@ function MarkupDetail({
    */
   siblings?: Markup[];
   onNavigate?: (id: string) => void;
+  /**
+   * Opens the source document in the inline PDF annotator and pulses a
+   * glow ring around this markup. Disabled / hidden when the markup has
+   * no ``document_id`` (project-level annotation).
+   */
+  onOpenInDocument?: (markup: Markup) => void;
 }) {
   const { t } = useTranslation();
   const idx = siblings ? siblings.findIndex((m) => m.id === markup.id) : -1;
@@ -650,6 +658,27 @@ function MarkupDetail({
 
   return (
     <div className="px-6 py-3 bg-surface-secondary/40 border-t border-border-light">
+      {/* Deep-link CTA — primary action for the detail row. Sits above the
+          metadata grid so reviewers see it first when expanding a row.
+          Hidden for project-level (no-document) markups since there's
+          nothing to navigate to. */}
+      {markup.document_id && onOpenInDocument && (
+        <div className="mb-3">
+          <button
+            type="button"
+            onClick={() => onOpenInDocument(markup)}
+            title={t('markups.openInDocumentHint', {
+              defaultValue: 'Jump to this markup on the source document',
+            })}
+            data-testid="markup-open-in-document"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-oe-blue text-white hover:bg-oe-blue-hover transition-colors shadow-sm"
+          >
+            <FileText size={13} />
+            {t('markups.openInDocument', { defaultValue: 'Open in document' })}
+            <ExternalLink size={11} className="opacity-80" />
+          </button>
+        </div>
+      )}
       {showNav && (
         <div className="flex items-center justify-between mb-3 pb-2 border-b border-border-light/60">
           <button
@@ -897,6 +926,7 @@ function MarkupTableRow({
   siblings,
   onNavigate,
   userMap,
+  onOpenInDocument,
 }: {
   markup: Markup;
   isExpanded: boolean;
@@ -908,6 +938,7 @@ function MarkupTableRow({
   siblings?: Markup[];
   onNavigate?: (id: string) => void;
   userMap: Map<string, AssigneeUser>;
+  onOpenInDocument?: (markup: Markup) => void;
 }) {
   const { t } = useTranslation();
   const TypeIcon = TYPE_ICONS[markup.type] ?? PenTool;
@@ -1044,6 +1075,7 @@ function MarkupTableRow({
               onEdit={onEdit}
               siblings={siblings}
               onNavigate={onNavigate}
+              onOpenInDocument={onOpenInDocument}
             />
           </td>
         </tr>
@@ -1077,6 +1109,11 @@ export function MarkupsPage() {
   const [editTarget, setEditTarget] = useState<Markup | null>(null);
   const [annotateDocId, setAnnotateDocId] = useState<string | null>(null);
   const [annotateStamp, setAnnotateStamp] = useState<string | undefined>(undefined);
+  // Deep-link target — when set, the annotator pulses a glow ring on
+  // this markup id and scrolls it into view. Cleared either by the
+  // annotator (after the 2s pulse) or when the user closes it.
+  const [highlightMarkupId, setHighlightMarkupId] = useState<string | undefined>(undefined);
+  const [annotateInitialPage, setAnnotateInitialPage] = useState<number | undefined>(undefined);
   const [showCustomStampForm, setShowCustomStampForm] = useState(false);
   const [customStampName, setCustomStampName] = useState('');
   const [customStampColor, setCustomStampColor] = useState('#3B82F6');
@@ -1090,6 +1127,42 @@ export function MarkupsPage() {
     onChange: setScopeTab,
     orientation: 'horizontal',
   });
+
+  // Deep-link reader — supports both calling conventions:
+  //   /markups?openDoc=<id>&page=<n>&markup=<id>   (from the file manager)
+  //   /markups?markup=<id>                         (from anywhere with just
+  //                                                 the markup id; we'll
+  //                                                 fetch the markup, then
+  //                                                 derive document + page)
+  // Runs once on mount and whenever the params change.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const openDoc = searchParams.get('openDoc');
+    const markupParam = searchParams.get('markup');
+    const pageParam = searchParams.get('page');
+    if (!markupParam && !openDoc) return;
+    if (openDoc) {
+      setFilterDocumentId(openDoc);
+      setAnnotateDocId(openDoc);
+    }
+    if (pageParam) {
+      const n = parseInt(pageParam, 10);
+      if (Number.isFinite(n) && n > 0) setAnnotateInitialPage(n);
+    }
+    if (markupParam) {
+      setHighlightMarkupId(markupParam);
+    }
+    // Strip the params from the URL once consumed so a back-button reload
+    // doesn't re-trigger the highlight (which would be confusing if the
+    // user already dismissed it).
+    const next = new URLSearchParams(searchParams);
+    next.delete('openDoc');
+    next.delete('markup');
+    next.delete('page');
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   // Data queries
   const { data: projects = [] } = useQuery({
@@ -1247,6 +1320,35 @@ export function MarkupsPage() {
         m.type.toLowerCase().includes(q),
     );
   }, [markups, searchQuery]);
+
+  // Opens the inline PDF annotator for a markup's source document and
+  // tells the annotator to pulse-highlight the markup itself. Falls back
+  // to a toast when the markup is project-level (no document_id) so the
+  // user doesn't silently click a dead button.
+  const handleOpenInDocument = useCallback((markup: Markup) => {
+    if (!markup.document_id) {
+      addToast({
+        type: 'info',
+        title: t('markups.no_document_to_open', {
+          defaultValue: 'This markup has no source document',
+        }),
+      });
+      return;
+    }
+    // Auto-pick the document in the top filter so the toolbar reflects
+    // what the annotator is showing — small UX nicety, prevents the
+    // dropdown from disagreeing with the open document.
+    setFilterDocumentId(markup.document_id);
+    setAnnotateDocId(markup.document_id);
+    setAnnotateInitialPage(markup.page || 1);
+    setHighlightMarkupId(markup.id);
+    // Scroll the annotator into view — the markups list can be long,
+    // and the annotator mounts further down the page.
+    requestAnimationFrame(() => {
+      const el = document.querySelector('[data-inline-annotator-mount]');
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [addToast, t]);
 
   // Invalidation. Includes the unified feed so hub-scope mutations appear
   // in the "All annotations" tab without a manual reload.
@@ -1535,14 +1637,21 @@ export function MarkupsPage() {
 
           {/* ── Inline PDF Annotator ──────────────────────────────────────── */}
           {annotateDocId && (
-            <div className="mt-3">
+            <div className="mt-3" data-inline-annotator-mount>
               <InlinePdfAnnotator
                 documentId={annotateDocId}
                 documentName={documents.find((d) => d.id === annotateDocId)?.name || 'Document'}
                 projectId={projectId}
-                onClose={() => { setAnnotateDocId(null); setAnnotateStamp(undefined); }}
+                onClose={() => {
+                  setAnnotateDocId(null);
+                  setAnnotateStamp(undefined);
+                  setHighlightMarkupId(undefined);
+                  setAnnotateInitialPage(undefined);
+                }}
                 onMarkupCreated={invalidateAll}
                 activeStamp={annotateStamp}
+                highlightMarkupId={highlightMarkupId}
+                initialPage={annotateInitialPage}
               />
             </div>
           )}
@@ -1782,6 +1891,7 @@ export function MarkupsPage() {
                           }
                           onNavigate={goToMarkup}
                           userMap={userMap}
+                          onOpenInDocument={handleOpenInDocument}
                         />
                       ))}
                     </tbody>
