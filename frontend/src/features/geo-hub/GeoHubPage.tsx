@@ -60,6 +60,7 @@ import { GeoOverlayHud } from './GeoOverlayHud';
 import { GeoSceneModePicker } from './GeoSceneModePicker';
 import { OverlayLayer } from './OverlayLayer';
 import { OverlayPanel, type OverlayEditMode } from './OverlayPanel';
+import { OverlaySidebar } from './OverlaySidebar';
 import type { AnchoredProject, GeoPinBundle } from './types';
 
 // Persisted scene-mode preference — restored synchronously at mount so
@@ -702,6 +703,16 @@ export function GeoHubPage() {
   // blow up on ``window``. Persisted under ``geoHub.sceneMode`` so the
   // user's projection choice survives reloads.
   const [sceneMode, setSceneMode] = useState<GeoSceneMode>(readSceneMode);
+  // OverlaySidebar fly-to handle. ``focusedLayerId`` highlights the row
+  // the user last clicked; ``flyToTarget`` carries the nonce + centroid
+  // that CesiumViewer's flyToTarget effect reads. Nonced via a click
+  // counter so re-clicking the same row re-flies (vs. dedup-by-id).
+  const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
+  const [flyToTarget, setFlyToTarget] = useState<{
+    key: string;
+    lat: number;
+    lon: number;
+  } | null>(null);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -904,6 +915,7 @@ export function GeoHubPage() {
                 ? projects.find((p) => p.project_id === focusedProjectId) ?? null
                 : null
             }
+            flyToTarget={flyToTarget}
             searchPin={searchPin}
             onMouseMove={setCursorCoords}
             onCameraChange={setCameraState}
@@ -955,6 +967,23 @@ export function GeoHubPage() {
                       editMode={overlayEditMode}
                       onSelectOverlay={setActiveOverlayId}
                       onChangeEditMode={setOverlayEditMode}
+                    />
+                    {/* Discoverable list — bottom-left, complements the
+                        top-left anchored-projects rail. Read-only here;
+                        OverlayPanel (top-right) still owns mutations. */}
+                    <OverlaySidebar
+                      projectId={focusedProjectId ?? activeProjectId ?? ''}
+                      focusedId={focusedLayerId}
+                      onFly={(target) => {
+                        setFocusedLayerId(target.id);
+                        // Nonce on every click so re-clicking the same row
+                        // bumps the effect dep + re-flies the camera.
+                        setFlyToTarget({
+                          key: `${target.kind}:${target.id}:${Date.now()}`,
+                          lat: target.lat,
+                          lon: target.lon,
+                        });
+                      }}
                     />
                   </>
                 )}

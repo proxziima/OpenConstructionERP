@@ -101,6 +101,23 @@ interface CesiumViewerProps {
    */
   focusedProject?: AnchoredProject | null;
   /**
+   * Generic "fly camera here" handle for rows the OverlaySidebar exposes
+   * (raster overlays + tilesets) that aren't projects. Distinct from
+   * ``focusedProject`` so the existing focus effect's deps (which key on
+   * ``project_id``) don't fight with this layer.
+   *
+   * ``key`` is the consumer's nonce — bumping it forces a re-fly to the
+   * same destination, the same way ``focusedProject`` works when the
+   * caller nulls + re-sets between clicks. Centroid is in degrees; ``alt``
+   * is optional (defaults to a friendly rooftop altitude in the effect).
+   */
+  flyToTarget?: {
+    key: string;
+    lat: number;
+    lon: number;
+    alt?: number;
+  } | null;
+  /**
    * Transient pin from the top-of-page address search. When set we
    * fly the camera to the coordinates and render a single accent-blue
    * pin with the address as its label. Distinct visual treatment from
@@ -385,6 +402,7 @@ export function CesiumViewer({
   pins,
   focusedTilesetId,
   focusedProject,
+  flyToTarget,
   searchPin,
   overlay,
   onMouseMove,
@@ -1188,6 +1206,35 @@ export function CesiumViewer({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusedProject?.project_id, cesiumStatus]);
+
+  // ── Generic flyToTarget (used by OverlaySidebar rows) ────────────────
+  //
+  // Fires whenever the caller's ``flyToTarget.key`` changes — distinct
+  // nonce per click so re-clicking the same row re-flies. Independent of
+  // ``focusedProject`` so the two layers never stomp each other.
+  useEffect(() => {
+    if (!flyToTarget) return;
+    if (cesiumStatus !== 'loaded') return;
+    const v = viewerRef.current;
+    const cesium = cesiumRef.current;
+    if (!v || !cesium) return;
+    try {
+      const { lat, lon } = flyToTarget;
+      const baseAlt = Number(flyToTarget.alt ?? 0);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      v.camera.flyTo({
+        destination: cesium.Cartesian3.fromDegrees(
+          lon,
+          lat,
+          Math.max(baseAlt + 800, 2500),
+        ),
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[geo_hub] flyToTarget failed', err);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flyToTarget?.key, cesiumStatus]);
 
   // ── Address-search pin (global view) ────────────────────────────────
   //
