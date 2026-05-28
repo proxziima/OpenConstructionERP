@@ -3034,7 +3034,19 @@ function ResourceCurrencyCombobox({
     const next = raw.trim().toUpperCase().slice(0, 6);
     if (next === '' || next === value) { setOpen(false); return; }
     onCommit(next);
-    setOpen(false);
+    // Issue #157 follow-up — when the user picks a foreign currency that
+    // has no FX rate configured, keep the popover open so the inline FX
+    // rate input gets the next interaction. Without this the section
+    // subtotal looks broken: the math falls back to the unconverted value
+    // (silent identity), so the screen shows no change even though the
+    // currency dropdown updated. We close the popover only when the
+    // committed code is base, or when an FX rate already exists.
+    const nextIsForeign = !!baseCode && next !== baseCode;
+    const hasRate =
+      typeof fxRate === 'number' && Number.isFinite(fxRate) && fxRate > 0;
+    if (!nextIsForeign || hasRate) {
+      setOpen(false);
+    }
   };
 
   // Filter both groups by the search prefix (case-insensitive); when the
@@ -3137,6 +3149,11 @@ function ResourceCurrencyCombobox({
                       {t('boq.fx_rate_global_badge', { defaultValue: 'GLOBAL' })}
                     </span>
                   )}
+                  {(fxSource === 'none' || fxRate == null) && (
+                    <span className="ml-1 px-1 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 text-[8px] font-bold">
+                      {t('boq.fx_rate_missing_badge', { defaultValue: 'SET RATE' })}
+                    </span>
+                  )}
                 </div>
                 <PopoverFxRateRow
                   foreignCode={value}
@@ -3145,7 +3162,15 @@ function ResourceCurrencyCombobox({
                   readOnly={fxSource === 'project'}
                   onCommit={onCommitFxRate}
                   t={t}
+                  autoFocus={fxSource !== 'project' && (fxRate == null || fxRate <= 0)}
                 />
+                {(fxSource === 'none' || fxRate == null) && (
+                  <p className="mt-1 text-[9px] text-amber-700 dark:text-amber-300 leading-tight">
+                    {t('boq.fx_rate_required_hint', {
+                      defaultValue: 'Enter the exchange rate so the section subtotal recomputes.',
+                    })}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -3220,6 +3245,7 @@ function PopoverFxRateRow({
   readOnly,
   onCommit,
   t,
+  autoFocus,
 }: {
   foreignCode: string;
   baseCode: string;
@@ -3227,11 +3253,22 @@ function PopoverFxRateRow({
   readOnly: boolean;
   onCommit: (next: number) => void;
   t: (key: string, opts?: Record<string, string>) => string;
+  /** Focus the input when the popover opens with a foreign currency that
+   *  has no FX rate yet — issue #157 follow-up so the section subtotal
+   *  recompute is visibly tied to the rate the user must enter. */
+  autoFocus?: boolean;
 }) {
   const [draft, setDraft] = useState(rate != null ? String(Number(rate.toFixed(6))) : '');
+  const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     setDraft(rate != null ? String(Number(rate.toFixed(6))) : '');
   }, [rate]);
+  useEffect(() => {
+    if (autoFocus && !readOnly && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [autoFocus, readOnly]);
 
   const commit = () => {
     const n = parseFloat(draft.replace(',', '.'));
@@ -3243,6 +3280,7 @@ function PopoverFxRateRow({
     <div className="flex items-center gap-1 text-[10px] font-mono">
       <span className="text-content-secondary">1 {foreignCode} =</span>
       <input
+        ref={inputRef}
         type="text"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
