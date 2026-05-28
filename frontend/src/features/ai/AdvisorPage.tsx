@@ -18,6 +18,7 @@ import { apiGet, apiPost } from '@/shared/lib/api';
 import { Link } from 'react-router-dom';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useLLMRun } from './hooks/useLLMRun';
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -226,7 +227,6 @@ export function AdvisorPage() {
   const { t } = useTranslation();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null); // null = loading
   const [aiProvider, setAiProvider] = useState<string>('');
   const [region, setRegion] = useState('');
@@ -235,6 +235,75 @@ export function AdvisorPage() {
   const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
   const activeProjectName = useProjectContextStore((s) => s.activeProjectName);
   const addToast = useToastStore((s) => s.addToast);
+
+  // ── Advisor chat run — backed by useLLMRun for AbortController-aware
+  //    cancellation (unmount during a long LLM round-trip no longer
+  //    delivers a phantom assistant bubble) and normalised Error so the
+  //    toast `.message` access is always safe.
+  //
+  //    `mutationFn` re-builds the request payload on every invocation
+  //    so it always sees the freshest closure values for `messages`,
+  //    `region`, and `activeProjectId` — react-query reads the latest
+  //    `mutationFn` from each render, so this stays in lock-step with
+  //    UI state without needing manual queryKeys.
+  const advisorRun = useLLMRun<{ msg: string }, AdvisorResponse>({
+    mutationFn: ({ msg }, { signal }) => {
+      // Build conversation history for context (last 10 messages).
+      // Captured here so the latest message list is always sent, even
+      // when the user fires multiple requests in quick succession.
+      const history = messages.slice(-10).map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      return apiPost<AdvisorResponse>(
+        '/v1/ai/advisor/chat/',
+        {
+          message: msg,
+          project_id: activeProjectId || undefined,
+          region: region || undefined,
+          locale: i18next.language,
+          history,
+        },
+        { signal },
+      );
+    },
+    onSuccess: (data) => {
+      const { cleanText, options } = parseOptions(data.answer);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: cleanText,
+          sources: data.sources,
+          options: options.length > 0 ? options : undefined,
+          timestamp: Date.now(),
+        },
+      ]);
+      inputRef.current?.focus();
+    },
+    onError: (err) => {
+      addToast({
+        type: 'error',
+        title: t('ai.advisor_error', { defaultValue: 'AI Advisor Error' }),
+        message: err.message,
+      });
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: t('ai.advisor_unavailable', {
+            defaultValue: 'Unable to get a response. Please check AI settings.',
+          }),
+          timestamp: Date.now(),
+        },
+      ]);
+      inputRef.current?.focus();
+    },
+  });
+  // Keep the existing `loading` identifier so the rest of the JSX (typing
+  // dots, send-button disabled, textarea disabled, `canSend`) stays
+  // bit-identical — only the source of truth changed.
+  const loading = advisorRun.isPending;
 
   // Check if AI is configured on mount
   useEffect(() => {
@@ -273,67 +342,19 @@ export function AdvisorPage() {
   }, [input]);
 
   const sendMessage = useCallback(
-    async (text?: string) => {
+    (text?: string) => {
       const msg = (text || input).trim();
       if (!msg || loading) return;
 
       setInput('');
       setMessages((prev) => [...prev, { role: 'user', content: msg, timestamp: Date.now() }]);
-      setLoading(true);
-
-      try {
-        // Build conversation history for context (last 10 messages)
-        const history = messages.slice(-10).map((m) => ({
-          role: m.role,
-          content: m.content,
-        }));
-
-        const data = await apiPost<AdvisorResponse>('/v1/ai/advisor/chat/', {
-          message: msg,
-          project_id: activeProjectId || undefined,
-          region: region || undefined,
-          locale: i18next.language,
-          history,
-        });
-
-        // Parse options from the response
-        const { cleanText, options } = parseOptions(data.answer);
-
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'assistant',
-            content: cleanText,
-            sources: data.sources,
-            options: options.length > 0 ? options : undefined,
-            timestamp: Date.now(),
-          },
-        ]);
-      } catch (err) {
-        addToast({
-          type: 'error',
-          title: t('ai.advisor_error', { defaultValue: 'AI Advisor Error' }),
-          message: err instanceof Error ? err.message : '',
-        });
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'assistant',
-            content: t('ai.advisor_unavailable', {
-              defaultValue: 'Unable to get a response. Please check AI settings.',
-            }),
-            timestamp: Date.now(),
-          },
-        ]);
-      } finally {
-        setLoading(false);
-        inputRef.current?.focus();
-      }
+      // The hook owns the in-flight controller, success/error toasts and
+      // assistant-bubble append — see `advisorRun` above. `messages`,
+      // `region` and `activeProjectId` are read inside the hook's
+      // `mutationFn` closure on every invocation, so no extra deps here.
+      advisorRun.run({ msg });
     },
-    // `messages` and `region` are read inside this callback — they MUST be in
-    // the dependency list or the AI loses conversation history and the region
-    // filter silently stops applying after the first send.
-    [input, loading, messages, region, activeProjectId, addToast, t],
+    [input, loading, advisorRun],
   );
 
   const clearConversation = useCallback(() => {

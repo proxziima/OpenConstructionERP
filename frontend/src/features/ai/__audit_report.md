@@ -15,6 +15,17 @@ Still open and owned by the frontend a11y / functional-polish wave:
   the values are translatable, not interpolated by JS. Other locales
   fall back to English until a later wave fills them.
 * 10 a11y findings (4×P1 + 6×P2) — see `__a11y_followups.md`.
-* `useLLMRun()` shared-hook extraction — see `__shared_hook_proposal.md`.
-* Lift `formatNumber` / `formatFileSize` / `getFileExtension` into
-  `@/shared/lib/formatters` (not AI-specific).
+* [x] `useLLMRun()` shared-hook extraction — closed 2026-05-28.
+  `frontend/src/features/ai/hooks/useLLMRun.ts` now wraps both
+  AdvisorPage's chat round-trip and QuickEstimatePage's five
+  mutations with AbortController, focusRestoreRef (a11y P1 #4) and
+  normalised Error. See `__shared_hook_proposal.md` for the original
+  proposal.
+* [x] Lift `formatNumber` / `formatFileSize` / `getFileExtension`
+  into `@/shared/lib/formatters` — closed 2026-05-28. AI feature
+  files now import them; the byte-identical local copies in
+  TakeoffPage and ImportDatabasePage were also removed so the four
+  surfaces share one implementation. (BIMPage keeps its local
+  variants because the signatures differ — its `getFileExtension`
+  returns the leading dot and its `formatFileSize` adds GB
+  handling.)
