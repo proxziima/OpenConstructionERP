@@ -1126,6 +1126,59 @@ def _resource_total_in_base(
     return total
 
 
+def _detect_resource_fx_warnings(
+    resources: list[dict[str, Any]] | None,
+    fx_rates_map: dict[str, str] | None,
+    base_currency: str,
+) -> list[str]:
+    """Issue #157 (skolodi): collect resource currency codes that have no FX
+    rate in the project's ``fx_rates`` table.
+
+    The rollup at ``_resource_total_in_base`` silently no-ops the conversion
+    when a foreign-currency resource has no rate (preserves the value in its
+    own units to keep the rollup deterministic and never zero a row). The
+    side effect is the bug skolodi recorded on video: changing a resource's
+    currency from EUR to USD with no USD rate produces an identical sum
+    (`sub = qty * rate * 1` == `sub = qty * rate * <missing>` because the
+    multiplication is skipped) — so the section total appears unchanged
+    even though the user just touched the row. ARS has a rate in his
+    project, hence "ARS updates but USD doesn't."
+
+    Returning the list of missing codes lets the API surface a per-position
+    warning so the UI can prompt "Add USD to Project Settings" instead of
+    silently producing a math-correct-but-user-confusing no-op.
+
+    Pure function — no DB I/O — safe to call from any write path.
+    """
+    if not isinstance(resources, list) or not resources:
+        return []
+    base = (base_currency or "").strip().upper()
+    have = {k.upper() for k in (fx_rates_map or {}).keys()}
+    missing: list[str] = []
+    seen: set[str] = set()
+    for r in resources:
+        if not isinstance(r, dict):
+            continue
+        raw = r.get("currency")
+        if not isinstance(raw, str):
+            # Mirror ``_resource_total_in_base`` permissiveness elsewhere
+            # but reject non-string currency fields here: they almost
+            # always indicate malformed input (an int leaking in from a
+            # bad parser) and rolling them up as warnings would surface
+            # noise instead of actionable codes in the UI badge.
+            continue
+        code = raw.strip().upper()
+        if not code or code == base:
+            continue
+        if code in have:
+            continue
+        if code in seen:
+            continue
+        seen.add(code)
+        missing.append(code)
+    return missing
+
+
 def _project_fx_map(project: object | None) -> dict[str, str]:
     """Project the ``Project.fx_rates`` JSON list into ``{code: rate}``.
 
@@ -3899,6 +3952,26 @@ class BOQService:
                 }
             except Exception:  # noqa: BLE001 — purely cosmetic
                 pass
+
+        # ── Issue #157 (skolodi): surface missing-FX warnings ────────────
+        # Detect resources priced in a currency the project has no rate
+        # for. Silent no-op at ``_resource_total_in_base`` makes the bug
+        # invisible (section sum unchanged → user reports "EUR→USD didn't
+        # update"). Stash on a NON-mapped attribute; router merges into
+        # response metadata as ``fx_warnings: list[str]``.
+        try:
+            meta_now = position.metadata_ if isinstance(position.metadata_, dict) else {}
+            resources_now = meta_now.get("resources") if isinstance(meta_now, dict) else None
+            base_ccy, fx_map = await self._resolve_project_fx(position.boq_id)
+            fx_warnings = _detect_resource_fx_warnings(
+                resources_now if isinstance(resources_now, list) else None,
+                fx_map,
+                base_ccy,
+            )
+            if fx_warnings:
+                position._fx_warnings = fx_warnings  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 — warning is best-effort
+            logger.debug("FX warning detection failed", exc_info=True)
 
         return position
 

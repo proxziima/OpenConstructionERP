@@ -402,6 +402,49 @@ export function SectionFullWidthRenderer(params: ICellRendererParams) {
         </button>
       )}
 
+      {/* Issue #157 (skolodi) — FX-missing warning at the section level.
+          Bubbled up by BOQGrid's collectFxWarnings: when any descendant
+          resource is priced in a currency the project has no FX rate for,
+          the section subtotal silently sums it in raw units, so a
+          currency change appears not to update. Surface this as an amber
+          badge next to the subtotal with a click target that opens
+          Project Settings → FX Rates (same handler the resource-row "set
+          FX" button uses). */}
+      {Array.isArray((data as { _fxWarnings?: unknown })._fxWarnings) &&
+        ((data as { _fxWarnings: string[] })._fxWarnings.length > 0) && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              ctx.onOpenFxRateSettings?.();
+            }}
+            className="shrink-0 inline-flex items-center gap-1 h-5 px-2 rounded
+                       text-[10px] font-semibold
+                       bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200
+                       hover:bg-amber-200 dark:hover:bg-amber-800/70
+                       ring-1 ring-amber-300 dark:ring-amber-700/60
+                       transition-colors"
+            title={t('boq.section_fx_missing_tooltip', {
+              defaultValue:
+                'Section total may be incorrect — no FX rate for: {{codes}}. Click to set rates.',
+              codes: (data as { _fxWarnings: string[] })._fxWarnings.join(', '),
+            })}
+            aria-label={t('boq.section_fx_missing_tooltip', {
+              defaultValue:
+                'Section total may be incorrect — no FX rate for: {{codes}}. Click to set rates.',
+              codes: (data as { _fxWarnings: string[] })._fxWarnings.join(', '),
+            })}
+          >
+            <AlertTriangle size={11} strokeWidth={2.2} />
+            <span>
+              {t('boq.section_fx_missing_short', {
+                defaultValue: 'set FX: {{codes}}',
+                codes: (data as { _fxWarnings: string[] })._fxWarnings.join(', '),
+              })}
+            </span>
+          </button>
+        )}
+
       <span className="shrink-0 text-xs font-bold text-content-primary tabular-nums pl-2">
         {formattedSubtotal}
       </span>

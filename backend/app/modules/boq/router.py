@@ -401,6 +401,15 @@ async def _position_to_response_with_links(
         merged = dict(resp.metadata) if isinstance(resp.metadata, dict) else {}
         merged["link_propagation"] = info
         resp.metadata = merged
+    # Issue #157 (skolodi): missing-FX warnings — stashed by
+    # ``update_position`` when a resource is priced in a currency the
+    # project has no rate for. Surfaced as ``metadata.fx_warnings: list[str]``
+    # so the UI can render a yellow badge + "Add USD" CTA.
+    fx_warnings = getattr(position, "_fx_warnings", None)
+    if isinstance(fx_warnings, list) and fx_warnings:
+        merged = dict(resp.metadata) if isinstance(resp.metadata, dict) else {}
+        merged["fx_warnings"] = list(fx_warnings)
+        resp.metadata = merged
     return resp
 
 
