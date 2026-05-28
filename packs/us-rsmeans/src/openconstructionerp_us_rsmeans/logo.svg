@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 50" width="240" height="50" role="img" aria-label="US Construction Pack">
+  <title>US Construction Pack</title>
+  <desc>US Construction Pack wordmark in Old Glory blue with a red accent.</desc>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-weight="700" font-size="22" letter-spacing="-0.3">
+    <text x="6" y="32" fill="#0A3161">US Construction</text>
+    <text x="178" y="32" fill="#B31942">Pack</text>
+  </g>
+  <rect x="220" y="10" width="14" height="14" rx="2" fill="#0A3161"/>
+  <rect x="224" y="14" width="6" height="6" fill="#B31942"/>
+</svg>

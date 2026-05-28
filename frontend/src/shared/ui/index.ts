@@ -9,6 +9,8 @@ export { AIDisclaimerBanner } from './AIDisclaimerBanner';
 export { BetaBanner } from './BetaBanner';
 export type { BetaBannerProps } from './BetaBanner';
 
+export { PartnerLogoBadge } from './PartnerLogoBadge';
+
 export { Input } from './Input';
 export type { InputProps } from './Input';
 

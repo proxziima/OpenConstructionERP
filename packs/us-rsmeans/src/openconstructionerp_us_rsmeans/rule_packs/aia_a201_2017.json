@@ -1,0 +1,17 @@
+{
+  "rule_pack_id": "aia_a201_2017",
+  "name": "AIA A201-2017 General Conditions",
+  "standard": "AIA A201-2017",
+  "jurisdiction": "US",
+  "description": "Enables OCERP built-in validation rules that check tender packs and contract documents for the mandatory AIA A201-2017 General Conditions articles, plus the supporting G702/G703 pay-application schedule.",
+  "enables_rule_ids": [
+    "aia.a201.article_1_general_provisions",
+    "aia.a201.article_3_contractor_present",
+    "aia.a201.article_4_architect_present",
+    "aia.a201.article_7_changes_in_work",
+    "aia.a201.article_9_payments_completion",
+    "aia.a201.article_11_insurance_bonds",
+    "aia.a201.article_15_claims_disputes",
+    "aia.g702_g703_schedule_of_values_balanced"
+  ]
+}

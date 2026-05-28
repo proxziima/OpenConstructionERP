@@ -1,0 +1,67 @@
+# BIMHessen onboarding script
+# Loaded by OnboardingWizard when partner pack "bimhessen-de" is active.
+
+version: 1
+pack: bimhessen-de
+locale: de
+steps:
+  - id: welcome
+    title: "Willkommen bei OCERP × BIMHessen"
+    body: |
+      Diese Installation ist für deutsche BIM-Beratungsbüros vorkonfiguriert.
+      DIN 276, GAEB X83/X86, VOB 2023, ISO 19650 und BKI-Benchmarks sind
+      bereits aktiviert. In wenigen Schritten ist Ihr erstes Projekt startklar.
+    cta: "Los geht's"
+
+  - id: din276
+    title: "DIN 276 Kostengruppen-Hierarchie aktivieren"
+    body: |
+      Aktivieren Sie die DIN 276 Kostengruppen (KG 100–800) als
+      Standard-Klassifikation für alle neuen LV-Positionen. Erforderlich
+      für deutsche Kostenschätzung und Förderprojekte.
+    action: enable_classification
+    params:
+      classification: din_276
+      set_default: true
+
+  - id: gaeb
+    title: "GAEB X83/X86 Import einrichten"
+    body: |
+      Hinterlegen Sie GAEB-Standardvorlagen für Angebotsanforderungen (X83)
+      und Nebenangebote (X86). Importieren Sie Ihre bestehenden LVs direkt
+      aus AVA-Systemen wie California, ORCA AVA oder ARRIBA.
+    action: configure_import
+    params:
+      formats: ["gaeb_x83", "gaeb_x86"]
+
+  - id: iso19650
+    title: "IFC-Modell hochladen (ISO 19650 CDE)"
+    body: |
+      Laden Sie Ihr erstes IFC-Modell in die Common Data Environment.
+      OCERP organisiert Fachmodelle nach ISO 19650 (WIP / Shared /
+      Published / Archived) und vergibt automatisch Versionen.
+    action: open_route
+    params:
+      route: "/bim/federations/new"
+
+  - id: clash
+    title: "Kollisionsprüfung gegen DIN/VOB-Regeln"
+    body: |
+      Starten Sie eine Kollisionsprüfung zwischen Fachmodellen. Ergebnisse
+      werden gegen DIN-Mindestabstände und VOB/C-Klauseln validiert und als
+      BCF 2.1/3.0 für Ihre Planungsbesprechung exportiert.
+    action: open_route
+    params:
+      route: "/bim/clash"
+
+  - id: bki
+    title: "BKI-Benchmarks verbinden"
+    body: |
+      Vergleichen Sie Ihre Kostenschätzungen mit BKI-Kennwerten (Baukosten-
+      informationszentrum). Die Benchmarks sind nach Gebäudetyp, Region und
+      Baujahr kategorisiert und liefern Plausibilitätsindikatoren je KG.
+    action: enable_benchmark_source
+    params:
+      source: bki
+      regions: ["DE-HE", "DE-BE", "DE-BY", "DE-NW"]
+    cta: "Fertigstellen"

@@ -39,7 +39,7 @@ import {
   Activity,
   LayoutGrid,
 } from 'lucide-react';
-import { Card, CardHeader, CardContent, Button, Badge, Skeleton, ActivityFeed as CrossModuleActivityFeed, EmptyState, ModuleHelpButton } from '@/shared/ui';
+import { Card, CardHeader, CardContent, Button, Badge, Skeleton, ActivityFeed as CrossModuleActivityFeed, EmptyState, ModuleHelpButton, PartnerLogoBadge } from '@/shared/ui';
 import { WhatsNewCard } from '@/shared/ui/WhatsNewCard';
 import BIMCoverageCard from './BIMCoverageCard';
 import { CompactProjectCard } from './components/CompactProjectCard';
@@ -2050,6 +2050,10 @@ function DashboardPageInner() {
   return (
     <DashboardRollupProvider>
     <div className="space-y-5 animate-fade-in">
+      {/* Partner co-brand strip — only renders when a partner pack is
+          active (env OE_PARTNER_PACK or first installed). Dismissable
+          per session; reappears on next browser launch. */}
+      <PartnerLogoBadge variant="dashboard" />
       {/* "What's new in vX.Y.Z" release-notes card. Self-gates on a
           localStorage `oe_whats_new_seen_<version>` flag so it only
           appears once per release per browser. Sits above the hero so

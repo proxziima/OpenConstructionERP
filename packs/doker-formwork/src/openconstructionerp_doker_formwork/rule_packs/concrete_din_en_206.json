@@ -1,0 +1,28 @@
+{
+  "$schema": "openconstructionerp.partner_pack.rule_pack/v1",
+  "slug": "concrete_din_en_206",
+  "display_name": "DIN EN 206 — Beton-Spezifikation, Eigenschaften, Herstellung",
+  "description": "Validiert Beton-Spezifikationen gegen DIN EN 206 / DIN 1045-2: Festigkeitsklasse, Expositionsklassen, Konsistenzklasse, Größtkorn, Chloridklasse.",
+  "standard": "DIN EN 206:2021-06 / DIN 1045-2",
+  "severity_default": "error",
+  "category": "compliance",
+  "locale_default": "de",
+  "enables_rule_ids": [
+    "concrete.din_en_206.strength_class_required",
+    "concrete.din_en_206.strength_class_format",
+    "concrete.din_en_206.exposure_classes_required",
+    "concrete.din_en_206.exposure_classes_consistent",
+    "concrete.din_en_206.consistency_class_required",
+    "concrete.din_en_206.max_aggregate_size_set",
+    "concrete.din_en_206.chloride_class_set",
+    "concrete.din_en_206.min_cement_content_for_exposure",
+    "concrete.din_en_206.max_w_c_ratio_for_exposure"
+  ],
+  "metadata": {
+    "applies_to": ["concrete_pour", "ready_mix_order"],
+    "references": [
+      "DIN EN 206:2021-06",
+      "DIN 1045-2:2008-08"
+    ]
+  }
+}

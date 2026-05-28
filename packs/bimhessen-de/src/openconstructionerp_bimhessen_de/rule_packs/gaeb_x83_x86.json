@@ -1,0 +1,21 @@
+{
+  "slug": "gaeb_x83_x86",
+  "name": "GAEB XML X83 / X86",
+  "description": "GAEB DA XML 3.2/3.3 — Angebotsanforderung (X83) und Nebenangebot (X86). Schema, LV-Struktur, Einheitspreise und OZ-Konsistenz.",
+  "standard": "GAEB DA XML",
+  "locale": "de",
+  "enables_rule_ids": [
+    "gaeb.xml_schema_valid",
+    "gaeb.x83_structure",
+    "gaeb.x86_structure",
+    "gaeb.lv_hierarchy_well_formed",
+    "gaeb.oz_format_valid",
+    "gaeb.oz_unique_within_lv",
+    "gaeb.unit_code_iso",
+    "gaeb.einheitspreis_present",
+    "gaeb.einheitspreis_positive",
+    "gaeb.gesamtbetrag_consistency",
+    "gaeb.langtext_present_for_priced_positions",
+    "gaeb.no_orphan_unterleistungspositionen"
+  ]
+}

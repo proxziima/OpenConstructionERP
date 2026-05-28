@@ -1,0 +1,18 @@
+{
+  "rule_pack_id": "masterformat_2018",
+  "name": "CSI MasterFormat 2018 — 50 Division Structure",
+  "standard": "MasterFormat 2018",
+  "jurisdiction": "US",
+  "description": "Enables OCERP built-in validation rules that enforce the CSI MasterFormat 2018 numbering scheme (Division-Section-Subsection), description requirements and Division completeness checks.",
+  "enables_rule_ids": [
+    "masterformat.division_code_valid",
+    "masterformat.section_code_format_valid",
+    "masterformat.subsection_code_format_valid",
+    "masterformat.description_required",
+    "masterformat.uom_imperial_or_metric",
+    "masterformat.division_01_general_requirements_present",
+    "masterformat.division_03_concrete_completeness",
+    "masterformat.division_23_hvac_completeness",
+    "masterformat.division_26_electrical_completeness"
+  ]
+}

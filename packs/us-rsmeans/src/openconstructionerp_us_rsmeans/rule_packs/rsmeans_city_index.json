@@ -1,0 +1,15 @@
+{
+  "rule_pack_id": "rsmeans_city_index",
+  "name": "RSMeans City Cost Index",
+  "standard": "RSMeans CCI",
+  "jurisdiction": "US",
+  "description": "Enables OCERP built-in validation rules that apply the RSMeans City Cost Index to localise national unit prices and flag estimates that diverge from indexed benchmarks.",
+  "enables_rule_ids": [
+    "rsmeans.cci_city_selected",
+    "rsmeans.material_labor_index_applied",
+    "rsmeans.unit_rate_within_indexed_band",
+    "rsmeans.total_cost_within_benchmark_band",
+    "rsmeans.crew_productivity_assumed",
+    "rsmeans.regional_overhead_profit_applied"
+  ]
+}

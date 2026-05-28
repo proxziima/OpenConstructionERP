@@ -1,0 +1,60 @@
+# Doker formwork pack — onboarding wizard
+# Streamed via GET /api/v1/partner-pack/onboarding-script
+# Replaces the default OnboardingWizard step sequence when this pack is active.
+
+version: 1
+pack: doker-formwork
+locale: de
+
+steps:
+  - id: welcome
+    title: "Willkommen bei OCERP × Doker"
+    body: >-
+      Diese Installation ist für Schalungs- und Betonbau-Unternehmen
+      vorkonfiguriert. In den nächsten Schritten richten wir Ihre
+      Schalungsbibliothek ein, aktivieren die DIN 18218 Frischbetondruck-
+      Validierung und importieren Ihre erste Bewehrungs-Take-off.
+    cta: "Los geht's"
+    illustration: "welcome"
+
+  - id: formwork_library
+    title: "Schalungsbibliothek einrichten (Wand/Stütze/Decke/Träger)"
+    body: >-
+      Wählen Sie die Schalungssysteme aus, die Sie verwenden:
+      Wandschalung, Stützenschalung, Deckenschalung und Trägerschalung.
+      Sie können später jederzeit weitere Systeme ergänzen.
+    cta: "Bibliothek aufsetzen"
+    target_route: "/resources?category=formwork"
+    skippable: true
+
+  - id: enable_din18218
+    title: "DIN 18218 Frischbetondruck-Validierung aktivieren"
+    body: >-
+      Die DIN 18218 Validierung prüft den Frischbetondruck gegen die
+      Aufschüttungsgeschwindigkeit und Bauteilgeometrie. Sie wird
+      automatisch bei jedem Schalungs-BOQ-Position ausgeführt.
+    cta: "Validierung aktivieren"
+    target_route: "/validation/rule-packs"
+    enables_rule_packs:
+      - din_18218_formwork_pressure
+      - concrete_din_en_206
+
+  - id: import_rebar_takeoff
+    title: "Bewehrungs-Take-off aus CAD importieren"
+    body: >-
+      Laden Sie eine CAD-Datei (DWG, IFC, RVT) hoch — wir extrahieren
+      Bewehrungspositionen und ordnen sie Ihren BOQ-Sektionen zu.
+      Confidence-Scores zeigen, welche Positionen Sie prüfen sollten.
+    cta: "CAD-Datei hochladen"
+    target_route: "/cad/upload?focus=reinforcement"
+    skippable: true
+
+  - id: apply_cycle_templates
+    title: "Schalungszyklus-Vorlagen anwenden"
+    body: >-
+      Übernehmen Sie unsere vorgefertigten Zyklus-Vorlagen für
+      Wand-, Stützen-, Decken- und Trägerschalung. Diese steuern
+      die Termin- und Ressourcenplanung in Ihren ersten Projekten.
+    cta: "Vorlagen übernehmen"
+    target_route: "/schedule-advanced/templates?pack=doker-formwork"
+    finishes_wizard: true

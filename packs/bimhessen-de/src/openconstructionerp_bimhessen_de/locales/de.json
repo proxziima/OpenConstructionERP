@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "locale": "de",
+    "pack": "bimhessen-de",
+    "scope": "partial-overrides",
+    "note": "BIM-spezifische Terminologie für deutsche Berater — überschreibt Kern-Locale-Schlüssel."
+  },
+  "bim.model": "Modell",
+  "bim.federation": "Föderation",
+  "bim.federated_model": "Föderiertes Modell",
+  "bim.clash_detection": "Kollisionsprüfung",
+  "bim.clash": "Kollision",
+  "bim.quantity_takeoff": "Mengenermittlung",
+  "bim.element": "Bauteil",
+  "bim.element_classification": "Bauteilklassifizierung",
+  "bim.discipline": "Fachmodell",
+  "bim.cde": "Common Data Environment (CDE)",
+  "bim.lod": "Level of Detail (LOD)",
+  "bim.loi": "Level of Information (LOI)",
+  "bim.ifc_import": "IFC-Import",
+  "bim.coordination": "Koordination",
+  "bim.bep": "BIM-Abwicklungsplan (BAP)"
+}

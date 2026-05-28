@@ -1076,6 +1076,21 @@ def create_app() -> FastAPI:
 
     app.include_router(translation_router, prefix="/api/v1")
 
+    # Partner-pack system — discovers pip-installed packs via entry_points
+    # and exposes the active manifest + branded resources.
+    from app.core.partner_pack.router import router as partner_pack_router
+    from app.core.partner_pack.discovery import get_active_pack
+
+    app.include_router(partner_pack_router)
+    _active_pack = get_active_pack()
+    if _active_pack:
+        logger.info(
+            "Partner pack active: %s (%s) v%s",
+            _active_pack.slug,
+            _active_pack.partner_name,
+            _active_pack.pack_version,
+        )
+
     # Store startup time for uptime calculation
     _startup_time: float = time.time()
 

@@ -1,0 +1,18 @@
+{
+  "slug": "csa_a23",
+  "name": "CSA A23 — Concrete Specification",
+  "name_fr-CA": "CSA A23 — Spécification du béton",
+  "description": "Enforces the CSA A23.1/A23.2 concrete specifications on every BOQ position with a concrete cost code: strength class (e.g. C-1, C-2, F-1, F-2, N), exposure class, air-content range, slump and aggregate size must all be specified.",
+  "description_fr-CA": "Applique les spécifications CSA A23.1/A23.2 sur chaque poste BOQ ayant un code de coût « béton » : classe de résistance (p. ex. C-1, C-2, F-1, F-2, N), classe d'exposition, plage de teneur en air, affaissement et calibre du granulat doivent tous être précisés.",
+  "regulator": "CSA Group",
+  "publication_year": 2019,
+  "applies_to": ["boq", "validation"],
+  "severity_overrides": {
+    "boq_quality.material_spec_required": "ERROR"
+  },
+  "enables_rule_ids": [
+    "boq_quality.material_spec_required",
+    "boq_quality.unit_consistency",
+    "boq_quality.no_zero_unit_rate"
+  ]
+}

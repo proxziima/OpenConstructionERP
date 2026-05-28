@@ -1,0 +1,150 @@
+# OCERP × batimatech (Canada) — first-login onboarding script.
+#
+# Replaces the default OnboardingWizard when this partner pack is active.
+# Each step is rendered by the frontend OnboardingWizard component;
+# step `kind` values map to existing wizard step renderers in
+# frontend/src/features/onboarding/.
+#
+# Field reference:
+#   id          — stable step identifier (kebab-case)
+#   kind        — renderer type: intro | form | choice | external_link | summary
+#   title_i18n  — i18next key OR { en, fr-CA, en-CA } literal fallbacks
+#   body_i18n   — same shape as title_i18n
+#   skippable   — user may click "Skip for now"
+#   actions     — optional list of CTA buttons rendered at step bottom
+
+version: 1
+pack: batimatech-ca
+estimated_minutes: 8
+
+steps:
+  - id: welcome
+    kind: intro
+    skippable: false
+    title_i18n:
+      en: "Welcome to OCERP × batimatech"
+      fr-CA: "Bienvenue dans OCERP × batimatech"
+      en-CA: "Welcome to OCERP × batimatech"
+    body_i18n:
+      en: "Your OpenConstructionERP install is pre-configured for the Canadian construction market. Six quick steps and you are ready to estimate."
+      fr-CA: "Votre installation OpenConstructionERP est préconfigurée pour le marché canadien de la construction. Six étapes rapides et vous êtes prêt à estimer."
+      en-CA: "Your OpenConstructionERP install is pre-configured for the Canadian construction market. Six quick steps and you are ready to estimate."
+
+  - id: nbc-2020
+    kind: form
+    skippable: true
+    title_i18n:
+      en: "Set up your project with NBC 2020"
+      fr-CA: "Configurez votre projet selon le CNB 2020"
+      en-CA: "Set up your project with NBC 2020"
+    body_i18n:
+      en: "Pick the National Building Code of Canada 2020 sections most relevant to your trade — these toggle the validation rules that will run on every import."
+      fr-CA: "Sélectionnez les sections du Code national du bâtiment du Canada 2020 pertinentes pour votre métier — elles activent les règles de validation appliquées à chaque importation."
+      en-CA: "Pick the National Building Code of Canada 2020 sections most relevant to your trade — these toggle the validation rules that will run on every import."
+    fields:
+      - key: nbc_part_3_compliance
+        type: checkbox
+        label_en: "Part 3 — Fire protection, occupant safety, accessibility"
+        label_fr-CA: "Partie 3 — Protection incendie, sécurité, accessibilité"
+        default: true
+      - key: nbc_part_4_compliance
+        type: checkbox
+        label_en: "Part 4 — Structural design"
+        label_fr-CA: "Partie 4 — Calcul des structures"
+        default: true
+      - key: nbc_part_9_compliance
+        type: checkbox
+        label_en: "Part 9 — Housing and small buildings"
+        label_fr-CA: "Partie 9 — Maisons et petits bâtiments"
+        default: false
+
+  - id: ccdc-contract
+    kind: choice
+    skippable: true
+    title_i18n:
+      en: "Choose your CCDC contract type"
+      fr-CA: "Choisissez votre type de contrat CCDC"
+      en-CA: "Choose your CCDC contract type"
+    body_i18n:
+      en: "We will pre-fill contract templates, payment milestones and progress draw rules accordingly."
+      fr-CA: "Nous préremplirons les modèles de contrats, les jalons de paiement et les règles de décaissement en conséquence."
+      en-CA: "We will pre-fill contract templates, payment milestones and progress draw rules accordingly."
+    options:
+      - value: ccdc-2
+        label_en: "CCDC 2 — Stipulated Price Contract (lump sum)"
+        label_fr-CA: "CCDC 2 — Contrat à prix forfaitaire"
+        recommended: true
+      - value: ccdc-5a
+        label_en: "CCDC 5A — Construction Management (advisory)"
+        label_fr-CA: "CCDC 5A — Gérance de construction (conseil)"
+      - value: ccdc-14
+        label_en: "CCDC 14 — Design-Build Stipulated Price"
+        label_fr-CA: "CCDC 14 — Conception-construction à prix forfaitaire"
+
+  - id: cwicr-regions
+    kind: choice
+    skippable: false
+    multiple: true
+    title_i18n:
+      en: "Configure CWICR Canada cost regions"
+      fr-CA: "Configurez les régions de coûts CWICR Canada"
+      en-CA: "Configure CWICR Canada cost regions"
+    body_i18n:
+      en: "Pick the regional cost catalogues to preload. Toronto and Montréal are enabled by default."
+      fr-CA: "Sélectionnez les catalogues de coûts régionaux à précharger. Toronto et Montréal sont activés par défaut."
+      en-CA: "Pick the regional cost catalogues to preload. Toronto and Montréal are enabled by default."
+    options:
+      - value: cwicr-eng-toronto
+        label_en: "Toronto, ON (English)"
+        label_fr-CA: "Toronto, ON (anglais)"
+        default: true
+      - value: cwicr-fra-montreal
+        label_en: "Montréal, QC (French)"
+        label_fr-CA: "Montréal, QC (français)"
+        default: true
+      - value: cwicr-eng-vancouver
+        label_en: "Vancouver, BC (English)"
+        label_fr-CA: "Vancouver, BC (anglais)"
+        default: false
+      - value: cwicr-eng-calgary
+        label_en: "Calgary, AB (English)"
+        label_fr-CA: "Calgary, AB (anglais)"
+        default: false
+
+  - id: invite-team
+    kind: form
+    skippable: true
+    title_i18n:
+      en: "Connect your team"
+      fr-CA: "Connectez votre équipe"
+      en-CA: "Connect your team"
+    body_i18n:
+      en: "Add the email addresses of estimators, project managers and field staff who will collaborate on this OCERP instance. You can do this later from Settings → Team."
+      fr-CA: "Ajoutez les courriels des estimateurs, gestionnaires de projet et personnel de chantier qui collaboreront sur cette instance OCERP. Vous pourrez le faire plus tard via Paramètres → Équipe."
+      en-CA: "Add the email addresses of estimators, project managers and field staff who will collaborate on this OCERP instance. You can do this later from Settings → Team."
+    fields:
+      - key: invites
+        type: email_list
+        max: 20
+        placeholder_en: "name@company.ca"
+        placeholder_fr-CA: "nom@entreprise.ca"
+
+  - id: bilingual-mode
+    kind: choice
+    skippable: false
+    title_i18n:
+      en: "Enable bilingual EN-CA / FR-CA mode"
+      fr-CA: "Activez le mode bilingue EN-CA / FR-CA"
+      en-CA: "Enable bilingual EN-CA / FR-CA mode"
+    body_i18n:
+      en: "Required for federal and Québec public-sector tenders. Documents, exports and emails will be generated in both languages."
+      fr-CA: "Requis pour les appels d'offres fédéraux et du secteur public québécois. Les documents, exports et courriels seront générés dans les deux langues."
+      en-CA: "Required for federal and Québec public-sector tenders. Documents, exports and emails will be generated in both languages."
+    options:
+      - value: bilingual_on
+        label_en: "Yes — generate every document in EN-CA and FR-CA"
+        label_fr-CA: "Oui — générer chaque document en EN-CA et FR-CA"
+        recommended: true
+      - value: primary_only
+        label_en: "No — use my default locale only"
+        label_fr-CA: "Non — utiliser uniquement ma langue par défaut"

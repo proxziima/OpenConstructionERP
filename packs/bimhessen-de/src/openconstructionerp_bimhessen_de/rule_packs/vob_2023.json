@@ -1,0 +1,21 @@
+{
+  "slug": "vob_2023",
+  "name": "VOB 2023 Klauseln",
+  "description": "VOB 2023 (Teile A/B/C) — Vergabe- und Vertragsordnung für Bauleistungen. Pflichtklauseln, Fristen und LV-Beschreibungsregeln nach VOB/A §7.",
+  "standard": "VOB 2023",
+  "locale": "de",
+  "enables_rule_ids": [
+    "vob.a_par7_eindeutige_leistungsbeschreibung",
+    "vob.a_par7_erschöpfende_leistungsbeschreibung",
+    "vob.a_par7_no_proprietary_product_names",
+    "vob.a_par9_loslimit_check",
+    "vob.b_par2_nachträge_documented",
+    "vob.b_par5_ausführungsfristen_present",
+    "vob.b_par12_abnahme_clause_present",
+    "vob.b_par13_mängelansprüche_period",
+    "vob.b_par14_abrechnung_method",
+    "vob.b_par16_zahlungsplan_consistent",
+    "vob.c_atv_referenced_per_trade",
+    "vob.sicherheitseinbehalt_within_legal_limit"
+  ]
+}

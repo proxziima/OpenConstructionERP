@@ -1,0 +1,21 @@
+{
+  "slug": "iso_19650_cde",
+  "name": "ISO 19650 Common Data Environment",
+  "description": "ISO 19650-1/-2 — Organisation und Digitalisierung von Informationen zu Bauwerken (BIM). Validiert CDE-Status, Namenskonvention, Container-Metadaten und Freigabe-Workflow.",
+  "standard": "ISO 19650",
+  "locale": "de",
+  "enables_rule_ids": [
+    "iso19650.cde_status_assigned",
+    "iso19650.cde_state_transitions_valid",
+    "iso19650.wip_to_shared_requires_check",
+    "iso19650.shared_to_published_requires_approval",
+    "iso19650.container_naming_convention",
+    "iso19650.suitability_code_present",
+    "iso19650.revision_code_present",
+    "iso19650.classification_uniclass_or_din276",
+    "iso19650.bep_present_per_project",
+    "iso19650.eir_referenced",
+    "iso19650.discipline_code_required",
+    "iso19650.lod_loi_declared_per_model"
+  ]
+}

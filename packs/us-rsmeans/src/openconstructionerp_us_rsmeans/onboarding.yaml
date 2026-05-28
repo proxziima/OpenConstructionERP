@@ -1,0 +1,50 @@
+# US Construction Pack — first-login onboarding wizard.
+# Streamed by /api/v1/partner-pack/onboarding-script and rendered by
+# the OnboardingWizard React component in place of the default steps.
+
+version: 1
+locale: en-US
+title: "Welcome to OpenConstructionERP — US Edition"
+subtitle: "Five quick steps to align your workspace with US practice (MasterFormat, AIA, RSMeans)."
+
+steps:
+  - id: company_profile
+    title: "Company profile"
+    body: "Tell us about your firm so reports, AIA pay-apps and tender documents are correctly attributed."
+    fields:
+      - { key: company_name, label: "Company name", type: text, required: true }
+      - { key: federal_ein, label: "Federal EIN (Tax ID)", type: text, required: false }
+      - { key: state_license_number, label: "State contractor licence #", type: text, required: false }
+      - { key: home_state, label: "Home state", type: select, options: ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC"], required: true }
+
+  - id: classification_standard
+    title: "Cost classification (CSI MasterFormat)"
+    body: "OCERP will structure your BOQs and cost reports against the chosen CSI standard. MasterFormat 2018 (50 Divisions) is the default."
+    fields:
+      - { key: primary_classification, label: "Primary classification", type: radio, options: ["MasterFormat 2018 (50 Divisions)", "UniFormat II (elemental)", "Both (choose per project)"], required: true, default: "MasterFormat 2018 (50 Divisions)" }
+      - { key: enforce_division_completeness, label: "Warn on projects missing common Divisions (01, 03, 09, 23, 26)", type: checkbox, default: true }
+
+  - id: contract_template
+    title: "Default contract template (AIA)"
+    body: "Pre-select your usual AIA contract type. The General Conditions module will scaffold the appropriate documents on every new project."
+    fields:
+      - { key: default_aia_contract, label: "Default AIA contract", type: select, options: ["A101-2017 — Owner-Contractor, Stipulated Sum", "A102-2017 — Owner-Contractor, CM at Risk (GMP)", "A103-2017 — Owner-Contractor, Cost-Plus", "A104-2017 — Owner-Contractor, Small Projects", "A141-2014 — Owner-Design-Builder"], required: true, default: "A101-2017 — Owner-Contractor, Stipulated Sum" }
+      - { key: apply_a201_general_conditions, label: "Apply AIA A201-2017 General Conditions to every project", type: checkbox, default: true }
+      - { key: enable_g702_g703_payapp, label: "Enable G702 / G703 Application & Certificate for Payment templates", type: checkbox, default: true }
+
+  - id: cost_data
+    title: "Cost data — RSMeans city index"
+    body: "Pick the RSMeans city cost indices to load. OCERP will localise national unit costs to your markets automatically."
+    fields:
+      - { key: rsmeans_cities, label: "Cities (CCI)", type: multiselect, options: ["New York, NY", "Los Angeles, CA", "Chicago, IL", "Houston, TX", "Phoenix, AZ", "Philadelphia, PA", "San Antonio, TX", "San Diego, CA", "Dallas, TX", "Boston, MA", "Atlanta, GA", "Seattle, WA"], default: ["New York, NY"], required: true }
+      - { key: rsmeans_subscription, label: "I have an active RSMeans Data Online subscription", type: checkbox, default: false }
+
+  - id: review
+    title: "Review and finish"
+    body: "We will create your first US project workspace with MasterFormat 2018 validation, AIA A201-2017 General Conditions, and RSMeans city indices for your selected markets. You can change everything later in Settings."
+    action:
+      label: "Create my US workspace"
+      apply:
+        - set_default_currency: USD
+        - set_tax_template: us_state_sales_tax
+        - enable_rule_packs: [masterformat_2018, aia_a201_2017, rsmeans_city_index]

@@ -1,0 +1,24 @@
+{
+  "$schema": "openconstructionerp.partner_pack.rule_pack/v1",
+  "slug": "formwork_cycle_quality",
+  "display_name": "Schalungszyklus-Qualität",
+  "description": "Prüft Vollständigkeit und Konsistenz von Schalungszyklus-Planungen: Einschalen, Bewehren, Betonieren, Ausschalen, Nachbehandeln.",
+  "standard": "internal",
+  "severity_default": "warning",
+  "category": "quality",
+  "locale_default": "de",
+  "enables_rule_ids": [
+    "formwork.cycle.shuttering_phase_present",
+    "formwork.cycle.reinforcement_phase_present",
+    "formwork.cycle.pour_phase_present",
+    "formwork.cycle.stripping_phase_present",
+    "formwork.cycle.curing_phase_present",
+    "formwork.cycle.stripping_time_min_24h",
+    "formwork.cycle.props_release_before_strip",
+    "formwork.cycle.no_zero_duration_phase",
+    "formwork.cycle.area_matches_boq_quantity"
+  ],
+  "metadata": {
+    "applies_to": ["wall_formwork", "column_formwork", "slab_formwork", "beam_formwork"]
+  }
+}

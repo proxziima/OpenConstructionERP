@@ -1,0 +1,17 @@
+{
+  "rule_pack_id": "nrm_2_detailed_measurement",
+  "name": "RICS NRM 2 — Detailed Measurement for Building Works",
+  "standard": "NRM 2",
+  "jurisdiction": "GB",
+  "description": "Enables OCERP built-in validation rules that enforce NRM 2 measurement conventions: work-section structure, units of measurement, item descriptions and rules of measurement per trade.",
+  "enables_rule_ids": [
+    "nrm2.work_section_code_valid",
+    "nrm2.unit_of_measurement_allowed",
+    "nrm2.item_description_complete",
+    "nrm2.preliminaries_section_a_present",
+    "nrm2.dayworks_section_present",
+    "nrm2.provisional_sums_flagged",
+    "nrm2.contingency_sum_present",
+    "nrm2.quantity_decimal_precision"
+  ]
+}

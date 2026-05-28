@@ -9,7 +9,7 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { useUploadQueueStore } from '@/stores/useUploadQueueStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useThemeStore } from '@/stores/useThemeStore';
-import { CountryFlag } from '@/shared/ui';
+import { CountryFlag, PartnerLogoBadge } from '@/shared/ui';
 import { NotificationBell } from '@/shared/ui/NotificationBell';
 import { apiGet } from '@/shared/lib/api';
 import {
@@ -99,6 +99,15 @@ export function Header({ title, onMenuClick }: HeaderProps) {
       {/* Soft hairline at the bottom — replaces a hard 1px border for
           a calmer Linear/Vercel-style separation from the page below. */}
       <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
+
+      {/* Partner co-brand chip — absolute-centered so it sits between
+          the left workspace zone and the right action zones without
+          pushing either around. Hidden on small screens (no room). */}
+      <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 hidden md:flex justify-center">
+        <div className="pointer-events-auto">
+          <PartnerLogoBadge variant="nav" />
+        </div>
+      </div>
 
       {/* ── Zone 1 (Workspace): mobile menu + project breadcrumb + title ── */}
       <div className="flex items-center gap-3 min-w-0">

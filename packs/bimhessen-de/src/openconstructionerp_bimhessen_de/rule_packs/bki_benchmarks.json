@@ -1,0 +1,21 @@
+{
+  "slug": "bki_benchmarks",
+  "name": "BKI Baukosten-Benchmarks",
+  "description": "Baukosteninformationszentrum (BKI) Kennwerte — Plausibilitätsprüfung von Kostenschätzungen je KG, Gebäudetyp und Region (€/m² BGF, €/m³ BRI).",
+  "standard": "BKI",
+  "locale": "de",
+  "enables_rule_ids": [
+    "bki.cost_per_m2_bgf_within_range",
+    "bki.cost_per_m3_bri_within_range",
+    "bki.kg300_share_within_typical_range",
+    "bki.kg400_share_within_typical_range",
+    "bki.kg500_share_within_typical_range",
+    "bki.kg700_planungskosten_share_check",
+    "bki.regional_factor_applied",
+    "bki.gebäudetyp_classified",
+    "bki.baujahr_index_applied",
+    "bki.outlier_flag_against_percentile_95",
+    "bki.outlier_flag_against_percentile_5",
+    "bki.benchmark_source_referenced"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "slug": "nbc_2020",
+  "name": "National Building Code of Canada 2020",
+  "name_fr-CA": "Code national du bâtiment du Canada 2020",
+  "description": "Switches on built-in OCERP validation rules relevant to NBC 2020 compliance — structural completeness, fire-protection cost groups, accessibility line items and required submittals.",
+  "description_fr-CA": "Active les règles de validation intégrées d'OCERP pertinentes pour la conformité au CNB 2020 — exhaustivité structurale, groupes de coûts de protection incendie, postes d'accessibilité et soumissions requises.",
+  "regulator": "National Research Council Canada",
+  "publication_year": 2020,
+  "applies_to": ["projects", "boq", "validation"],
+  "severity_overrides": {
+    "boq_quality.no_zero_unit_rate": "ERROR"
+  },
+  "enables_rule_ids": [
+    "din276.cost_group_required",
+    "din276.cost_group_hierarchy",
+    "boq_quality.no_zero_unit_rate",
+    "boq_quality.no_missing_quantity",
+    "boq_quality.no_duplicate_position",
+    "project_completeness.fire_protection_present",
+    "project_completeness.accessibility_present"
+  ]
+}

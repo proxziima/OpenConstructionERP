@@ -1,0 +1,19 @@
+{
+  "slug": "ccdc_2",
+  "name": "CCDC 2 — Stipulated Price Contract",
+  "name_fr-CA": "CCDC 2 — Contrat à prix forfaitaire",
+  "description": "Validates that a project's commercial structure matches the CCDC-2 stipulated price contract: lump-sum total, progress draw schedule, holdback percentage, change-order workflow and bonding requirements are all populated before tender release.",
+  "description_fr-CA": "Vérifie que la structure commerciale du projet correspond au contrat CCDC-2 à prix forfaitaire : prix global, échéancier de décaissement, pourcentage de retenue, processus d'avenant et exigences de cautionnement sont tous renseignés avant la mise en appel d'offres.",
+  "regulator": "Canadian Construction Documents Committee",
+  "publication_year": 2020,
+  "applies_to": ["projects", "boq", "tendering", "validation"],
+  "severity_overrides": {},
+  "enables_rule_ids": [
+    "boq_quality.no_zero_unit_rate",
+    "boq_quality.no_missing_quantity",
+    "boq_quality.totals_match_subtotals",
+    "project_completeness.holdback_configured",
+    "project_completeness.bonding_configured",
+    "project_completeness.change_order_workflow_enabled"
+  ]
+}

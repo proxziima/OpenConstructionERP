@@ -1,0 +1,21 @@
+{
+  "slug": "din_276",
+  "name": "DIN 276 Kostengruppen",
+  "description": "DIN 276:2018-12 — Kosten im Bauwesen. Validiert KG-Hierarchie, vollständige Zuordnung und Pflichtfelder pro Ebene.",
+  "standard": "DIN 276",
+  "locale": "de",
+  "enables_rule_ids": [
+    "din276.cost_group_required",
+    "din276.cost_group_hierarchy_valid",
+    "din276.kg_code_format",
+    "din276.kg100_grundstueck_completeness",
+    "din276.kg200_herrichten_completeness",
+    "din276.kg300_bauwerk_baukonstruktion_completeness",
+    "din276.kg400_bauwerk_technische_anlagen_completeness",
+    "din276.kg500_aussenanlagen_completeness",
+    "din276.kg600_ausstattung_kunstwerke_completeness",
+    "din276.kg700_baunebenkosten_completeness",
+    "din276.level_3_required_for_estimation",
+    "din276.no_orphan_positions"
+  ]
+}

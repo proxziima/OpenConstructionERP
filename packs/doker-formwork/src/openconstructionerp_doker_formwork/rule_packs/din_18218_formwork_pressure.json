@@ -1,0 +1,24 @@
+{
+  "$schema": "openconstructionerp.partner_pack.rule_pack/v1",
+  "slug": "din_18218_formwork_pressure",
+  "display_name": "DIN 18218 — Frischbetondruck auf lotrechte Schalungen",
+  "description": "Validiert den maximalen Frischbetondruck gegen Aufschüttungsgeschwindigkeit, Bauteilhöhe und Betonkonsistenz nach DIN 18218:2010-01.",
+  "standard": "DIN 18218:2010-01",
+  "severity_default": "error",
+  "category": "compliance",
+  "locale_default": "de",
+  "enables_rule_ids": [
+    "formwork.din18218.max_pressure_check",
+    "formwork.din18218.pour_rate_within_bounds",
+    "formwork.din18218.consistency_class_required",
+    "formwork.din18218.element_height_vs_pressure",
+    "formwork.din18218.temperature_factor_applied",
+    "formwork.din18218.formwork_system_capacity_match"
+  ],
+  "metadata": {
+    "applies_to": ["wall_formwork", "column_formwork"],
+    "references": [
+      "DIN 18218:2010-01 Frischbetondruck auf lotrechte Schalungen"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "rule_pack_id": "nrm_1_cost_planning",
+  "name": "RICS NRM 1 — Order of Cost Estimating & Cost Planning",
+  "standard": "NRM 1",
+  "jurisdiction": "GB",
+  "description": "Enables OCERP built-in validation rules that enforce the RICS NRM 1 cost-planning structure (group elements, elements, sub-elements) and the required completeness for stages 0-4.",
+  "enables_rule_ids": [
+    "nrm1.group_element_required",
+    "nrm1.element_hierarchy_valid",
+    "nrm1.sub_element_completeness",
+    "nrm1.preliminaries_present",
+    "nrm1.risk_allowance_present",
+    "nrm1.inflation_allowance_present",
+    "nrm1.location_factor_applied",
+    "nrm1.cost_per_m2_within_bcis_band"
+  ]
+}
