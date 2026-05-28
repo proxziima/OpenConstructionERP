@@ -12,23 +12,34 @@ MANIFEST = PartnerPackManifest(
     slug="uk-jct",
     partner_name="UK Construction Pack",
     partner_url=None,
-    pack_version="0.1.0",
+    pack_version="0.2.0",
     description=(
-        "Pre-configured for UK general contractors — NRM 1 (Cost Planning) + "
-        "NRM 2 (Detailed Measurement), JCT contract suite, BCIS cost benchmarks."
+        "Pre-configured for UK general contractors — RICS NRM 1+2 (2nd ed, 2021) "
+        "with optional NRM 3 maintenance, JCT 2024 contract suite, BCIS cost "
+        "benchmarks, CDM 2015 regulations and Building Safety Act 2022 (HRB) "
+        "compliance."
     ),
     default_locale="en-GB",
-    additional_locales={},
+    additional_locales={
+        "en-GB": "locales/en-GB.json",
+    },
     cwicr_regions=[
-        "cwicr-eng-london",
+        # Only the UK-wide CWICR slug exists in the marketplace today.
+        # Sub-regional (Manchester, Birmingham, Edinburgh) variants are
+        # roadmap items; users can apply BCIS Location Factor in-app
+        # for regional adjustment.
+        "cwicr-uk-gbp",
     ],
     default_currency="GBP",
     default_tax_template="uk_vat_20",
     validation_rule_packs=[
         "nrm_1_cost_planning",
         "nrm_2_detailed_measurement",
-        "jct_contract_clauses",
+        "nrm_3_maintenance",
+        "jct_2024_contract_clauses",
         "bcis_benchmarks",
+        "cdm_2015",
+        "bsa_2022",
     ],
     default_modules=[],   # empty = show all
     hidden_modules=[],
@@ -43,7 +54,26 @@ MANIFEST = PartnerPackManifest(
     metadata={
         "country": "GB",
         "country_name_en": "United Kingdom",
-        "regulator_refs": ["RICS NRM 1", "RICS NRM 2", "JCT 2016", "BCIS"],
+        "regulator_refs": [
+            "RICS NRM 1 (2nd ed, 2021)",
+            "RICS NRM 2 (2nd ed, 2021)",
+            "RICS NRM 3 (2014)",
+            "JCT 2024",
+            "BCIS",
+            "CDM 2015",
+            "Building Safety Act 2022",
+        ],
         "support_email": "info@datadrivenconstruction.io",
+        "regions": [
+            # Aspirational regional CWICR slugs — not yet in marketplace.
+            # When added, the onboarding wizard can preload them per
+            # head-office region selection.
+            "England — London",
+            "England — Manchester",
+            "England — Birmingham",
+            "Scotland — Edinburgh",
+            "Wales — Cardiff",
+            "Northern Ireland — Belfast",
+        ],
     },
 )

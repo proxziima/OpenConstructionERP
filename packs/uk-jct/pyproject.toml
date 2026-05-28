@@ -4,15 +4,25 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openconstructionerp-uk-jct"
-version = "0.1.0"
-description = "Pre-configured partner pack for UK general contractors — NRM 1+2, JCT contract suite, BCIS cost benchmarks."
+version = "0.2.0"
+description = "Pre-configured partner pack for UK general contractors — RICS NRM 1+2+3, JCT 2024 contract suite, BCIS cost benchmarks, CDM 2015, Building Safety Act 2022."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.11"
 authors = [
     { name = "OpenConstructionERP", email = "info@datadrivenconstruction.io" },
 ]
-keywords = ["openconstructionerp", "ocerp", "partner-pack", "uk", "nrm", "jct", "bcis"]
+keywords = [
+    "openconstructionerp",
+    "ocerp",
+    "partner-pack",
+    "uk",
+    "nrm",
+    "jct",
+    "bcis",
+    "cdm",
+    "building-safety-act",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -43,5 +53,6 @@ where = ["src"]
 openconstructionerp_uk_jct = [
     "logo.svg",
     "onboarding.yaml",
+    "locales/*.json",
     "rule_packs/*.json",
 ]

@@ -4,15 +4,30 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openconstructionerp-bimhessen-de"
-version = "0.1.0"
-description = "Pre-configured partner pack for German BIM consultancies — DIN 276, GAEB X83/X86, VOB, ISO 19650, BKI."
+version = "0.2.0"
+description = "Pre-configured partner pack for German BIM consultancies and engineering offices — DIN 276, GAEB X83/X84/X86, VOB/A+B+C, ISO 19650, BKI, HOAI 2021, LV quality."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.11"
 authors = [
     { name = "BIMHessen", email = "contact@bimhessen.de" },
 ]
-keywords = ["openconstructionerp", "ocerp", "partner-pack", "germany", "bim", "din276", "gaeb", "vob", "iso19650", "bki"]
+keywords = [
+    "openconstructionerp",
+    "ocerp",
+    "partner-pack",
+    "germany",
+    "hessen",
+    "bim",
+    "din276",
+    "gaeb",
+    "vob",
+    "iso19650",
+    "bki",
+    "hoai",
+    "leistungsverzeichnis",
+    "lv",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",

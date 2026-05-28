@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openconstructionerp-renewables-epc"
-version = "0.1.0"
-description = "Pre-configured partner pack for solar/wind EPC contractors — PV array takeoff, turbine BOM, MV cable schedules, LCOE templates, IEC 61400 + IEC 61730 compliance."
+version = "0.2.0"
+description = "Pre-configured partner pack for solar / wind / BESS EPC contractors — PV array takeoff, turbine BOM, MV cable schedules, LCOE templates (NREL ATB + LBNL + BNEF), IEC 61400 family (wind), IEC 61215 + IEC 61730 + IEC 62548 (PV), NFPA 855 + IEC 62619 + UL 9540 (BESS), ENTSO-E RfG + UK NGC + IEEE 1547 + FERC 2222 grid compliance."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.11"
 authors = [
     { name = "OpenConstructionERP", email = "info@datadrivenconstruction.io" },
 ]
-keywords = ["openconstructionerp", "ocerp", "partner-pack", "renewables", "solar", "wind", "epc", "iec"]
+keywords = ["openconstructionerp", "ocerp", "partner-pack", "renewables", "solar", "wind", "bess", "epc", "iec", "nfpa-855", "lcoe", "grid-code"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",

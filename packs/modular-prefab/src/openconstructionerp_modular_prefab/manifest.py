@@ -12,11 +12,14 @@ MANIFEST = PartnerPackManifest(
     slug="modular-prefab",
     partner_name="Modular & Prefab Pack",
     partner_url=None,
-    pack_version="0.1.0",
+    pack_version="0.2.0",
     description=(
-        "Pre-configured for modular construction and PMC contractors — "
-        "factory-line scheduling, container takeoff, transport logistics, "
-        "EN 1090 steel + AS 5104 modular building standards."
+        "Pre-configured for modular construction, off-site fabrication and "
+        "PMC contractors — factory-line scheduling, dimensional tolerance "
+        "control, transport logistics (EU + US), inter-module assembly and "
+        "phased handover. Standards: EN 1090, ICC/MBI 1200 + 1205, CSA A277, "
+        "NEN 9090, AS 5104 / ISO 2394 reliability targets, ISO 19650 BIM, "
+        "DfMA principles."
     ),
     default_locale="en",
     additional_locales={},
@@ -28,7 +31,9 @@ MANIFEST = PartnerPackManifest(
     validation_rule_packs=[
         "en_1090_steel",
         "as_5104_modular",
+        "modular_standards",
         "factory_qc_schedule",
+        "factory_qc_tolerances",
         "transport_logistics",
         "module_handover_protocol",
     ],
@@ -45,7 +50,19 @@ MANIFEST = PartnerPackManifest(
     metadata={
         "country": "XX",
         "country_name_en": "Cross-region (Modular & Prefab)",
-        "regulator_refs": ["EN 1090", "AS 5104", "ISO 3834", "EN 1993-1-1"],
+        "regulator_refs": [
+            "EN 1090-1/-2/-3:2011",
+            "ICC/MBI 1200-2021",
+            "ICC/MBI 1205-2021",
+            "CSA A277:2016",
+            "NEN 9090",
+            "AS 5104 / ISO 2394:2015",
+            "ISO 3834 (welding)",
+            "EN 1993-1-1 (Eurocode 3)",
+            "EN 13670 (concrete execution)",
+            "ISO 19650 (BIM information management)",
+            "Buildoffsite DfMA",
+        ],
         "support_email": "info@datadrivenconstruction.io",
     },
 )

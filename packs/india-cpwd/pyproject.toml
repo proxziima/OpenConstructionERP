@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openconstructionerp-india-cpwd"
-version = "0.1.0"
-description = "Pre-configured partner pack for Indian general contractors and PSUs — CPWD specifications, IS codes, DSR rates, GST tax templates."
+version = "0.2.0"
+description = "Pre-configured partner pack for Indian contractors, PSUs and private developers — CPWD Specs 2019 + Works Manual 2019 + DSR 2023, IS-codes bundle (456, 800, 1893, 875, 13920), NBC 2016 + 2024 amendments, RERA 2016, GST + TDS u/s 194C + BOCW labour cess. English + Hindi UI."
 license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.11"
 authors = [
     { name = "OpenConstructionERP", email = "info@datadrivenconstruction.io" },
 ]
-keywords = ["openconstructionerp", "ocerp", "partner-pack", "india", "cpwd", "dsr", "is-codes", "gst"]
+keywords = ["openconstructionerp", "ocerp", "partner-pack", "india", "cpwd", "dsr", "is-codes", "nbc", "rera", "gst", "tds-194c", "labour-cess", "hindi"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
