@@ -54,6 +54,7 @@ import type {
 } from './api';
 import { InlinePdfAnnotator } from './InlinePdfAnnotator';
 import { UnifiedMarkupsList } from './UnifiedMarkupsList';
+import { EditMarkupModal } from './EditMarkupModal';
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
 
@@ -552,13 +553,27 @@ function StatsBar({ summary }: { summary: MarkupsSummary | undefined }) {
 function MarkupDetail({
   markup,
   documentName,
+  onEdit,
 }: {
   markup: Markup;
   documentName?: string;
+  onEdit?: () => void;
 }) {
   const { t } = useTranslation();
   return (
     <div className="px-6 py-3 bg-surface-secondary/40 border-t border-border-light">
+      {onEdit && (
+        <div className="flex items-center justify-end mb-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onEdit}
+            icon={<Edit3 size={13} />}
+          >
+            {t('markups.edit', { defaultValue: 'Edit' })}
+          </Button>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div>
           <p className="text-2xs font-medium text-content-tertiary uppercase tracking-wide mb-0.5">
@@ -619,10 +634,12 @@ function MarkupGridCard({
   markup,
   onChangeStatus,
   onDelete,
+  onEdit,
 }: {
   markup: Markup;
   onChangeStatus: (status: MarkupStatus) => void;
   onDelete: () => void;
+  onEdit: () => void;
 }) {
   const { t } = useTranslation();
   const Icon = TYPE_ICONS[markup.type] ?? PenTool;
@@ -686,6 +703,13 @@ function MarkupGridCard({
       <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-border-light/50">
         <span className="text-2xs text-content-tertiary">{formattedDate}</span>
         <div className="flex items-center gap-0.5">
+          <button
+            onClick={onEdit}
+            title={t('markups.edit', { defaultValue: 'Edit' })}
+            className="p-1 rounded hover:bg-surface-secondary text-content-tertiary hover:text-oe-blue transition-colors"
+          >
+            <Edit3 size={13} />
+          </button>
           {markup.status === 'active' && (
             <button
               onClick={() => onChangeStatus('resolved')}
@@ -725,6 +749,7 @@ function MarkupTableRow({
   onToggleExpand,
   onChangeStatus,
   onDelete,
+  onEdit,
   documentName,
 }: {
   markup: Markup;
@@ -732,6 +757,7 @@ function MarkupTableRow({
   onToggleExpand: () => void;
   onChangeStatus: (status: MarkupStatus) => void;
   onDelete: () => void;
+  onEdit: () => void;
   documentName?: string;
 }) {
   const { t } = useTranslation();
@@ -821,6 +847,13 @@ function MarkupTableRow({
             className="flex items-center justify-end gap-0.5"
             onClick={(e) => e.stopPropagation()}
           >
+            <button
+              onClick={onEdit}
+              title={t('markups.edit', { defaultValue: 'Edit' })}
+              className="p-1 rounded hover:bg-surface-secondary text-content-tertiary hover:text-oe-blue transition-colors"
+            >
+              <Edit3 size={14} />
+            </button>
             {markup.status === 'active' && (
               <button
                 onClick={() => onChangeStatus('resolved')}
@@ -836,7 +869,7 @@ function MarkupTableRow({
                 title={t('markups.action_archive', { defaultValue: 'Archive' })}
                 className="p-1 rounded hover:bg-surface-secondary text-content-tertiary transition-colors"
               >
-                <Edit3 size={14} />
+                <Check size={14} />
               </button>
             )}
             <button
@@ -852,7 +885,7 @@ function MarkupTableRow({
       {isExpanded && (
         <tr>
           <td colSpan={8}>
-            <MarkupDetail markup={markup} documentName={documentName} />
+            <MarkupDetail markup={markup} documentName={documentName} onEdit={onEdit} />
           </td>
         </tr>
       )}
@@ -879,6 +912,7 @@ export function MarkupsPage() {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [showAddModal, setShowAddModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [editTarget, setEditTarget] = useState<Markup | null>(null);
   const [annotateDocId, setAnnotateDocId] = useState<string | null>(null);
   const [annotateStamp, setAnnotateStamp] = useState<string | undefined>(undefined);
   const [showCustomStampForm, setShowCustomStampForm] = useState(false);
@@ -1469,6 +1503,7 @@ export function MarkupsPage() {
                             statusMut.mutate({ id: markup.id, status })
                           }
                           onDelete={() => setDeleteTarget(markup.id)}
+                          onEdit={() => setEditTarget(markup)}
                         />
                       ))}
                     </tbody>
@@ -1486,6 +1521,7 @@ export function MarkupsPage() {
                       statusMut.mutate({ id: markup.id, status })
                     }
                     onDelete={() => setDeleteTarget(markup.id)}
+                    onEdit={() => setEditTarget(markup)}
                   />
                 ))}
               </div>
@@ -1548,6 +1584,15 @@ export function MarkupsPage() {
         projectId={projectId}
         documents={documents}
         onCreated={invalidateAll}
+      />
+
+      {/* ── Edit Markup Modal ──────────────────────────────────────────── */}
+      <EditMarkupModal
+        open={editTarget !== null}
+        markup={editTarget}
+        projectId={projectId}
+        onClose={() => setEditTarget(null)}
+        onUpdated={invalidateAll}
       />
 
       {/* ── Custom Stamp Form ──────────────────────────────────────────── */}
