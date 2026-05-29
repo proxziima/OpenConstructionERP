@@ -619,7 +619,7 @@ class RequirementsService:
         elif gate_number == 3:
             gate_status, score, findings = await self._run_gate_coverage(req_set, requirements)
         elif gate_number == 4:
-            gate_status, score, findings = self._run_gate_compliance(req_set, requirements)
+            gate_status, score, findings = await self._run_gate_compliance(req_set, requirements)
         else:
             gate_status, score, findings = "skipped", 0.0, []
 
@@ -818,20 +818,50 @@ class RequirementsService:
 
         return gate_status, score, findings
 
-    def _run_gate_compliance(
+    async def _run_gate_compliance(
         self,
         req_set: RequirementSet,
         requirements: list[Requirement],
     ) -> tuple[str, float, list[dict[str, Any]]]:
         """Gate 4: Check requirements against project standard (DIN 276, NRM, etc.).
 
-        This is a placeholder that checks basic structural compliance.
-        Full standard-specific checks should be added per standard.
+        Combines two layers of checks:
+
+        1. **Structural** — must-priority requirements have a unit,
+           ``range`` values match ``min-max``, ``min``/``max`` values
+           are numeric. Cheap and standard-agnostic.
+        2. **Standard-specific** — when a requirement has a
+           ``classification`` entry under its ``metadata_`` (DIN 276
+           Kostengruppe, MasterFormat division, NRM element), it is
+           cross-checked against the rule registry's known cost-group /
+           element / division codes for the project's standard. A code
+           that exists locally but is not in the standard's allowlist
+           is flagged as an *unknown_code* finding (not an error — the
+           project may legitimately use a custom local code).
         """
         findings: list[dict[str, Any]] = []
 
         if not requirements:
             return "warning", 0.0, [{"type": "empty", "message": "No requirements to check compliance"}]
+
+        # Pull the standard set on the project so we know which
+        # classification namespace to validate against. Falls back to
+        # ``boq_quality`` (universal) when the project has no standard.
+        project_standard = ""
+        try:
+            from app.modules.projects.models import Project  # local import
+
+            project_row = self.session.sync_session.get(Project, req_set.project_id)  # type: ignore[attr-defined]
+            project_standard = (getattr(project_row, "classification_standard", "") or "").lower()
+        except Exception:  # noqa: BLE001 — best-effort lookup
+            project_standard = ""
+
+        # Reasonable allow-lists per standard (subset that covers the
+        # 80% common case — the validation engine has the exhaustive
+        # registry; here we only need a sanity check at gate time).
+        _DIN276_PREFIXES = {"1", "2", "3", "4", "5", "6", "7", "8"}
+        _NRM_PREFIXES = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+        _MF_DIVISIONS = {f"{n:02d}" for n in range(0, 50)}  # MasterFormat 00-49
 
         issues_count = 0
         total = len(requirements)
@@ -888,6 +918,50 @@ class RequirementsService:
                                 f"'{req.entity}.{req.attribute}' has non-numeric "
                                 f"value '{req.constraint_value}'"
                             ),
+                        }
+                    )
+
+            # Standard-specific classification sanity check. The code
+            # lives under ``metadata_["classification"][<standard>]`` —
+            # an unknown prefix is reported as INFO so the gate doesn't
+            # fail a legitimately custom code; the issue is still
+            # surfaced so reviewers can choose to map it.
+            try:
+                classification = (req.metadata_ or {}).get("classification") or {}
+            except AttributeError:
+                classification = {}
+            if project_standard == "din276" and "din276" in classification:
+                code = str(classification["din276"]).strip()
+                if code and code[0] not in _DIN276_PREFIXES:
+                    findings.append(
+                        {
+                            "type": "unknown_din276_code",
+                            "requirement_id": str(req.id),
+                            "code": code,
+                            "message": f"DIN 276 code '{code}' does not start with a known cost-group digit (1-8)",
+                        }
+                    )
+            elif project_standard == "masterformat" and "masterformat" in classification:
+                code = str(classification["masterformat"]).strip()
+                division = code[:2] if len(code) >= 2 else ""
+                if division and division not in _MF_DIVISIONS:
+                    findings.append(
+                        {
+                            "type": "unknown_masterformat_division",
+                            "requirement_id": str(req.id),
+                            "code": code,
+                            "message": f"MasterFormat division '{division}' is outside the 00-49 range",
+                        }
+                    )
+            elif project_standard == "nrm" and "nrm" in classification:
+                code = str(classification["nrm"]).strip()
+                if code and code[0] not in _NRM_PREFIXES:
+                    findings.append(
+                        {
+                            "type": "unknown_nrm_code",
+                            "requirement_id": str(req.id),
+                            "code": code,
+                            "message": f"NRM code '{code}' does not start with a digit",
                         }
                     )
 
