@@ -63,7 +63,7 @@ processes per batch, and aggregates results into the run directory.
 
 ### 1.2 Sub-agent topology (recommended)
 
-Hand each batch to its own Claude Code agent worktree. The orchestrator
+Hand each batch to its own agent worktree. The orchestrator
 agent:
 
 1. Reads `test_plan_manifest.json`.
