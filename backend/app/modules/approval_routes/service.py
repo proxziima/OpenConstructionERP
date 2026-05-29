@@ -35,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit_log import log_activity
+from app.core.events import event_bus
 from app.modules.approval_routes.models import (
     INSTANCE_STATUSES,
     STEP_MODES,
@@ -69,6 +70,21 @@ def _validate_step_mode(mode: str) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unknown step mode: {mode!r}",
         )
+
+
+def _safe_publish(name: str, data: dict[str, object]) -> None:
+    """Fire-and-forget a lifecycle event without coupling to consumers.
+
+    Detached so a subscriber that opens its own session (variations,
+    changeorders, contracts reacting to a terminal decision) can't
+    deadlock the request transaction under SQLite's single-writer lock.
+    Any failure to schedule is swallowed at debug — emitting an event
+    must never break the workflow transition that produced it.
+    """
+    try:
+        event_bus.publish_detached(name, data, source_module="approval_routes")
+    except Exception:  # pragma: no cover - defensive, e.g. no running loop
+        logger.debug("approval_routes event publish skipped: %s", name)
 
 
 class ApprovalRouteService:
@@ -341,6 +357,17 @@ class ApprovalRouteService:
                 "step_count": len(steps),
             },
         )
+        _safe_publish(
+            "approval_routes.instance.started",
+            {
+                "instance_id": str(instance.id),
+                "route_id": str(route.id),
+                "target_kind": payload.target_kind,
+                "target_id": str(payload.target_id),
+                "step_count": len(steps),
+                "status": "pending",
+            },
+        )
         return instance
 
     async def submit_decision(
@@ -438,21 +465,48 @@ class ApprovalRouteService:
         previous_status = instance.status
         previous_ordinal = instance.current_step_ordinal
 
+        # Lifecycle events to fan out once the transition is durable. The
+        # payload snapshots enough context (target_kind + target_id) for a
+        # consumer subscriber to locate the row without re-querying us.
+        events_to_fire: list[tuple[str, dict[str, object]]] = []
+        base_event = {
+            "instance_id": str(instance.id),
+            "route_id": str(instance.route_id),
+            "target_kind": instance.target_kind,
+            "target_id": str(instance.target_id),
+            "decision": payload.decision,
+            "step_id": str(step.id),
+            "step_ordinal": step.ordinal,
+        }
+
         if payload.decision == "rejected":
             instance.status = "rejected"
             instance.completed_at = now
+            events_to_fire.append(
+                ("approval_routes.instance.rejected", {**base_event, "status": "rejected"})
+            )
         else:
             advanced = await self._maybe_advance(instance, step)
             if advanced is None:
-                # Step still pending — need more approvals.
+                # Step still pending — need more approvals. No lifecycle event.
                 pass
             elif advanced is True:
-                # All steps cleared.
+                # All steps cleared — the clearing step both advanced the
+                # cursor and finished the chain, so both events fire.
                 instance.status = "approved"
                 instance.completed_at = now
+                events_to_fire.append(
+                    ("approval_routes.instance.advanced", {**base_event, "status": "pending"})
+                )
+                events_to_fire.append(
+                    ("approval_routes.instance.completed", {**base_event, "status": "approved"})
+                )
             else:
                 # Move to next step.
                 instance.current_step_ordinal = step.ordinal + 1
+                events_to_fire.append(
+                    ("approval_routes.instance.advanced", {**base_event, "status": "pending"})
+                )
 
         await self.session.flush()
         await self.session.refresh(instance)
@@ -476,6 +530,8 @@ class ApprovalRouteService:
                 "target_id": str(instance.target_id),
             },
         )
+        for event_name, event_data in events_to_fire:
+            _safe_publish(event_name, event_data)
         return instance
 
     async def cancel_instance(
@@ -510,6 +566,17 @@ class ApprovalRouteService:
             metadata={
                 "target_kind": instance.target_kind,
                 "target_id": str(instance.target_id),
+            },
+        )
+        _safe_publish(
+            "approval_routes.instance.cancelled",
+            {
+                "instance_id": str(instance.id),
+                "route_id": str(instance.route_id),
+                "target_kind": instance.target_kind,
+                "target_id": str(instance.target_id),
+                "reason": reason,
+                "status": "cancelled",
             },
         )
         return instance
