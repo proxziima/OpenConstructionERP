@@ -197,6 +197,14 @@ def create_engine_from_settings():
         # slow-query listeners share the same symbols.
         @sa_event.listens_for(Engine, "connect")
         def _set_sqlite_pragma(dbapi_conn: object, _: object) -> None:
+            # This listener is bound to the ``Engine`` base class, so it fires
+            # for EVERY engine created in this process — including a PostgreSQL
+            # engine if one is ever created after this SQLite engine (e.g. the
+            # embedded-PG test lane, or a mixed-dialect tool run). Sending
+            # ``PRAGMA`` to PostgreSQL is a syntax error, so gate on the actual
+            # DBAPI module of the connection rather than the registering URL.
+            if "sqlite" not in (type(dbapi_conn).__module__ or ""):
+                return
             cursor = dbapi_conn.cursor()  # type: ignore[union-attr]
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA busy_timeout=30000")

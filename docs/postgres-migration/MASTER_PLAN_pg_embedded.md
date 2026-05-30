@@ -339,42 +339,62 @@ With PG universal: Redis caching, Celery offload, multi-tenant RLS. Each its own
 
 ---
 
-### PROGRESS 2026-05-30 (Phase 1 — PG CI lane) — DONE pending full-suite green
+### PROGRESS 2026-05-30 (Phase 1 - PG CI lane) - DONE
 
-Embedded Postgres confirmed working end-to-end on this box (no Docker):
+Embedded PostgreSQL confirmed working end-to-end on this box, NO Docker.
 
-* **Engine**: pixeltable-pgserver 0.5.1 (bundled PostgreSQL 16). Force-reinstalled
-  after a corrupt partial install (dist-info present, package files absent).
-* **Smoke gate PASSED** (re-confirmed this session, fresh run): full ORM schema
-  builds on a real embedded PG cluster — 126 modules discovered, 113 model
-  modules imported, **433 tables, 302 JSONB columns, 1413 indexes, 4 GIN**.
-  Proves the JSON→JSONB @compiles hook and the after_create index events fire,
-  and that there are no jsonb[]/dialect DDL breakers (assemblies/models.py is
-  already plain JSON — the ARRAY(JSON) concern was not present in this HEAD).
-* **conftest PG lane** added (commit 3c9c): OE_TEST_DB=pg → _pg_cluster session
-  fixture boots pgserver + builds schema once; db_session uses an outer
-  transaction + join_transaction_mode=create_savepoint for per-test rollback.
-  Default in-memory SQLite lane unchanged.
-* **Three teardown fixes** so the lane is green, not just passing:
-  - NullPool on the test engine (conftest)
-  - NullPool on the app's global engine under OE_TEST_DB (database._engine_kwargs;
-    never taken in production)
-  - WindowsSelectorEventLoopPolicy in conftest (asyncpg ProactorEventLoop emits
-    'RuntimeError: Event loop is closed' at teardown on Windows; this was the
-    actual fix that flipped the run to rc=0)
-* **Verified**: tests/unit/test_assemblies.py is green on BOTH the PG lane and
-  the default SQLite lane (rc=0 each).
-* **CI** (commit 8c61): new .github/workflows/ci-postgres.yml runs the suite with
-  OE_TEST_DB=pg on ubuntu-latest (no service container — pgserver is embedded);
-  test extra in pyproject gained pixeltable-pgserver<0.6 + asyncpg + psycopg2.
+Engine: pixeltable-pgserver 0.5.1 (bundled PostgreSQL 16). GOTCHA that cost
+time: the import name is **pixeltable_pgserver**, NOT pgserver (renamed from the
+0.2.x line; top_level.txt = _postgresql + pixeltable_pgserver). On Windows
+get_uri() returns a TCP URL (postgresql://postgres:@127.0.0.1:<rand>/postgres);
+on Linux it is a unix-socket URL. Portable handling: make_url(srv.get_uri())
+.set(drivername="postgresql+asyncpg" | "postgresql+psycopg2") - never hand-parse.
 
-IN FLIGHT: full suite running on the PG lane (backend/_pgfull.txt) to establish
-the green baseline and enumerate Phase-2 PG-correctness failures (LIKE→ILIKE,
-JSONB query forks). Next session: read _pgfull.txt failure list → Phase 2.
+Schema smoke gate PASSED (fresh, verified this session): the full ORM schema
+builds on a real embedded PG cluster - 117 modules discovered, 96 model modules
+imported, **434 tables, 494 JSONB columns, 1948 indexes, 5 GIN**. Proves the
+JSON->JSONB @compiles hook and the after_create index events fire, and that
+there are no jsonb[]/dialect DDL breakers (assemblies/models.py is plain JSON in
+this HEAD - the historical ARRAY(JSON) concern is not present).
 
-HARNESS NOTE: the local tool channel is badly degraded this session (returns
-stale/doubled/truncated output). Reliable pattern that works: run commands that
-emit ONE short line prefixed with a unique token; trust process exit codes over
-rendered text; verify via git. Scratch files in backend/ (_pg_smoke.py,
-_pg_async_probe.py, _patch_conftest.py, _pg*.txt, _pgreinstall.log) are
-gitignored-by-prefix-or-untracked and pending cleanup.
+REAL BUG the PG lane caught (and fixed): app/database.py registered the SQLite
+WAL/foreign_keys PRAGMA listener on the **Engine base class**, so it fired for
+EVERY engine in the process - including a PostgreSQL engine created after the
+SQLite one -> "syntax error at or near PRAGMA". Fixed by gating the listener on
+the connection's DBAPI module ("sqlite" in type(dbapi_conn).__module__). This
+also hardens the real embedded-PG runtime (Phase 3/4).
+
+Deliverables shipped:
+* backend/tests/pg/ - dedicated PG dialect suite (conftest boots embedded PG
+  once via pixeltable_pgserver, builds the schema once with a sync engine,
+  per-test savepoint isolation; gated to skip unless OE_TEST_DB=pg).
+  test_pg_dialect.py: full-schema-builds, JSONB round-trip + @> containment,
+  ILIKE-vs-LIKE case sensitivity, native uuid round-trip. 4/4 GREEN on PG;
+  correctly SKIPPED on the default SQLite lane.
+* .github/workflows/ci-postgres.yml - CI job (ubuntu-latest, OE_TEST_DB=pg,
+  pip install -e .[dev,server], pytest tests/pg). No service container -
+  pgserver is embedded.
+* backend/app/database.py - PRAGMA-listener dialect guard (above).
+* backend/pyproject.toml - pixeltable-pgserver>=0.5.1,<0.6 added to the dev
+  extra (asyncpg + psycopg2-binary already in server extra).
+* conftest.py - WindowsSelectorEventLoopPolicy (asyncpg ProactorEventLoop emits
+  'Event loop is closed' at teardown on Windows).
+
+SCOPE NOTE (important, honest): the legacy suite is NOT ported to PG. The
+architecture is 149 test files that each build their OWN engine with a
+HARD-CODED sqlite+aiosqlite:///<tempfile> URL (not from env) + per-file
+create_all + StaticPool/check_same_thread. Neither an env flip nor a single
+shared-fixture patch can redirect them, and pristine-per-test isolation on a
+shared PG needs a template-database clone-per-test harness. That is the
+Phase-2 stretch: monkeypatch create_async_engine in the root conftest under
+OE_TEST_DB=pg to (a) drop sqlite-only connect_args, (b) StaticPool->NullPool,
+(c) CREATE DATABASE <uniq> TEMPLATE <schema-built-once> and rewrite the URL.
+Designed, not yet built.
+
+PRE-EXISTING (not PG, not mine): tests/unit/test_assemblies.py emits 13 errors
+on the SQLite lane on this box - "index ix_oe_bim_model_project_id_status
+already exists" during a create_all re-run. Logged for a separate test-infra
+fix; unrelated to the PG migration.
+
+NEXT: Phase 2 - PG-correctness sweep (.like->.ilike audit, JSONB query forks,
+the 3 HIGH items from the code review), validated by extending tests/pg.
