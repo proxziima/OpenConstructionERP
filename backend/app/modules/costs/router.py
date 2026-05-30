@@ -98,6 +98,7 @@ logger = logging.getLogger(__name__)
 
 from app.core.sql_json import json_path_text
 
+
 class CertaintyBatchRequest(BaseModel):
     """Request body for ``POST /v1/costs/certainty/batch``.
 
@@ -3175,14 +3176,21 @@ async def load_cwicr_database(
     logger.info("Raw data: %d rows", total_rows)
 
     from app.config import get_settings
+    from app.database import _is_sqlite
 
     settings = get_settings()
-    sqlite_url = settings.database_url
-    db_file = sqlite_url.split("///")[-1] if "///" in sqlite_url else "openestimate.db"
+    # Dialect-aware target resolution. On SQLite we keep the fast raw-sqlite3
+    # bulk-load path (single transaction + PRAGMAs). On PostgreSQL we must NOT
+    # open a stray local ``openestimate.db`` — the worker uses a short-lived
+    # sync SQLAlchemy engine built from ``database_sync_url`` instead.
+    if _is_sqlite(settings.database_url):
+        target = settings.database_url.split("///")[-1] if "///" in settings.database_url else "openestimate.db"
+    else:
+        target = settings.database_sync_url
 
-    # Run in thread to avoid blocking the event loop during heavy pandas + sqlite work.
+    # Run in thread to avoid blocking the event loop during heavy pandas + DB work.
     try:
-        result_data = await asyncio.to_thread(_process_and_insert_cwicr, str(cwicr_path), db_id, db_file)
+        result_data = await asyncio.to_thread(_process_and_insert_cwicr, str(cwicr_path), db_id, target)
     except Exception:
         logger.exception("CWICR import failed for %s", db_id)
         raise HTTPException(
@@ -3233,11 +3241,98 @@ async def load_cwicr_database(
     return result_data
 
 
-def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> dict[str, Any]:
-    """Process CWICR parquet + insert into SQLite. Runs in a SEPARATE PROCESS.
+def _pg_bulk_insert_cost_rows(sync_url: str, rows: list[tuple]) -> int:
+    """Bulk-insert CWICR cost rows into PostgreSQL, idempotent on (code, region).
 
-    Uses vectorized pandas (no iterrows!) + micro-batch SQLite inserts.
-    Completely bypasses GIL — the main process event loop stays responsive.
+    Mirrors the SQLite ``INSERT OR IGNORE`` fast path: duplicate codes per
+    region are silently skipped via ``ON CONFLICT (code, region) DO NOTHING``
+    against the ``uq_costs_code_region`` unique constraint. Runs on a short-
+    lived sync SQLAlchemy engine built from ``database_sync_url`` so the import
+    writes to the real PostgreSQL database (never a stray local SQLite file).
+
+    Args:
+        sync_url: Sync SQLAlchemy URL (e.g. ``postgresql+psycopg2://...``).
+        rows: Positional tuples in the SQLite column order
+            ``(id, code, description, unit, rate, currency, source,
+            classification, tags, components, descriptions, is_active,
+            region, metadata)``. JSON columns are pre-serialized strings and
+            are decoded back to Python objects so the JSONB columns store
+            structured values rather than double-encoded text.
+
+    Returns:
+        Number of rows actually inserted (conflicts excluded).
+    """
+    import json as _json
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    if not rows:
+        return 0
+
+    table = CostItem.__table__
+    cols = (
+        "id",
+        "code",
+        "description",
+        "unit",
+        "rate",
+        "currency",
+        "source",
+        "classification",
+        "tags",
+        "components",
+        "descriptions",
+        "is_active",
+        "region",
+        "metadata",
+    )
+    json_obj_cols = {"classification", "descriptions", "metadata"}
+    json_arr_cols = {"tags", "components"}
+
+    def _to_mapping(row: tuple) -> dict[str, Any]:
+        mapping: dict[str, Any] = {}
+        for key, value in zip(cols, row, strict=True):
+            if key in json_obj_cols and isinstance(value, str):
+                try:
+                    value = _json.loads(value)
+                except (ValueError, TypeError):
+                    value = {}
+            elif key in json_arr_cols and isinstance(value, str):
+                try:
+                    value = _json.loads(value)
+                except (ValueError, TypeError):
+                    value = []
+            elif key == "is_active":
+                value = bool(value)
+            mapping[key] = value
+        return mapping
+
+    engine = create_engine(sync_url, pool_pre_ping=True)
+    inserted = 0
+    batch_size = 1000
+    try:
+        with engine.begin() as connection:
+            for i in range(0, len(rows), batch_size):
+                chunk = [_to_mapping(r) for r in rows[i : i + batch_size]]
+                stmt = pg_insert(table).values(chunk).on_conflict_do_nothing(index_elements=["code", "region"])
+                result = connection.execute(stmt)
+                # rowcount excludes conflict-skipped rows on PostgreSQL.
+                if result.rowcount is not None and result.rowcount >= 0:
+                    inserted += result.rowcount
+    finally:
+        engine.dispose()
+    return inserted
+
+
+def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> dict[str, Any]:
+    """Process CWICR parquet + insert into SQLite or PostgreSQL. Runs in a thread.
+
+    Uses vectorized pandas (no iterrows!) + a single-transaction bulk load.
+    On SQLite this is a raw-sqlite3 ``INSERT OR IGNORE`` fast path; on
+    PostgreSQL it delegates to ``_pg_bulk_insert_cost_rows`` (ON CONFLICT DO
+    NOTHING). ``db_file`` carries a SQLite file path on a SQLite deployment and
+    a sync SQLAlchemy URL on a PostgreSQL deployment.
     """
     import json as _json
     import logging
@@ -3246,6 +3341,8 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
     import time
 
     import pandas as pd
+
+    from app.database import _is_sqlite
 
     _log = logging.getLogger("cwicr_import")
     start = time.monotonic()
@@ -3598,18 +3695,27 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
 
         _log.info("Built resources for %d rate_codes in %.1fs", len(resources_by_code), time.monotonic() - start)
 
-    # 5. Open SQLite with aggressive write tuning — single transaction, no
-    # per-batch commits. Empirically: micro-batch commits were the bottleneck
-    # (275 fsyncs × ~250ms = ~70s). One big transaction + synchronous=NORMAL
-    # brings insert phase from ~70s down to ~3-5s for 55K rows.
-    # isolation_level=None → we manage BEGIN/COMMIT manually (no auto-begin
-    # from the sqlite3 driver that could conflict with our transaction).
-    conn = sqlite3.connect(db_file, timeout=60, isolation_level=None)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=30000")
-    conn.execute("PRAGMA temp_store=MEMORY")
-    conn.execute("PRAGMA cache_size=-20000")  # 20 MB cache
+    # 5. Open the target DB. ``db_file`` carries a SQLite file path on a
+    # SQLite deployment and a sync SQLAlchemy URL (postgresql://...) on a
+    # PostgreSQL deployment — see the dialect branch in the caller. We keep
+    # the fast raw-sqlite3 single-transaction path for SQLite and fall back to
+    # a SQLAlchemy ON CONFLICT DO NOTHING bulk insert for PostgreSQL.
+    use_sqlite = _is_sqlite(db_file)
+
+    conn = None
+    if use_sqlite:
+        # Aggressive write tuning — single transaction, no per-batch commits.
+        # Empirically: micro-batch commits were the bottleneck (275 fsyncs ×
+        # ~250ms = ~70s). One big transaction + synchronous=NORMAL brings the
+        # insert phase from ~70s down to ~3-5s for 55K rows.
+        # isolation_level=None → we manage BEGIN/COMMIT manually (no auto-begin
+        # from the sqlite3 driver that could conflict with our transaction).
+        conn = sqlite3.connect(db_file, timeout=60, isolation_level=None)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA cache_size=-20000")  # 20 MB cache
 
     sql = """INSERT OR IGNORE INTO oe_costs_item
         (id, code, description, unit, rate, currency, source,
@@ -3619,10 +3725,12 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
 
     imported = 0
     skipped_count = 0
-    # Bigger chunk and only ONE commit at the end
+    # Bigger chunk and only ONE commit at the end (SQLite). On PostgreSQL we
+    # accumulate every row and hand the whole list to the PG bulk helper.
     flush_every = 5000
     batch: list[tuple] = []
-    conn.execute("BEGIN IMMEDIATE")
+    if conn is not None:
+        conn.execute("BEGIN IMMEDIATE")
 
     for rate_code, row in grouped.iterrows():
         desc = _safe_str(row.get("_desc", ""))
@@ -3741,18 +3849,24 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
             )
         )
 
-        if len(batch) >= flush_every:
+        if conn is not None and len(batch) >= flush_every:
             conn.executemany(sql, batch)
             imported += len(batch)
             batch.clear()
 
-    # Final chunk (still inside the BEGIN)
-    if batch:
-        conn.executemany(sql, batch)
-        imported += len(batch)
+    if conn is not None:
+        # Final chunk (still inside the BEGIN)
+        if batch:
+            conn.executemany(sql, batch)
+            imported += len(batch)
+        conn.execute("COMMIT")  # single commit — one fsync for the whole import
+        conn.close()
+    else:
+        # PostgreSQL: idempotent bulk insert via ON CONFLICT (code, region)
+        # DO NOTHING, batched inside a transaction. ``batch`` holds every row
+        # because the per-loop flush above is gated on the SQLite connection.
+        imported = _pg_bulk_insert_cost_rows(db_file, batch)
 
-    conn.execute("COMMIT")  # single commit — one fsync for the whole import
-    conn.close()
     elapsed = round(time.monotonic() - start, 1)
     _log.info("CWICR %s: %d imported, %d skipped in %.1fs", db_id, imported, skipped_count, elapsed)
 
@@ -3961,20 +4075,49 @@ def _bulk_insert_costs_sync(db_path: str, items: list[dict]) -> int:
 
 
 async def _bulk_insert_costs(session: AsyncSession, items: list[dict]) -> int:
-    """Async wrapper: runs bulk insert in a thread with its own SQLite connection."""
+    """Async wrapper: runs the dialect-correct bulk insert in a worker thread.
+
+    On SQLite this opens its own raw-sqlite3 connection (so it never blocks the
+    async session pool). On PostgreSQL it routes to the ON CONFLICT DO NOTHING
+    bulk helper on a short-lived sync engine — never a stray local SQLite file.
+    """
     import asyncio
 
     from app.config import get_settings
+    from app.database import _is_sqlite
 
     settings = get_settings()
-    db_url = settings.database_url
-    # Extract SQLite file path from URL like "sqlite+aiosqlite:///path/to/db"
-    if "sqlite" in db_url:
-        db_path = db_url.split("///")[-1] if "///" in db_url else "openestimate.db"
-    else:
-        db_path = "openestimate.db"
 
-    return await asyncio.to_thread(_bulk_insert_costs_sync, db_path, items)
+    if _is_sqlite(settings.database_url):
+        # Extract SQLite file path from URL like "sqlite+aiosqlite:///path/to/db".
+        db_url = settings.database_url
+        db_path = db_url.split("///")[-1] if "///" in db_url else "openestimate.db"
+        return await asyncio.to_thread(_bulk_insert_costs_sync, db_path, items)
+
+    # PostgreSQL: build positional rows matching the CWICR column order and run
+    # the idempotent ON CONFLICT (code, region) DO NOTHING bulk insert.
+    import json as _json
+
+    rows: list[tuple] = [
+        (
+            str(uuid.uuid4()),
+            item["code"],
+            item["description"][:500],
+            item["unit"][:20],
+            item["rate"],
+            item.get("currency", ""),
+            item.get("source", "cwicr"),
+            _json.dumps(item.get("classification", {})),
+            "[]",
+            "[]",
+            "{}",
+            1,
+            item.get("region", ""),
+            _json.dumps(item.get("metadata", {})),
+        )
+        for item in items
+    ]
+    return await asyncio.to_thread(_pg_bulk_insert_cost_rows, settings.database_sync_url, rows)
 
 
 # ── Delete CWICR database ───────────────────────────────────────────────────
@@ -4340,9 +4483,7 @@ async def get_cost_item_certainty_batch(
 
     # Only items that actually exist get a badge — resolve their ``source``
     # in one pass so the band carries the correct provenance label.
-    item_rows = await session.execute(
-        select(CostItem.id, CostItem.source).where(CostItem.id.in_(ordered_ids))
-    )
+    item_rows = await session.execute(select(CostItem.id, CostItem.source).where(CostItem.id.in_(ordered_ids)))
     source_by_id: dict[uuid.UUID, str] = {row[0]: (row[1] or "manual") for row in item_rows.all()}
 
     # Two grouped aggregates over the usage ledger — frequency + last use —
