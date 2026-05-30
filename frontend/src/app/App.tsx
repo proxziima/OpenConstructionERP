@@ -127,6 +127,9 @@ const TasksPage = lazy(() =>
 const RFIPage = lazy(() =>
   import('@/features/rfi/RFIPage').then((m) => ({ default: m.RFIPage }))
 );
+const RFIDetailPage = lazy(() =>
+  import('@/features/rfi/RFIDetailPage').then((m) => ({ default: m.RFIDetailPage }))
+);
 const SubmittalsPage = lazy(() =>
   import('@/features/submittals/SubmittalsPage').then((m) => ({ default: m.SubmittalsPage }))
 );
@@ -839,6 +842,7 @@ export default function App() {
         <Route path="/tasks" element={<P title="Tasks"><TasksPage /></P>} />
         <Route path="/projects/:projectId/rfi" element={<P title="RFI"><RFIPage /></P>} />
         <Route path="/rfi" element={<P title="RFI"><RFIPage /></P>} />
+        <Route path="/rfi/:rfiId" element={<P title="RFI"><RFIDetailPage /></P>} />
         <Route path="/projects/:projectId/submittals" element={<P title="Submittals"><SubmittalsPage /></P>} />
         <Route path="/submittals" element={<P title="Submittals"><SubmittalsPage /></P>} />
         <Route path="/projects/:projectId/correspondence" element={<P title="Correspondence"><CorrespondencePage /></P>} />

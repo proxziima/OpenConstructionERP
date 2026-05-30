@@ -188,6 +188,13 @@ class TestNotificationResponse(BaseModel):
     message: str
 
 
+class TestConnectionRequest(BaseModel):
+    """Ad-hoc test of an integration before it is saved (Connect modal)."""
+
+    integration_type: str = Field(min_length=1, max_length=40)
+    config: dict = Field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Webhook schemas
 # ---------------------------------------------------------------------------

@@ -37,6 +37,7 @@ from app.modules.integrations.schemas import (
     IntegrationConfigListResponse,
     IntegrationConfigResponse,
     IntegrationConfigUpdate,
+    TestConnectionRequest,
     TestNotificationResponse,
     WebhookCreate,
     WebhookResponse,
@@ -153,6 +154,130 @@ async def delete_integration_config(
 
     await session.delete(config)
     await session.flush()
+
+
+async def _dispatch_integration_test(itype: str, cfg: dict) -> TestNotificationResponse:
+    """Send a test notification for an integration type + ad-hoc config.
+
+    Shared by the saved-config test (``/configs/{id}/test``) and the
+    pre-save Connect-modal test (``/configs/test-connection``). Outbound URLs
+    are re-validated against the SSRF deny-list right before dispatch. Never
+    raises — returns a TestNotificationResponse with the outcome.
+    """
+    title = "OpenConstructionERP Test"
+    message = "This is a test notification. If you see this, the integration is working correctly."
+    action_url = None
+    cfg = cfg or {}
+    success = False
+    try:
+        if itype == "teams":
+            from app.modules.integrations.teams import send_teams_notification
+
+            webhook_url = cfg.get("webhook_url", "")
+            if not webhook_url:
+                return TestNotificationResponse(success=False, message="Missing webhook_url in config")
+            try:
+                await resolve_and_validate_external_url(webhook_url)
+            except UnsafeUrlError as exc:
+                return TestNotificationResponse(success=False, message=f"URL blocked: {exc}")
+            success = await send_teams_notification(
+                webhook_url=webhook_url,
+                title=title,
+                message=message,
+                action_url=action_url,
+                facts=[{"title": "Status", "value": "Test delivery"}],
+            )
+
+        elif itype == "slack":
+            from app.modules.integrations.slack import send_slack_notification
+
+            webhook_url = cfg.get("webhook_url", "")
+            if not webhook_url:
+                return TestNotificationResponse(success=False, message="Missing webhook_url in config")
+            try:
+                await resolve_and_validate_external_url(webhook_url)
+            except UnsafeUrlError as exc:
+                return TestNotificationResponse(success=False, message=f"URL blocked: {exc}")
+            success = await send_slack_notification(
+                webhook_url=webhook_url,
+                title=title,
+                message=message,
+                action_url=action_url,
+                fields=[{"title": "Status", "value": "Test delivery"}],
+            )
+
+        elif itype == "telegram":
+            from app.modules.integrations.telegram import send_telegram_notification
+
+            bot_token = cfg.get("bot_token", "")
+            chat_id = cfg.get("chat_id", "")
+            if not bot_token or not chat_id:
+                return TestNotificationResponse(success=False, message="Missing bot_token or chat_id in config")
+            success = await send_telegram_notification(
+                bot_token=bot_token,
+                chat_id=chat_id,
+                title=title,
+                message=message,
+                action_url=action_url,
+            )
+
+        elif itype == "discord":
+            from app.modules.integrations.discord import send_discord_notification
+
+            webhook_url = cfg.get("webhook_url", "")
+            if not webhook_url:
+                return TestNotificationResponse(success=False, message="Missing webhook_url in config")
+            try:
+                await resolve_and_validate_external_url(webhook_url)
+            except UnsafeUrlError as exc:
+                return TestNotificationResponse(success=False, message=f"URL blocked: {exc}")
+            success = await send_discord_notification(
+                webhook_url=webhook_url,
+                title=title,
+                message=message,
+                action_url=action_url,
+                fields=[{"name": "Status", "value": "Test delivery"}],
+            )
+
+        elif itype == "whatsapp":
+            return TestNotificationResponse(
+                success=False,
+                message="WhatsApp integration requires Meta Business verification. Coming soon.",
+            )
+
+        else:
+            return TestNotificationResponse(
+                success=False,
+                message=f"Test not supported for integration type: {itype}",
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Test notification failed for integration type %s", itype)
+        return TestNotificationResponse(success=False, message=str(exc)[:500])
+
+    return TestNotificationResponse(
+        success=success,
+        message="Test notification sent successfully" if success else "Delivery failed",
+    )
+
+
+@router.post("/configs/test-connection/", response_model=TestNotificationResponse)
+async def test_connection_adhoc(
+    body: TestConnectionRequest,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("integrations.update")),
+) -> TestNotificationResponse:
+    """Test an integration with ad-hoc field values, before it is saved.
+
+    Backs the "Test Connection" button in the Connect modal, which has no
+    persisted config row yet. Rate-limited like the saved-config test.
+    """
+    allowed, _ = approval_limiter.is_allowed(str(user_id))
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Try again later.",
+        )
+    return await _dispatch_integration_test(body.integration_type, body.config or {})
 
 
 @router.post("/configs/{config_id}/test", response_model=TestNotificationResponse)

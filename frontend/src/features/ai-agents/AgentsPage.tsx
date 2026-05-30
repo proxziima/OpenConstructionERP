@@ -176,7 +176,7 @@ export function AgentsPage(): JSX.Element {
               )}
             </p>
             <Link
-              to={healthQuery.data?.settings_url ?? '/settings/ai'}
+              to={healthQuery.data?.settings_url ?? '/settings?tab=ai'}
               className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"
             >
               <SettingsIcon className="h-3.5 w-3.5" />
@@ -518,7 +518,7 @@ function RunTimeline({ run }: { run: AgentRun }): JSX.Element {
 
       {run.failure_reason === 'no_llm' && (
         <Link
-          to="/settings/ai"
+          to="/settings?tab=ai"
           className="inline-flex items-center gap-1.5 self-start rounded-md bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"
         >
           <SettingsIcon className="h-3.5 w-3.5" />

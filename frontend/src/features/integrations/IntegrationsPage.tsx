@@ -606,7 +606,7 @@ function ConnectModal({
     setTestResult(null);
     try {
       const result = await apiPost<{ success: boolean; message: string }>(
-        '/v1/integrations/configs/test-connection',
+        '/v1/integrations/configs/test-connection/',
         {
           integration_type: connector.type,
           config: fieldValues,

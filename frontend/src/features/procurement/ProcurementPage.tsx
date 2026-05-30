@@ -546,7 +546,7 @@ function PurchaseOrdersTab({ projectId }: { projectId: string }) {
   const createInvoiceMut = useMutation({
     mutationFn: (poId: string) =>
       apiPost<{ invoice_id: string; invoice_number: string; po_number: string }>(
-        `/v1/procurement/${poId}/create-invoice`,
+        `/v1/procurement/${poId}/create-invoice/`,
         {},
       ),
     onSuccess: (data) => {

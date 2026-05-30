@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
+from app.core.http_headers import content_disposition_attachment
 from app.dependencies import (
     CurrentUserId,
     CurrentUserPayload,
@@ -676,7 +677,9 @@ async def export_tender_pdf(
     return StreamingResponse(
         buf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        # RFC 6266 — a package name with non-Latin-1 chars would otherwise 500
+        # while the ASGI server encodes this header.
+        headers={"Content-Disposition": content_disposition_attachment(filename)},
     )
 
 
