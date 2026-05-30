@@ -1,32 +1,36 @@
-"""One-shot data migration: copy every row from SQLite into PostgreSQL.
+"""SQLite -> PostgreSQL data migration.
 
-Schema is created on the target via ``Base.metadata.create_all`` (the same path
-the app and Alembic use on a fresh DB), then rows are copied table-by-table in
-foreign-key-safe order. Copying goes through SQLAlchemy Core with the *typed*
-table objects, so each column's bind/result processors convert values for the
-target dialect automatically:
+One-shot copier that moves every row from the SQLite database into a freshly
+created PostgreSQL database using the application's own SQLAlchemy metadata, so
+column types, JSON handling and foreign keys all match the live schema.
 
-  * GUID    -> String(36) on both backends, copies verbatim
-  * JSON    -> SQLite TEXT read, validated, inserted into PostgreSQL json/jsonb
-  * Boolean -> SQLite 0/1 read, inserted as PostgreSQL true/false
-  * DateTime -> SQLite ISO string read, inserted as PostgreSQL timestamp
+The target schema is built with ``Base.metadata.create_all`` (NOT the Alembic
+chain), which means the JSONB ``@compiles`` hook and the FK/GIN/composite
+indexes from ``app.core.performance_indexes`` are emitted on the PostgreSQL
+side exactly as a fresh install would get them.
 
-Usage (from backend/):
+Usage (run from the ``backend`` directory)::
 
-    python -m app.scripts.migrate_sqlite_to_postgres \
-        --source sqlite:////root/OpenConstructionERP/data/openestimate.db \
-        --target postgresql+psycopg2://oce:PASS@localhost:5432/openconstructionerp
+    # 1. dry run -- counts only, never connects to write
+    python -m app.scripts.migrate_sqlite_to_postgres \\
+        --source sqlite:////root/OpenConstructionERP/data/openestimate.db \\
+        --target postgresql+psycopg2://oe:PASS@localhost/openestimate \\
+        --dry-run
 
-Flags:
-    --batch N         rows per insert (default 1000)
-    --truncate        TRUNCATE every target table before copying (re-runnable)
-    --skip-create     do not run create_all (assume schema already migrated)
-    --only T1,T2      copy only these tables (debug)
-    --dry-run         create schema + report source counts, copy nothing
+    # 2. real migration into an empty (or --truncate) target
+    python -m app.scripts.migrate_sqlite_to_postgres \\
+        --source sqlite:////root/OpenConstructionERP/data/openestimate.db \\
+        --target postgresql+psycopg2://oe:PASS@localhost/openestimate \\
+        --truncate
 
-The source SQLite file is opened with the sync driver and never written, so this
-is safe to run repeatedly. On success it prints a per-table source/target
-row-count table and exits 0 only if every count matches.
+Notes:
+  * The SQLite source URL needs FOUR slashes for an absolute path.
+  * The target database must already exist. The script refuses to write into a
+    target that already holds rows unless ``--truncate`` is given.
+  * Rows are streamed in batches (bounded memory) and copied in foreign-key
+    order. Any row the target rejects (e.g. a not-yet-inserted self-referential
+    parent) is deferred and retried in later passes; genuinely bad rows are
+    skipped and counted, never aborting the whole run.
 """
 
 from __future__ import annotations
@@ -34,16 +38,26 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator
 
-from sqlalchemy import JSON, create_engine, func, insert, select
+from sqlalchemy import JSON as _JSON
+from sqlalchemy import create_engine, delete, func, inspect, select
 from sqlalchemy.engine import Engine
+
+#: Rows per INSERT batch. Small enough to bound memory on a constrained VPS even
+#: when a table carries large JSON/geometry blobs, large enough to keep the copy
+#: fast for the many small tables.
+DEFAULT_BATCH_SIZE = 1000
+
+#: How many full retry passes to make over rows the target initially rejected
+#: (covers self-referential FKs where a child is seen before its parent).
+MAX_RETRY_PASSES = 5
 
 
 def _load_metadata():
-    """Import every model so Base.metadata is fully populated, return Base.
+    """Import every model so ``Base.metadata`` is fully populated, return Base.
 
-    Models are NOT registered by importing ``app.main`` — they live in each
+    Models are NOT registered by importing ``app.main`` -- they live in each
     module's ``models`` submodule and are only imported at app startup (or by
     Alembic). Replicate Alembic's discovery: walk ``app.modules.*`` and import
     every ``<module>.models``, then pull in the core registry. This is the same
@@ -59,6 +73,12 @@ def _load_metadata():
     except Exception:  # noqa: BLE001
         pass
 
+    # ``audit_log`` defines ``oe_activity_log`` and lives outside app.modules.*
+    try:
+        import app.core.audit_log  # noqa: F401
+    except Exception:  # noqa: BLE001
+        pass
+
     import app.modules as _mods
 
     imported = 0
@@ -67,186 +87,293 @@ def _load_metadata():
             importlib.import_module(f"app.modules.{name}.models")
             imported += 1
         except ModuleNotFoundError:
-            # Module has no models.py — fine, skip it.
+            # Module has no models.py -- fine, skip it.
             continue
         except Exception as exc:  # noqa: BLE001
             print(f"warning: importing app.modules.{name}.models raised {exc!r}", file=sys.stderr)
 
     from app.database import Base
 
-    print(f"model discovery: imported {imported} module model packages; "
-          f"{len(Base.metadata.tables)} tables registered")
+    print(
+        f"model discovery: imported {imported} module model packages; "
+        f"{len(Base.metadata.tables)} tables registered"
+    )
     return Base
 
 
-def _coerce_sqlite_url(url: str) -> str:
-    if url.startswith("sqlite+aiosqlite"):
-        url = url.replace("sqlite+aiosqlite", "sqlite", 1)
-    return url
+def _tolerant_json_deserializer(value: object) -> object:
+    """Parse a JSON column without aborting on legacy/malformed scalars.
 
-
-def _coerce_pg_url(url: str) -> str:
-    # This script is synchronous; force psycopg2 rather than asyncpg.
-    if "+asyncpg" in url:
-        url = url.replace("+asyncpg", "+psycopg2", 1)
-    return url
-
-
-def _count(engine: Engine, table) -> int:
-    with engine.connect() as conn:
-        return conn.execute(select(func.count()).select_from(table)).scalar_one()
-
-
-def _sanitize_row(table, row: dict) -> dict:
-    """Fix values SQLite stored loosely so PostgreSQL accepts them.
-
-    The real hazard is JSON columns: SQLite is untyped TEXT, so a legacy seed
-    could have written a bare scalar or invalid JSON. Mirror the app's tolerant
-    loader: parse JSON text, and on failure keep the raw string as a JSON string
-    value rather than crashing the whole migration.
+    Mirrors ``app.database._tolerant_json_loads``: some historical SQLite rows
+    hold a bare scalar (``construction`` instead of ``["construction"]``) which
+    the default ``json.loads`` would raise on during result processing. Return
+    the raw value instead so the copy never dies on one bad row.
     """
-    out = dict(row)
+    try:
+        return json.loads(value)  # type: ignore[arg-type]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return value
+
+
+def _coerce_sync_url(url: str) -> str:
+    """Coerce async driver URLs to their sync equivalents for this script."""
+    repl = {
+        "postgresql+asyncpg": "postgresql+psycopg2",
+        "sqlite+aiosqlite": "sqlite",
+    }
+    for a, b in repl.items():
+        if url.startswith(a):
+            return url.replace(a, b, 1)
+    return url
+
+
+def _make_source_engine(url: str) -> Engine:
+    """Build the SQLite read engine with the same tolerant JSON handling the app
+    uses, so JSON columns come back as Python objects (dict/list) and the target
+    side re-serialises them once into JSONB instead of double-encoding a string.
+    """
+    return create_engine(url, json_deserializer=_tolerant_json_deserializer)
+
+
+def _iter_batches(src: Engine, table, batch_size: int) -> Iterator[list[dict]]:
+    """Yield rows of ``table`` from the source in memory-bounded batches."""
+    with src.connect() as sconn:
+        result = sconn.execution_options(stream_results=True, yield_per=batch_size).execute(
+            select(table)
+        )
+        while True:
+            chunk = result.fetchmany(batch_size)
+            if not chunk:
+                break
+            yield [dict(r._mapping) for r in chunk]
+
+
+def _coerce_row(row: dict, table) -> dict:
+    """Patch the residual case where a JSON column still arrives as a ``str`` so
+    the JSONB bind processor does not double-encode it. Typed result processors
+    already handle bool/Decimal/datetime/JSON-object cases.
+    """
     for col in table.columns:
-        if isinstance(col.type, JSON):
-            v = out.get(col.name)
-            if isinstance(v, str):
+        name = col.name
+        if name not in row or row[name] is None:
+            continue
+        if isinstance(col.type, _JSON) and isinstance(row[name], str):
+            row[name] = _tolerant_json_deserializer(row[name])
+    return row
+
+
+def _copy_table(src: Engine, dst: Engine, table, batch_size: int) -> tuple[int, list[dict]]:
+    """Copy one table. Returns (rows_copied, rows_deferred).
+
+    Batched insert with per-row fault isolation: if a batch insert fails (most
+    commonly a self-referential FK whose parent is not in yet), fall back to
+    inserting that batch row by row. Rows that fail individually are returned as
+    *deferred* for a later retry pass.
+    """
+    copied = 0
+    deferred: list[dict] = []
+    for batch in _iter_batches(src, table, batch_size):
+        batch = [_coerce_row(r, table) for r in batch]
+        try:
+            with dst.begin() as dconn:
+                dconn.execute(table.insert(), batch)
+            copied += len(batch)
+        except Exception:  # noqa: BLE001 -- isolate the offending row(s)
+            for row in batch:
                 try:
-                    out[col.name] = json.loads(v)
-                except (ValueError, TypeError):
-                    out[col.name] = v
-    return out
+                    with dst.begin() as dconn:
+                        dconn.execute(table.insert(), [row])
+                    copied += 1
+                except Exception:  # noqa: BLE001
+                    deferred.append(row)
+    return copied, deferred
 
 
-def migrate(
-    source_url: str,
-    target_url: str,
-    *,
-    batch: int = 1000,
-    truncate: bool = False,
-    skip_create: bool = False,
-    only: Sequence[str] | None = None,
-    dry_run: bool = False,
-) -> int:
-    base = _load_metadata()
-    metadata = base.metadata
+def _retry_deferred(dst: Engine, table, rows: list[dict]) -> tuple[int, list[dict]]:
+    """Retry deferred rows once. Returns (rows_copied, rows_still_failing)."""
+    copied = 0
+    still: list[dict] = []
+    for row in rows:
+        try:
+            with dst.begin() as dconn:
+                dconn.execute(table.insert(), [row])
+            copied += 1
+        except Exception:  # noqa: BLE001
+            still.append(row)
+    return copied, still
 
-    src = create_engine(_coerce_sqlite_url(source_url))
-    dst = create_engine(_coerce_pg_url(target_url), future=True)
 
-    tables = list(metadata.sorted_tables)
-    if only:
-        wanted = set(only)
-        tables = [t for t in tables if t.name in wanted]
+def _target_has_rows(dst: Engine, base) -> str | None:
+    """Return the name of the first target table that already holds rows, if any."""
+    with dst.connect() as dconn:
+        existing = set(inspect(dconn).get_table_names())
+        for table in base.metadata.sorted_tables:
+            if table.name not in existing:
+                continue
+            n = dconn.execute(select(func.count()).select_from(table)).scalar() or 0
+            if n:
+                return table.name
+    return None
 
-    print(f"source: {src.url}")
-    print(f"target: {dst.url}")
-    print(f"tables in metadata: {len(metadata.sorted_tables)}; copying: {len(tables)}")
 
-    if not skip_create and not dry_run:
-        print("creating schema on target (create_all)...")
-        metadata.create_all(dst)
+def _copy_all(src: Engine, dst: Engine, base, batch_size: int) -> int:
+    """Copy every table in FK order, then retry deferred rows until they settle.
 
-    if truncate and not dry_run and tables:
-        names = ", ".join(f'"{t.name}"' for t in tables)
-        from sqlalchemy import text
+    Returns the number of rows that could not be inserted (skipped).
+    """
+    total_copied = 0
+    deferred_by_table: dict[str, tuple[object, list[dict]]] = {}
 
-        with dst.begin() as conn:
-            conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
-        print(f"truncated {len(tables)} target tables")
+    for table in base.metadata.sorted_tables:
+        copied, deferred = _copy_table(src, dst, table, batch_size)
+        total_copied += copied
+        if copied or deferred:
+            note = f"  {table.name}: {copied} rows"
+            if deferred:
+                note += f" ({len(deferred)} deferred)"
+            print(note)
+        if deferred:
+            deferred_by_table[table.name] = (table, deferred)
 
-    report: list[tuple[str, int, int]] = []
-    mismatch = False
+    for pass_no in range(1, MAX_RETRY_PASSES + 1):
+        if not deferred_by_table:
+            break
+        progress = 0
+        next_round: dict[str, tuple[object, list[dict]]] = {}
+        for tname, (table, rows) in deferred_by_table.items():
+            copied, still = _retry_deferred(dst, table, rows)
+            total_copied += copied
+            progress += copied
+            if still:
+                next_round[tname] = (table, still)
+        print(f"retry pass {pass_no}: recovered {progress} deferred rows")
+        deferred_by_table = next_round
+        if progress == 0:
+            break  # no forward progress -- remaining rows are genuinely bad
 
-    for t in tables:
-        src_n = _count(src, t)
-        if dry_run:
-            report.append((t.name, src_n, 0))
-            continue
-        if src_n == 0:
-            report.append((t.name, 0, _count(dst, t)))
-            continue
+    skipped = sum(len(rows) for _t, rows in deferred_by_table.values())
+    if skipped:
+        print(f"WARNING: {skipped} rows could not be inserted and were skipped:", file=sys.stderr)
+        for tname, (_t, rows) in deferred_by_table.items():
+            print(f"  {tname}: {len(rows)} skipped", file=sys.stderr)
 
-        copied = 0
-        with src.connect() as sconn:
-            result = sconn.execution_options(stream_results=True).execute(select(t))
-            while True:
-                chunk = result.fetchmany(batch)
-                if not chunk:
-                    break
-                rows = [_sanitize_row(t, dict(r._mapping)) for r in chunk]
-                with dst.begin() as dconn:
-                    dconn.execute(insert(t), rows)
-                copied += len(rows)
-                print(f"  {t.name}: {copied}/{src_n}", end="\r")
+    print(f"total rows copied: {total_copied}; rows skipped: {skipped}")
+    return skipped
 
-        dst_n = _count(dst, t)
-        report.append((t.name, src_n, dst_n))
-        if dst_n != src_n:
-            mismatch = True
-        print(f"  {t.name}: {src_n} -> {dst_n}{' MISMATCH' if dst_n != src_n else ''}        ")
 
-    # Reset PostgreSQL sequences for any integer autoincrement PKs (UUID PKs
-    # have no sequence). Safe even when there are none.
-    if not dry_run:
-        from sqlalchemy import text
+def _reset_sequences(dst: Engine, base) -> None:
+    """Defensively realign integer IDENTITY/serial sequences after a bulk copy.
 
-        with dst.begin() as conn:
-            for t in tables:
-                for col in t.primary_key.columns:
-                    try:
-                        is_int = col.type.python_type is int
-                    except (NotImplementedError, AttributeError):
-                        is_int = False
-                    if is_int and col.primary_key:
-                        seq = f"pg_get_serial_sequence('{t.name}', '{col.name}')"
-                        conn.execute(
-                            text(
-                                f"SELECT setval({seq}, COALESCE((SELECT MAX(\"{col.name}\") "
-                                f'FROM "{t.name}"), 1)) WHERE {seq} IS NOT NULL'
-                            )
+    The app uses string UUID primary keys (``GUID`` -> ``String(36)``), so most
+    tables have no sequence and this is a no-op; it only matters for the rare
+    integer autoincrement table (e.g. ``oe_feedback``). Never errors the run.
+    """
+    if dst.dialect.name != "postgresql":
+        return
+    from sqlalchemy import text
+
+    with dst.connect() as dconn:
+        for table in base.metadata.sorted_tables:
+            for col in table.columns:
+                if not col.primary_key:
+                    continue
+                try:
+                    is_int = col.type.python_type is int
+                except (NotImplementedError, AttributeError):
+                    is_int = False
+                if not is_int:
+                    continue
+                try:
+                    seq = dconn.execute(
+                        text("SELECT pg_get_serial_sequence(:t, :c)"),
+                        {"t": table.name, "c": col.name},
+                    ).scalar()
+                    if not seq:
+                        continue
+                    dconn.execute(
+                        text(
+                            f"SELECT setval('{seq}', "
+                            f"COALESCE((SELECT MAX({col.name}) FROM {table.name}), 1))"
                         )
+                    )
+                    dconn.commit()
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"  sequence reset skipped for {table.name}.{col.name}: {exc!r}",
+                        file=sys.stderr,
+                    )
 
-    print("\n=== row-count report ===")
-    print(f"{'table':45} {'source':>10} {'target':>10}")
-    total_src = total_dst = 0
-    for name, s, d in sorted(report):
-        total_src += s
-        total_dst += d
-        flag = "" if s == d else "  <-- MISMATCH"
-        print(f"{name:45} {s:>10} {d:>10}{flag}")
-    print(f"{'TOTAL':45} {total_src:>10} {total_dst:>10}")
 
-    if dry_run:
-        print("\nDRY RUN - no rows copied.")
-        return 0
-    if mismatch:
-        print("\nFAIL: at least one table row-count mismatch.")
-        return 1
-    print("\nOK: all tables copied with matching row counts.")
+def _dry_run(src: Engine, base) -> int:
+    """Count rows per table on the source without touching the target."""
+    total = 0
+    with src.connect() as sconn:
+        for table in base.metadata.sorted_tables:
+            try:
+                n = sconn.execute(select(func.count()).select_from(table)).scalar() or 0
+            except Exception as exc:  # noqa: BLE001 -- table may not exist in source
+                print(f"  {table.name}: count failed ({exc!r})", file=sys.stderr)
+                n = 0
+            total += n
+    print(
+        f"tables in metadata: {len(base.metadata.sorted_tables)}; total source rows: {total}"
+    )
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Copy all rows from SQLite to PostgreSQL.")
-    ap.add_argument("--source", required=True, help="SQLite URL (sqlite:////abs/path.db)")
-    ap.add_argument("--target", required=True, help="PostgreSQL URL (postgresql+psycopg2://...)")
-    ap.add_argument("--batch", type=int, default=1000)
-    ap.add_argument("--truncate", action="store_true", help="TRUNCATE target tables first (re-runnable)")
-    ap.add_argument("--skip-create", action="store_true", help="assume schema already exists")
-    ap.add_argument("--only", help="comma-separated table names to copy")
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args(argv)
-
-    only = [s.strip() for s in args.only.split(",")] if args.only else None
-    return migrate(
-        args.source,
-        args.target,
-        batch=args.batch,
-        truncate=args.truncate,
-        skip_create=args.skip_create,
-        only=only,
-        dry_run=args.dry_run,
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Migrate SQLite data to PostgreSQL")
+    parser.add_argument("--source", required=True, help="SQLite URL (4 slashes for abs path)")
+    parser.add_argument("--target", required=True, help="PostgreSQL SQLAlchemy URL")
+    parser.add_argument("--truncate", action="store_true", help="Delete target rows before copy")
+    parser.add_argument("--dry-run", action="store_true", help="Count source rows only; no writes")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help=f"Rows per insert batch (default {DEFAULT_BATCH_SIZE})",
     )
+    args = parser.parse_args(argv)
+
+    source_url = _coerce_sync_url(args.source)
+    target_url = _coerce_sync_url(args.target)
+
+    base = _load_metadata()
+    src = _make_source_engine(source_url)
+    print(f"connected to source: {source_url}")
+
+    if args.dry_run:
+        return _dry_run(src, base)
+
+    dst = create_engine(target_url)
+    print(f"connected to target: {target_url}")
+
+    # Build the schema (JSONB columns + FK/GIN/composite indexes) on the target.
+    base.metadata.create_all(dst)
+
+    populated = _target_has_rows(dst, base)
+    if populated and not args.truncate:
+        print(
+            f"ERROR: target already has rows (e.g. table '{populated}'). "
+            f"Pass --truncate to overwrite, or point at an empty database.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.truncate:
+        print("truncating target tables (reverse FK order)...")
+        with dst.begin() as dconn:
+            for table in reversed(base.metadata.sorted_tables):
+                dconn.execute(delete(table))
+
+    skipped = _copy_all(src, dst, base, args.batch_size)
+    _reset_sequences(dst, base)
+
+    if skipped:
+        print(f"migration finished with {skipped} skipped rows -- review the warnings above.")
+        return 1
+    print("migration finished cleanly.")
+    return 0
 
 
 if __name__ == "__main__":
