@@ -42,6 +42,10 @@ import {
   getPackage,
   createPackage,
   publishPackage,
+  // dead_button fix: openBids was exported but never wired into the page, so a
+  // published package could never advance to "open" — the only path that marks
+  // submissions is_valid=True. Without it leveling stayed empty and award blocked.
+  openBids,
   closePackage,
   awardPackage,
   packageDashboard,
@@ -1365,6 +1369,22 @@ function PackageDrawer({
     onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
   });
 
+  // dead_button fix: wire the previously-unused openBids() so a published
+  // package can advance to "open". open_bids is the ONLY backend path that runs
+  // pre-open validation and sets submission.is_valid=True, which leveling and
+  // award depend on. Without this button the workflow was unreachable.
+  const openBidsMut = useMutation({
+    mutationFn: () => openBids(packageId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['bid-management'] });
+      addToast({
+        type: 'success',
+        title: t('bid_management.bids_opened', { defaultValue: 'Bidding opened' }),
+      });
+    },
+    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+
   const closeMut = useMutation({
     mutationFn: () => closePackage(packageId),
     onSuccess: () => {
@@ -1504,6 +1524,19 @@ function PackageDrawer({
                     loading={publishMut.isPending}
                   >
                     {t('bid_management.publish', { defaultValue: 'Publish' })}
+                  </Button>
+                )}
+                {/* dead_button fix: expose Open Bids (published → open). This is the
+                    only action that validates submissions (is_valid) so leveling
+                    and award become reachable instead of being silently blocked. */}
+                {pkg.status === 'published' && (
+                  <Button
+                    variant="primary"
+                    icon={<Inbox size={14} />}
+                    onClick={() => openBidsMut.mutate()}
+                    loading={openBidsMut.isPending}
+                  >
+                    {t('bid_management.open_bids', { defaultValue: 'Open Bids' })}
                   </Button>
                 )}
                 {(pkg.status === 'open' || pkg.status === 'published') && (
