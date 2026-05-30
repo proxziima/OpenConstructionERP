@@ -41,17 +41,41 @@ from sqlalchemy.engine import Engine
 
 
 def _load_metadata():
-    """Import every model so Base.metadata is fully populated, return Base."""
-    try:
-        import app.main  # noqa: F401  (side effect: module loader registers all models)
-    except Exception as exc:  # noqa: BLE001
-        print(f"warning: app.main import raised {exc!r}; trying models_registry", file=sys.stderr)
+    """Import every model so Base.metadata is fully populated, return Base.
+
+    Models are NOT registered by importing ``app.main`` — they live in each
+    module's ``models`` submodule and are only imported at app startup (or by
+    Alembic). Replicate Alembic's discovery: walk ``app.modules.*`` and import
+    every ``<module>.models``, then pull in the core registry. This is the same
+    routine ``backend/alembic/env.py`` uses, so the metadata here is identical
+    to what ``create_all`` / migrations produce.
+    """
+    import importlib
+    import pkgutil
+
+    # Core models (CostItem, User, BIMElement, etc.) registered centrally.
     try:
         import app.core.models_registry  # noqa: F401
     except Exception:  # noqa: BLE001
         pass
+
+    import app.modules as _mods
+
+    imported = 0
+    for _finder, name, _ispkg in pkgutil.iter_modules(_mods.__path__):
+        try:
+            importlib.import_module(f"app.modules.{name}.models")
+            imported += 1
+        except ModuleNotFoundError:
+            # Module has no models.py — fine, skip it.
+            continue
+        except Exception as exc:  # noqa: BLE001
+            print(f"warning: importing app.modules.{name}.models raised {exc!r}", file=sys.stderr)
+
     from app.database import Base
 
+    print(f"model discovery: imported {imported} module model packages; "
+          f"{len(Base.metadata.tables)} tables registered")
     return Base
 
 
