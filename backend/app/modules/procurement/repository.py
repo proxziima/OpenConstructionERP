@@ -231,6 +231,51 @@ class GoodsReceiptRepository:
 
         return items, total
 
+    async def list_by_project(
+        self,
+        *,
+        project_id: uuid.UUID,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        # NOTE: annotation is quoted (lazy) on purpose — this class defines a
+        # method named ``list`` above, which shadows the ``list`` builtin inside
+        # the class-body namespace, so an *eagerly evaluated* ``list[...]`` here
+        # raises "'function' object is not subscriptable" at import time.
+    ) -> "tuple[list[tuple[GoodsReceipt, str]], int]":
+        """List goods receipts across ALL POs of a project.
+
+        api-HIGH (GR tab): the frontend lists GRs by ``project_id`` (the
+        active project) rather than by a single ``po_id``. We join
+        GoodsReceipt -> PurchaseOrder so we can both scope to the project
+        and carry each GR's parent ``po_number`` back to the response,
+        without an N+1 lookup. Eager-loads ``items`` so the response
+        aggregates can serialise outside the async greenlet.
+
+        Returns ``([(GoodsReceipt, po_number), ...], total)``.
+        """
+        from sqlalchemy.orm import selectinload
+
+        base = (
+            select(GoodsReceipt, PurchaseOrder.po_number)
+            .join(PurchaseOrder, GoodsReceipt.po_id == PurchaseOrder.id)
+            .where(PurchaseOrder.project_id == project_id)
+        )
+        if status is not None:
+            base = base.where(GoodsReceipt.status == status)
+
+        count_stmt = select(func.count()).select_from(base.subquery())
+        total = (await self.session.execute(count_stmt)).scalar_one()
+
+        stmt = (
+            base.options(selectinload(GoodsReceipt.items))
+            .order_by(GoodsReceipt.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return [(row[0], row[1]) for row in rows], total
+
     async def create(self, gr: GoodsReceipt) -> GoodsReceipt:
         """Insert a new goods receipt."""
         self.session.add(gr)

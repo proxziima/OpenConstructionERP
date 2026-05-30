@@ -784,6 +784,27 @@ class ProcurementService:
         """List goods receipts with optional filters."""
         return await self.gr_repo.list(po_id=po_id, status=gr_status, limit=limit, offset=offset)
 
+    async def list_goods_receipts_by_project(
+        self,
+        *,
+        project_id: uuid.UUID,
+        gr_status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[tuple[GoodsReceipt, str]], int]:
+        """List goods receipts across every PO in a project.
+
+        api-HIGH (GR tab): the frontend Goods-Receipts tab filters by the
+        active ``project_id`` (not a single PO), so this returns each GR
+        paired with its parent ``po_number`` for display.
+        """
+        return await self.gr_repo.list_by_project(
+            project_id=project_id,
+            status=gr_status,
+            limit=limit,
+            offset=offset,
+        )
+
     async def confirm_goods_receipt(self, gr_id: uuid.UUID) -> GoodsReceipt:
         """Confirm a goods receipt and update the PO status accordingly.
 

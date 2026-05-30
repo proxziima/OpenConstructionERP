@@ -1701,4 +1701,48 @@ def _raise_rows_http(exc: RowsIOError, locale: str) -> None:
     )
 
 
+# ── Route ordering fix (api-HIGH) ───────────────────────────────────────────
+#
+# Bug: the dynamic route ``GET /snapshots/{snapshot_id}`` is declared above the
+# literal routes ``GET /snapshots/timeline`` and ``GET /snapshots/diff``.
+# Starlette matches routes in declaration order, so "timeline"/"diff" were being
+# captured by ``{snapshot_id}`` and validated as a UUID — both literal endpoints
+# permanently returned 422 and were unreachable (the frontend's getSnapshotTimeline
+# / diffSnapshots calls always hit their error state).
+#
+# Fix without relocating the (large) handler bodies: after the router is fully
+# built, promote the literal ``/snapshots/<literal>`` routes ahead of the
+# dynamic ``/snapshots/{snapshot_id}`` route in ``router.routes``. Idempotent and
+# additive — no paths, methods, signatures or response models change, so the
+# frontend contract (which already targets these exact paths) is untouched.
+def _promote_literal_snapshot_routes() -> None:
+    routes = router.routes
+    # Index of the shadowing dynamic route.
+    dynamic_idx: int | None = None
+    for i, route in enumerate(routes):
+        if getattr(route, "path", None) == "/snapshots/{snapshot_id}":
+            dynamic_idx = i
+            break
+    if dynamic_idx is None:
+        return
+    # Pull the literal routes that the dynamic route would otherwise shadow and
+    # re-insert them immediately before it, preserving their relative order.
+    literal_paths = ("/snapshots/timeline", "/snapshots/diff")
+    to_move = [r for r in routes if getattr(r, "path", None) in literal_paths]
+    if not to_move:
+        return
+    for r in to_move:
+        routes.remove(r)
+    # Recompute the dynamic route's index — removals above may have shifted it.
+    insert_at = next(
+        (i for i, r in enumerate(routes) if getattr(r, "path", None) == "/snapshots/{snapshot_id}"),
+        len(routes),
+    )
+    for offset, r in enumerate(to_move):
+        routes.insert(insert_at + offset, r)
+
+
+_promote_literal_snapshot_routes()
+
+
 __all__ = ["router"]

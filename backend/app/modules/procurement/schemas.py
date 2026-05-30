@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _validate_non_negative_decimal(v: str) -> str:
@@ -226,6 +226,56 @@ class GRResponse(BaseModel):
     items: list[GRItemResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+    # api-HIGH (GR tab): the frontend Goods-Receipts table renders these
+    # fields, but they were missing from the response and rendered blank.
+    # All ADDITIVE + OPTIONAL — existing consumers are unaffected.
+    #   * gr_reference   — friendly label, aliased from delivery_note_number
+    #   * po_number      — parent PO number (populated by the router/service)
+    #   * received_qty   — Σ items[].quantity_received  (Decimal-as-string)
+    #   * ordered_qty    — Σ items[].quantity_ordered   (Decimal-as-string)
+    #   * description    — passthrough notes/summary for the row
+    gr_reference: str | None = Field(
+        default=None,
+        # ``delivery_note_number`` is the natural reference shown to the user;
+        # populate gr_reference from it when serialising from the ORM model.
+        validation_alias="delivery_note_number",
+    )
+    po_number: str | None = None
+    # Decimal quantities MUST serialise as STRING (never float) — mirrors
+    # quantity_received / quantity_ordered on GRItemResponse.
+    received_qty: str | None = None
+    ordered_qty: str | None = None
+    description: str | None = Field(default=None, validation_alias="notes")
+
+    @model_validator(mode="after")
+    def _aggregate_item_quantities(self) -> "GRResponse":
+        """Aggregate received_qty / ordered_qty from the GR line items.
+
+        api-HIGH (GR tab): the FE shows per-receipt received vs ordered
+        totals. We sum the already-serialised string quantities on
+        ``items`` so the aggregate is computed from exactly what the API
+        returns. Both totals are emitted as canonical Decimal STRINGS
+        (never floats). Only fills the aggregates when they were not set
+        explicitly, so it stays purely additive.
+        """
+        if self.received_qty is None or self.ordered_qty is None:
+            received = Decimal("0")
+            ordered = Decimal("0")
+            for item in self.items:
+                try:
+                    received += Decimal(item.quantity_received or "0")
+                except (InvalidOperation, ValueError, TypeError):
+                    pass
+                try:
+                    ordered += Decimal(item.quantity_ordered or "0")
+                except (InvalidOperation, ValueError, TypeError):
+                    pass
+            if self.received_qty is None:
+                self.received_qty = format(received, "f")
+            if self.ordered_qty is None:
+                self.ordered_qty = format(ordered, "f")
+        return self
 
 
 class GRListResponse(BaseModel):

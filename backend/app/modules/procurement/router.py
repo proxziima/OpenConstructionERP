@@ -17,7 +17,7 @@ NOTE: Fixed-path routes (/goods-receipts) are registered BEFORE the parametric
 import uuid
 from collections.abc import Iterable
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -161,20 +161,55 @@ async def procurement_stats(
 async def list_goods_receipts(
     user_id: CurrentUserId,
     session: SessionDep,
-    po_id: uuid.UUID = Query(...),
+    # api-HIGH (GR tab): ``po_id`` used to be required, but the frontend GR
+    # tab lists receipts by the active project via ``?project_id=<id>`` and
+    # was getting a hard 422 (dead tab). Both are now OPTIONAL; the caller
+    # supplies exactly one. The legacy ``po_id`` path is unchanged.
+    po_id: uuid.UUID | None = Query(default=None),
+    project_id: uuid.UUID | None = Query(default=None),
     status: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
     service: ProcurementService = Depends(_get_service),
 ) -> GRListResponse:
-    """List goods receipts with optional filters."""
+    """List goods receipts, scoped by ``po_id`` OR ``project_id``."""
+    # Exactly one scope is required — preserve the old behaviour of failing
+    # fast when no scope is given, but as a clear 400 instead of a 422.
+    if po_id is None and project_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either po_id or project_id.",
+        )
+
+    # ── project_id path: list GRs across the whole project ──────────────
+    if project_id is not None:
+        # IDOR gate — same project-scope check the PO list uses.
+        await verify_project_access(project_id, str(user_id), session)
+        rows, total = await service.list_goods_receipts_by_project(
+            project_id=project_id,
+            gr_status=status,
+            limit=limit,
+            offset=offset,
+        )
+        items_out: list[GRResponse] = []
+        for gr, po_number in rows:
+            resp = GRResponse.model_validate(gr)
+            # Stamp the parent PO number (not on the GR ORM row itself).
+            resp.po_number = po_number
+            items_out.append(resp)
+        return GRListResponse(items=items_out, total=total)
+
+    # ── po_id path (unchanged legacy behaviour) ─────────────────────────
     po = await service.get_po(po_id)
     await verify_project_access(po.project_id, str(user_id), session)
     items, total = await service.list_goods_receipts(po_id=po_id, gr_status=status, limit=limit, offset=offset)
-    return GRListResponse(
-        items=[GRResponse.model_validate(gr) for gr in items],
-        total=total,
-    )
+    out: list[GRResponse] = []
+    for gr in items:
+        resp = GRResponse.model_validate(gr)
+        # All GRs here belong to the same PO — stamp its number for the FE.
+        resp.po_number = po.po_number
+        out.append(resp)
+    return GRListResponse(items=out, total=total)
 
 
 @router.post(
