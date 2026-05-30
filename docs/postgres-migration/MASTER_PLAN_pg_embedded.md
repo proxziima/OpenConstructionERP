@@ -498,3 +498,50 @@ reconciliation needed.
 NEXT: Phase 4 - flip the DEFAULT to embedded PG (incl VPS) + transparent
 one-time SQLite->PG auto-migration on first embedded boot when a legacy
 openestimate.db exists. This is the v6.0.0 cut and the highest-risk step.
+
+
+---
+
+### PROGRESS 2026-05-30 (Phase 4 core - transparent auto-migration) - DONE (default NOT yet flipped)
+
+Built and tested the risky core of Phase 4 WITHOUT flipping the default (still
+opt-in via embedded PG), so the v6.0.0 default-flip + VPS cutover stays a
+deliberate, separately-confirmed step.
+
+* **embedded_pg.auto_migrate_legacy_sqlite(data_dir)**: one-time transparent
+  SQLite -> embedded-PG migration. Runs only when embedded PG is up, a legacy
+  <data_dir>/openestimate.db has content, target is PG, and PG has no app rows
+  yet (never clobbers an existing PG). Uses the migrate_sqlite_to_postgres API
+  (_load_metadata / create_all / _target_has_rows / _copy_all / _reset_sequences),
+  then renames the SQLite file to openestimate.db.migrated so it cannot re-run.
+  Never raises (returns a status string). Wired into cli.py _setup_env right
+  after embedded boot (prints a line on actual migration).
+
+* **REAL latent bug fixed (pg_optimizations.py)**: _desired_indexes constructed
+  Index(...) objects that auto-attach to the shared Base.metadata, so repeated
+  create_all in one process accumulated duplicate composite/GIN index objects ->
+  duplicate CREATE INDEX -> "relation ix_oe_bim_model_project_id_status already
+  exists". This is ALSO the root of the SQLite test_assemblies 13-errors. Fixed
+  with a by-NAME idempotency guard (_new helper skips any index name already on
+  the table). tests/pg now 7/7 GREEN together (was 2 passed / 5 errors).
+
+* **Tests**: tests/pg/test_auto_migrate.py drives a legacy SQLite db (1 user +
+  1 project) -> boot embedded PG -> migrate -> rows present in PG -> SQLite
+  retired -> re-run is a safe skip. 7/7 tests/pg green on PG, all skipped on SQLite.
+
+STILL PENDING for Phase 4 (the irreversible / outward-facing flip - needs explicit
+go-ahead, being surfaced to the user now):
+  1. Make pixeltable-pgserver a BASE dependency (move out of [dev]) so a plain
+     pip install ships the PG binaries (~13MB/platform) - packaging decision.
+  2. Flip the default so serve boots embedded PG with no flag (e.g. default
+     OE_USE_EMBEDDED_PG unless OE_USE_SQLITE=1 escape hatch).
+  3. Wire create_all schema build + the auto-migration on that default path.
+  4. Cut v6.0.0 (version-sync across pyproject/package.json/CHANGELOG/Changelog.tsx).
+  5. VPS cutover (root@31.97.123.81): migrate the live openestimate.db -> embedded
+     PG, restart the systemd unit, verify /api/health. Runbook in
+     docs/postgres-migration/VPS_CUTOVER_RUNBOOK.md.
+Phase 5 (remove SQLite + dual-dialect tax) follows the flip.
+
+NOTE: a deep multi-agent PG-correctness audit workflow is running in parallel
+(per-module dialect-risk audit + adversarial verification) to harden quality
+before the flip; verified findings will be turned into tests/pg cases and fixes.

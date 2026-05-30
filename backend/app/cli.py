@@ -192,8 +192,13 @@ def _setup_env(data_dir: Path, host: str, port: int) -> None:
     # builds the engine — _setup_env is that earliest point for every command.
     from app.core import embedded_pg
 
-    if embedded_pg.is_requested():
-        embedded_pg.boot(data_dir)
+    if embedded_pg.is_requested() and embedded_pg.boot(data_dir):
+        # Transparent one-time SQLite -> PostgreSQL migration: if the box has a
+        # legacy openestimate.db and the embedded cluster is still empty, move
+        # the data over before the server starts. No-op otherwise.
+        status = embedded_pg.auto_migrate_legacy_sqlite(data_dir)
+        if status.startswith("migrated"):
+            print(_green(_u("✓ ", "OK ")) + status)
 
     os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
     os.environ.setdefault("DATABASE_SYNC_URL", f"sqlite:///{db_path}")

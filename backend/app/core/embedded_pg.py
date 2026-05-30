@@ -98,6 +98,85 @@ def boot(data_dir: Path | str) -> bool:
     return True
 
 
+def auto_migrate_legacy_sqlite(data_dir: Path | str) -> str:
+    """One-time transparent SQLite -> embedded-PostgreSQL data migration.
+
+    Runs only when ALL hold: embedded PG is running, a legacy
+    ``<data_dir>/openestimate.db`` exists with content, the target is PostgreSQL,
+    and the embedded cluster has no app rows yet (so an already-populated PG is
+    never clobbered). On success the SQLite file is renamed to
+    ``openestimate.db.migrated`` (with a numeric suffix if needed) so it never
+    re-runs. Never raises -- returns a human-readable status string for the
+    caller to log/print. A no-op (and safe) when the preconditions don't hold.
+    """
+    if _server is None:
+        return "skip: embedded PostgreSQL not running"
+
+    sqlite_file = Path(data_dir).expanduser() / "openestimate.db"
+    try:
+        if not sqlite_file.exists() or sqlite_file.stat().st_size == 0:
+            return "skip: no legacy SQLite database to migrate"
+    except OSError as exc:
+        return f"skip: cannot stat {sqlite_file}: {exc!r}"
+
+    sync_url = os.environ.get("DATABASE_SYNC_URL", "")
+    if "postgresql" not in sync_url:
+        return "skip: target is not PostgreSQL"
+
+    try:
+        from sqlalchemy import create_engine
+
+        from app.scripts import migrate_sqlite_to_postgres as migrator
+    except Exception as exc:  # noqa: BLE001
+        logger.error("auto-migration unavailable: %r", exc)
+        return f"error: migration module import failed: {exc!r}"
+
+    dst = None
+    src = None
+    try:
+        base = migrator._load_metadata()
+        dst = create_engine(sync_url)
+        base.metadata.create_all(dst)
+
+        existing = migrator._target_has_rows(dst, base)
+        if existing:
+            return f"skip: embedded PostgreSQL already has data (e.g. '{existing}')"
+
+        src = migrator._make_source_engine(f"sqlite:///{sqlite_file.as_posix()}")
+        skipped = migrator._copy_all(src, dst, base, 1000)
+        migrator._reset_sequences(dst, base)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("SQLite -> PostgreSQL auto-migration failed")
+        return f"error: {exc!r}"
+    finally:
+        for eng in (src, dst):
+            if eng is not None:
+                try:
+                    eng.dispose()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    # Rename the source so a later boot does not migrate again.
+    backup = sqlite_file.with_name(sqlite_file.name + ".migrated")
+    counter = 0
+    while backup.exists():
+        counter += 1
+        backup = sqlite_file.with_name(f"{sqlite_file.name}.migrated.{counter}")
+    try:
+        sqlite_file.rename(backup)
+        kept = backup.name
+    except OSError:
+        logger.warning("migrated but could not rename %s", sqlite_file)
+        kept = sqlite_file.name + " (rename failed)"
+
+    msg = (
+        f"migrated SQLite -> embedded PostgreSQL "
+        f"(skipped {skipped} unconvertible rows); legacy db kept as {kept}"
+    )
+    logger.info(msg)
+    return msg
+
+
 def shutdown() -> None:
     """Stop the embedded cluster if this process booted one (safe to always call)."""
     global _server

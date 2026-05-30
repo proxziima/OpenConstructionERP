@@ -101,6 +101,21 @@ def _desired_indexes(table):  # noqa: ANN001, ANN202
     covered = _existing_single_col_left(table)
     colnames = {c.name for c in table.columns}
 
+    # Index names already on the table -- including ones a PRIOR run of this
+    # generator added (constructing ``Index(...)`` auto-attaches it to
+    # ``table.indexes`` on the shared ``Base.metadata``). Guarding every yield by
+    # name makes the generator idempotent: without it, a second ``create_all`` in
+    # the same process re-yields the same composite/GIN names and ``create_all``
+    # emits a duplicate ``CREATE INDEX`` ("relation ... already exists"). It also
+    # avoids colliding with a model that already declares one of these names.
+    existing_names = {ix.name for ix in table.indexes if ix.name}
+
+    def _new(name, *cols, **kw):  # noqa: ANN001, ANN202
+        if name in existing_names:
+            return None
+        existing_names.add(name)
+        return Index(name, *cols, **kw)
+
     # Foreign-key columns -> btree, unless already covered.
     for col in table.columns:
         if not col.foreign_keys:
@@ -108,26 +123,32 @@ def _desired_indexes(table):  # noqa: ANN001, ANN202
         if col.name in covered:
             continue
         covered.add(col.name)
-        yield Index(_index_name(table.name, [col.name]), col)
+        ix = _new(_index_name(table.name, [col.name]), col)
+        if ix is not None:
+            yield ix
 
     # Composite hot paths.
     if "project_id" in colnames and "created_at" in colnames:
-        yield Index(
+        ix = _new(
             _index_name(table.name, ["project_id", "created_at"]),
             table.c["project_id"],
             table.c["created_at"],
         )
+        if ix is not None:
+            yield ix
     if "project_id" in colnames and "status" in colnames:
-        yield Index(
+        ix = _new(
             _index_name(table.name, ["project_id", "status"]),
             table.c["project_id"],
             table.c["status"],
         )
+        if ix is not None:
+            yield ix
 
     # GIN on path-queried JSON columns (PostgreSQL only).
     for col in table.columns:
         if col.name in GIN_JSON_COLUMNS and isinstance(col.type, JSON):
-            yield Index(
+            ix = _new(
                 _index_name(table.name, [col.name], gin=True),
                 col,
                 postgresql_using="gin",
@@ -139,6 +160,8 @@ def _desired_indexes(table):  # noqa: ANN001, ANN202
                 # (?, ?|, ?&), which the app does not use on these columns.
                 postgresql_ops={col.name: "jsonb_path_ops"},
             )
+            if ix is not None:
+                yield ix
 
 
 def _ensure_performance_indexes(target, connection, **kw):  # noqa: ANN001, ANN202
