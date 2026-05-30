@@ -2629,6 +2629,15 @@ def create_app() -> FastAPI:
 
         await engine.dispose()
 
+        # Stop the embedded PostgreSQL cluster last (after the engine pool is
+        # closed), if this process booted one. No-op otherwise.
+        try:
+            from app.core import embedded_pg
+
+            embedded_pg.shutdown()
+        except Exception:  # noqa: BLE001
+            logger.debug("embedded PostgreSQL shutdown skipped", exc_info=True)
+
     # ── Frontend Static Files (CLI / single-image mode) ─────────────────────
     # Registered HERE, before the app is returned from create_app(), so the
     # SPA 404 exception handler is already in app.exception_handlers when

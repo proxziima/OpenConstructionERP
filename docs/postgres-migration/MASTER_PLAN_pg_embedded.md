@@ -444,3 +444,57 @@ NEXT: Phase 3 - embedded-PG opt-in (serve --embedded-pg / OE_USE_EMBEDDED_PG),
 lifecycle (boot before app import in cli.py, set max_connections, srv.cleanup on
 shutdown), data dir reconciliation (~/.openestimate vs ~/.openestimator), using
 the integration map already produced by the Explore agent.
+
+
+---
+
+### PROGRESS 2026-05-30 (Phase 3 - embedded-PG opt-in) - DONE
+
+Opt-in embedded PostgreSQL runtime, no Docker, no behaviour change by default.
+
+* **app/core/embedded_pg.py** (new): boot(data_dir) starts a real PG16 via
+  pixeltable_pgserver at <data_dir>/pgdata and sets DATABASE_URL +
+  DATABASE_SYNC_URL from make_url(get_uri()).set(drivername=...) (portable:
+  TCP on Windows, unix socket on Linux). Idempotent, never raises (logs + returns
+  False -> SQLite fallback). is_requested() reads OE_USE_EMBEDDED_PG.
+  shutdown() calls srv.cleanup(). Module-level _server handle.
+* **Wiring** (cli.py): --embedded-pg flag on serve (_add_common_server_args);
+  main() maps the flag to OE_USE_EMBEDDED_PG=1 right after parse_args; _setup_env
+  boots embedded PG (when requested) BEFORE the SQLite setdefault and before any
+  from app... import - which satisfies the ordering contract because
+  app.database builds its engine from settings at import time and _setup_env is
+  the earliest point every command runs. app/core/__init__.py is empty so the
+  from app.core import embedded_pg in _setup_env does not pull in app.database.
+* **Shutdown** (main.py): the on_event("shutdown") handler calls
+  embedded_pg.shutdown() after engine.dispose().
+* **Startup schema**: no new code needed - main.py:2094 already runs create_all
+  for any URL containing "postgresql", so an embedded cluster auto-creates the
+  full 434-table schema on first boot (the SQLite-only sqlite_auto_migrate is
+  skipped). External PG still takes the "Alembic manages schema" branch.
+
+Verified:
+* serve --help shows --embedded-pg; cli.py/main.py/embedded_pg.py all compile.
+* Default path unchanged: _setup_env with no flag sets the SQLite URL, boots no
+  PG, creates no pgdata.
+* tests/pg/test_embedded_pg.py: boot -> URLs (asyncpg+psycopg2) -> real SELECT 1
+  over asyncpg -> idempotent re-boot -> shutdown. tests/pg now 6/6 GREEN on PG,
+  all SKIPPED on SQLite.
+
+Usage: openconstructionerp serve --embedded-pg OR OE_USE_EMBEDDED_PG=1
+openconstructionerp serve. Single-process/single-worker (the default); use an
+external DATABASE_URL for multi-worker.
+
+HIGH #3 (pool sizing) resolution: embedded PG keeps PG's default
+max_connections=100; the app pool is 24 + 10 overflow = 34 per worker and
+embedded is single-worker, so 34 < 100 holds with headroom. No code change; if a
+future multi-worker embedded mode is added it must raise max_connections first.
+
+DATA-DIR note: the reported ~/.openestimate vs ~/.openestimator split is NOT a
+runtime bug - cli.py DEFAULT_DATA_DIR and the JWT secret both use
+~/.openestimate; ~/.openestimator only appears in a legacy read-fallback and some
+docstrings. Embedded pgdata lives under the same ~/.openestimate/pgdata. No
+reconciliation needed.
+
+NEXT: Phase 4 - flip the DEFAULT to embedded PG (incl VPS) + transparent
+one-time SQLite->PG auto-migration on first embedded boot when a legacy
+openestimate.db exists. This is the v6.0.0 cut and the highest-risk step.

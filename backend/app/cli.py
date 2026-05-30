@@ -184,6 +184,17 @@ def _setup_env(data_dir: Path, host: str, port: int) -> None:
 
     db_path = data_dir / "openestimate.db"
 
+    # Optional embedded PostgreSQL (no Docker): boot a real in-process PG and
+    # point DATABASE_URL/DATABASE_SYNC_URL at it BEFORE the SQLite setdefault
+    # below (which then no-ops because the keys are already set). Opt-in via
+    # ``serve --embedded-pg`` or OE_USE_EMBEDDED_PG=1. If it cannot start it logs
+    # and falls back to SQLite. Must run before any ``from app...`` import that
+    # builds the engine — _setup_env is that earliest point for every command.
+    from app.core import embedded_pg
+
+    if embedded_pg.is_requested():
+        embedded_pg.boot(data_dir)
+
     os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
     os.environ.setdefault("DATABASE_SYNC_URL", f"sqlite:///{db_path}")
     os.environ.setdefault("VECTOR_BACKEND", "lancedb")
@@ -1004,6 +1015,11 @@ def _add_common_server_args(p: argparse.ArgumentParser) -> None:
         default=str(DEFAULT_DATA_DIR),
         help=f"Data directory (default: {DEFAULT_DATA_DIR})",
     )
+    p.add_argument(
+        "--embedded-pg",
+        action="store_true",
+        help="Run an in-process PostgreSQL (no Docker); data in <data-dir>/pgdata",
+    )
 
 
 def main() -> None:
@@ -1094,6 +1110,12 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # An explicit --embedded-pg flag (serve) is equivalent to exporting
+    # OE_USE_EMBEDDED_PG=1: it tells _setup_env to boot an in-process PostgreSQL
+    # before any app module (and therefore the engine) is imported.
+    if getattr(args, "embedded_pg", False):
+        os.environ["OE_USE_EMBEDDED_PG"] = "1"
 
     if args.command == "serve":
         cmd_serve(args)
