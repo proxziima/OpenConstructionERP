@@ -10,6 +10,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
+from app.core.sql_numeric import numeric_value
 from app.modules.boq.models import (
     BOQ,
     BOQActivityLog,
@@ -95,7 +96,7 @@ class BOQRepository:
         pos_stmt = (
             select(
                 Position.boq_id,
-                func.sum(cast(Position.total, Float)).label("direct_cost"),
+                func.sum(numeric_value(Position.total)).label("direct_cost"),
             )
             .where(Position.boq_id.in_(boq_ids))
             .group_by(Position.boq_id)

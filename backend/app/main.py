@@ -1930,6 +1930,13 @@ def create_app() -> FastAPI:
                 )
             """
             await conn.execute(text(create_sql))
+            # PostgreSQL's ``created_at`` is TIMESTAMPTZ: asyncpg rejects an ISO
+            # *string* ("expected datetime, got 'str'"), so bind a real aware
+            # datetime there. SQLite's column is TEXT, where binding a datetime
+            # object trips Python 3.12's deprecated default adapter — keep the
+            # ISO string for that dialect.
+            now_utc = datetime.now(UTC)
+            created_at_val: object = now_utc if conn.dialect.name == "postgresql" else now_utc.isoformat()
             await conn.execute(
                 text("""
                     INSERT INTO oe_feedback (category, subject, description, email, page_path, created_at)
@@ -1941,7 +1948,7 @@ def create_app() -> FastAPI:
                     "description": description,
                     "email": email,
                     "page_path": page_path,
-                    "created_at": datetime.now(UTC).isoformat(),
+                    "created_at": created_at_val,
                 },
             )
 

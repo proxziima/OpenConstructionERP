@@ -9,7 +9,7 @@ attributes would otherwise hold.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -374,6 +374,12 @@ class QMSRepository:
         date_from_iso: str,
         date_to_iso: str,
     ) -> int:
+        # ``created_at`` is the inherited Base column (TIMESTAMPTZ on
+        # PostgreSQL), so the bounds must be datetime objects: asyncpg
+        # rejects a str bound against a timestamptz comparison. SQLite
+        # compares the same datetime objects fine.
+        date_from = datetime.fromisoformat(date_from_iso)
+        date_to = datetime.fromisoformat(date_to_iso)
         stmt = (
             select(func.count())
             .select_from(QMSAuditFinding)
@@ -381,8 +387,8 @@ class QMSRepository:
             .where(
                 QMSAudit.project_id == project_id,
                 QMSAuditFinding.status != "closed",
-                QMSAuditFinding.created_at >= date_from_iso,
-                QMSAuditFinding.created_at < date_to_iso,
+                QMSAuditFinding.created_at >= date_from,
+                QMSAuditFinding.created_at < date_to,
             )
         )
         return (await self.session.execute(stmt)).scalar_one()

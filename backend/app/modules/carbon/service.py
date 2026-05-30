@@ -1948,11 +1948,21 @@ class CarbonService:
             intensity_metrics=intensity,
             narrative=narrative,
         )
+        # Coerce ISO strings to date objects; Date columns reject str on asyncpg.
+        today = datetime.now(UTC).date()
+        try:
+            period_start_date = date.fromisoformat(period_start) if period_start else today
+        except ValueError:
+            period_start_date = today
+        try:
+            period_end_date = date.fromisoformat(period_end) if period_end else today
+        except ValueError:
+            period_end_date = today
         report = SustainabilityReport(
             project_id=project_id,
             inventory_id=inventory_id,
-            period_start=period_start or datetime.now(UTC).date().isoformat(),
-            period_end=period_end or datetime.now(UTC).date().isoformat(),
+            period_start=period_start_date,
+            period_end=period_end_date,
             framework="tcfd",
             totals={**totals, "intensity": intensity, "tcfd_body": body},
             narrative=(narrative or {}).get("metrics_and_targets", ""),

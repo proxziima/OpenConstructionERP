@@ -448,6 +448,11 @@ async def update_comment(
             comment=comment,
         )
 
+    # ``updated_at`` carries ``onupdate=func.now()`` (server-computed) and is
+    # expired after the flush; reload it inside the async greenlet so the
+    # router's sync ``model_validate`` doesn't trigger lazy IO (MissingGreenlet).
+    await session.refresh(comment)
+
     mention_stmt = select(FileCommentMention).where(FileCommentMention.comment_id == comment_id)
     mentions = list((await session.execute(mention_stmt)).scalars().all())
     return comment, mentions

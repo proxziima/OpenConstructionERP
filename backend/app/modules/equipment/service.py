@@ -422,6 +422,11 @@ class EquipmentService:
                     exc_info=True,
                 )
 
+        # equipment_repo.update_fields() calls session.expire_all(), which
+        # expires this in-memory reading. Reload its columns within the async
+        # greenlet so the router's model_validate() does not trigger a sync
+        # lazy reload (MissingGreenlet on asyncpg).
+        await self.session.refresh(reading)
         return reading
 
     async def get_latest_telemetry(self, equipment_id: uuid.UUID) -> TelemetryReading | None:

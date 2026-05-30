@@ -1923,6 +1923,10 @@ class HSEAdvancedService:
             obj.verification_notes = f"{obj.verification_notes}\n{entry}" if obj.verification_notes else entry
 
         await self.session.flush()
+        # Re-load the instance's attributes after the flush expired them, so the
+        # event payload below and the downstream Pydantic serialization read fresh
+        # values inside the async greenlet (avoids MissingGreenlet on asyncpg).
+        await self.session.refresh(obj)
         _safe_publish(
             "hse.corrective_action.transitioned",
             {

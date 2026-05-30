@@ -456,6 +456,11 @@ class DistributionListService:
         except IntegrityError as exc:
             await self.session.rollback()
             raise DistributionConflictError(payload.name or row.name) from exc
+        # Reload server-computed scalars (updated_at) and the members
+        # relationship inside the async context so serialize-after-update
+        # does not trigger a lazy load outside the greenlet (MissingGreenlet).
+        await self.session.refresh(row)
+        await self.session.refresh(row, attribute_names=["members"])
         return row
 
     async def delete(self, list_id: uuid.UUID, user_id: uuid.UUID) -> None:

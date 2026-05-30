@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import event_bus
+from app.core.sql_numeric import numeric_value
 from app.modules.procurement.models import (
     GoodsReceipt,
     GoodsReceiptItem,
@@ -913,7 +914,9 @@ class ProcurementService:
         gr_stmt = (
             _select(
                 GoodsReceiptItem.po_item_id,
-                _func.coalesce(_func.sum(GoodsReceiptItem.quantity_received), "0"),
+                # quantity_received is String(50) — sum it numerically (PG-safe
+                # via numeric_value) and coalesce the empty-group SUM to 0.
+                _func.coalesce(_func.sum(numeric_value(GoodsReceiptItem.quantity_received)), 0),
             )
             .join(GoodsReceipt, GoodsReceipt.id == GoodsReceiptItem.receipt_id)
             .where(GoodsReceipt.po_id == po_id)
@@ -922,8 +925,7 @@ class ProcurementService:
             .group_by(GoodsReceiptItem.po_item_id)
         )
         gr_rows = (await self.session.execute(gr_stmt)).all()
-        # SUM of String columns returns the raw string of the first row on
-        # SQLite — convert to Decimal defensively.
+        # numeric_value already returns a float; convert to Decimal defensively.
         received_by_item: dict[uuid.UUID, Decimal] = {row[0]: _to_decimal(row[1]) for row in gr_rows}
 
         # ── Invoiced quantities — best-effort, optional finance module ──
@@ -1119,7 +1121,9 @@ class ProcurementService:
             recv_stmt = (
                 _select(
                     GoodsReceiptItem.po_item_id,
-                    _func.coalesce(_func.sum(GoodsReceiptItem.quantity_received), "0"),
+                    # quantity_received is String(50) — sum it numerically
+                    # (PG-safe via numeric_value); coalesce empty group to 0.
+                    _func.coalesce(_func.sum(numeric_value(GoodsReceiptItem.quantity_received)), 0),
                 )
                 .join(GoodsReceipt, GoodsReceipt.id == GoodsReceiptItem.receipt_id)
                 .where(GoodsReceipt.po_id.in_(po_ids))

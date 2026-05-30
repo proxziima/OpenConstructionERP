@@ -299,6 +299,9 @@ known-first-party = ["app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Prepend the backend source dir so tests always import the local ``app``
+# package, never a stale ``pip install openconstructionerp`` in site-packages.
+pythonpath = ["."]
 asyncio_mode = "auto"
 filterwarnings = [
     "ignore::DeprecationWarning",

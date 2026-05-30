@@ -381,14 +381,21 @@ async def _content_search_postgres(
     """Postgres tsvector-backed search."""
     from sqlalchemy import text as sa_text
 
-    sql = """
+    # Compute the tsvector inline rather than referencing a stored ``tsv_vector``
+    # column. That column was only ever added by a hand-written migration; a fresh
+    # ``create_all`` PostgreSQL schema does not have it, so the original query
+    # raised "column tsv_vector does not exist". ``to_tsvector(content_text)``
+    # over the row is equivalent for correctness (a stored generated column +
+    # GIN index would be a pure performance optimisation, tracked separately).
+    tsv = "to_tsvector('simple', coalesce(content_text, ''))"
+    sql = f"""
         SELECT * FROM oe_file_search_index
         WHERE project_id = :pid
         AND (
-            tsv_vector @@ plainto_tsquery('simple', :q)
+            {tsv} @@ plainto_tsquery('simple', :q)
             OR content_text ILIKE :like
         )
-    """
+    """  # noqa: S608 - tsv is a fixed literal, not user input
     params: dict = {
         "pid": str(project_id),
         "q": q,
@@ -397,7 +404,7 @@ async def _content_search_postgres(
     if kind is not None:
         sql += " AND file_kind = :kind"
         params["kind"] = kind
-    sql += " ORDER BY ts_rank(tsv_vector, plainto_tsquery('simple', :q)) DESC LIMIT :limit"
+    sql += f" ORDER BY ts_rank({tsv}, plainto_tsquery('simple', :q)) DESC LIMIT :limit"
     params["limit"] = limit
 
     result = await session.execute(sa_text(sql), params)

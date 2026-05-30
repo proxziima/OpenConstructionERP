@@ -1093,12 +1093,22 @@ async def convert_contact_to_lead(
     # we return 422 with a clear message rather than 500.
     try:
         from app.modules.contacts import bridge as _contacts_bridge
-        from app.modules.property_dev.models import Lead
+        from app.modules.property_dev.models import Development, Lead
     except ImportError as exc:  # pragma: no cover — install guard
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Property Development module not installed.",
         ) from exc
+
+    # development_id is optional on a Lead, but when supplied PostgreSQL
+    # enforces the FK — validate it exists rather than letting the INSERT
+    # fail with an uncaught IntegrityError (500). SQLite silently accepted
+    # the dangling ref; this guard makes both dialects return a 404.
+    if payload.development_id is not None and await session.get(Development, payload.development_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Development {payload.development_id} not found",
+        )
 
     full_name = (
         " ".join(p for p in (contact.first_name or "", contact.last_name or "") if p).strip()
@@ -1169,12 +1179,27 @@ async def convert_contact_to_buyer(
 
     try:
         from app.modules.contacts import bridge as _contacts_bridge
-        from app.modules.property_dev.models import Buyer
+        from app.modules.property_dev.models import Buyer, Development, Plot
     except ImportError as exc:  # pragma: no cover
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Property Development module not installed.",
         ) from exc
+
+    # Validate FK parents up front. PostgreSQL enforces these FKs, so a
+    # dangling development_id / plot_id raises an uncaught IntegrityError
+    # (500). SQLite has FK enforcement off and silently accepted the
+    # dangling ref. Guard here so both dialects return a clear 404.
+    if await session.get(Development, payload.development_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Development {payload.development_id} not found",
+        )
+    if payload.plot_id is not None and await session.get(Plot, payload.plot_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Plot {payload.plot_id} not found",
+        )
 
     full_name = (
         " ".join(p for p in (contact.first_name or "", contact.last_name or "") if p).strip()

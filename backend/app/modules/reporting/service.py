@@ -207,6 +207,11 @@ class ReportingService:
             )
             snapshot = await self.kpi_repo.create(snapshot)
 
+        # The upsert flush expires the instance's attributes; refresh before
+        # the event payload reads them and the router serializes the snapshot,
+        # otherwise asyncpg emits a sync lazy reload outside the greenlet.
+        await self.session.refresh(snapshot)
+
         await _safe_publish(
             "reporting.kpi_snapshot.created",
             {

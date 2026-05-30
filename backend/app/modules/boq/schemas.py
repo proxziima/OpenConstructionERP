@@ -1042,7 +1042,7 @@ class ActivityLogResponse(BaseModel):
     id: UUID
     project_id: UUID | None
     boq_id: UUID | None
-    user_id: UUID
+    user_id: UUID | None = None
     action: str
     target_type: str
     target_id: UUID | None

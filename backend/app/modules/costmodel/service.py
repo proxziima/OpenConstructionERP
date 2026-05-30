@@ -1139,8 +1139,9 @@ class CostModelService:
                     p = start[:7]
                     period_outflows[p] = period_outflows.get(p, Decimal("0")) + amount
             else:
-                # No schedule — use a generic unscheduled bucket
-                period_outflows["unscheduled"] = period_outflows.get("unscheduled", Decimal("0")) + amount
+                # No schedule — use a generic unscheduled bucket.
+                # Keep the sentinel <= 10 chars to fit the period column (varchar(10)).
+                period_outflows["unsched"] = period_outflows.get("unsched", Decimal("0")) + amount
 
         # Build cash flow entries with running cumulative
         entries: list[CashFlow] = []

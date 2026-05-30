@@ -45,6 +45,24 @@ class VendorRepository:
     async def get(self, vendor_id: uuid.UUID) -> Vendor | None:
         return await self.session.get(Vendor, vendor_id)
 
+    async def get_loaded(self, vendor_id: uuid.UUID) -> Vendor | None:
+        """Re-select a vendor with ``price_lists`` eagerly loaded inside async.
+
+        After a bulk ``update().values()`` the identity-mapped Vendor is
+        expired; serializing it would refresh it and trigger the
+        ``lazy="selectin"`` ``price_lists`` load synchronously outside the
+        async greenlet (-> MissingGreenlet on asyncpg). ``populate_existing``
+        forces the expired instance and its relationship to be re-populated
+        here, within the greenlet.
+        """
+        stmt = (
+            select(Vendor)
+            .options(selectinload(Vendor.price_lists))
+            .where(Vendor.id == vendor_id)
+            .execution_options(populate_existing=True)
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
     async def get_by_code(self, code: str) -> Vendor | None:
         stmt = select(Vendor).where(Vendor.code == code)
         return (await self.session.execute(stmt)).scalar_one_or_none()

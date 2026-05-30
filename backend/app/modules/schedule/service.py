@@ -1060,13 +1060,17 @@ class ScheduleService:
             fields["metadata_"] = fields.pop("metadata")
 
         if fields:
+            # Snapshot published attributes before update_fields expires the instance
+            # (bulk UPDATE + expire_all would force a sync lazy reload -> MissingGreenlet on asyncpg)
+            activity_id = work_order.activity_id
+
             await self.work_order_repo.update_fields(work_order_id, **fields)
 
             await _safe_publish(
                 "schedule.work_order.updated",
                 {
                     "work_order_id": str(work_order_id),
-                    "activity_id": str(work_order.activity_id),
+                    "activity_id": str(activity_id),
                     "fields": list(fields.keys()),
                 },
                 source_module="oe_schedule",

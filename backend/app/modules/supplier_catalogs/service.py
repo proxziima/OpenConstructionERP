@@ -221,7 +221,10 @@ class SupplierCatalogsService:
             ]
         if payload:
             await self.vendors.update(vendor_id, **payload)
-        refreshed = await self.vendors.get(vendor_id)
+        # Re-select with price_lists eager-loaded: the bulk update expired the
+        # identity-mapped instance, so a plain get + serialize would lazy-load
+        # the relationship synchronously outside the greenlet (MissingGreenlet).
+        refreshed = await self.vendors.get_loaded(vendor_id)
         assert refreshed is not None
         return refreshed
 
@@ -252,19 +255,25 @@ class SupplierCatalogsService:
                 status_code=400,
                 detail=(f"Illegal vendor status transition '{vendor.status}' → '{new_status}'"),
             )
+        # Snapshot scalars before the bulk update expires the instance — reading
+        # them afterwards would refresh the expired Vendor and trigger the
+        # selectin price_lists load outside the greenlet (MissingGreenlet).
+        prev_code = vendor.code
+        prev_status = vendor.status
         await self.vendors.update(vendor_id, status=new_status)
         await _safe_publish(
             event_name,
             {
                 "vendor_id": str(vendor_id),
-                "code": vendor.code,
-                "previous_status": vendor.status,
+                "code": prev_code,
+                "previous_status": prev_status,
                 "new_status": new_status,
                 "actor_id": user_id,
                 "reason": reason,
             },
         )
-        refreshed = await self.vendors.get(vendor_id)
+        # Re-select with price_lists eager-loaded inside async (see get_loaded).
+        refreshed = await self.vendors.get_loaded(vendor_id)
         assert refreshed is not None
         return refreshed
 
@@ -324,7 +333,8 @@ class SupplierCatalogsService:
             ev.VENDOR_RATED,
             {"vendor_id": str(vendor_id), "rating": rating, "actor_id": user_id},
         )
-        refreshed = await self.vendors.get(vendor_id)
+        # Re-select with price_lists eager-loaded inside async (see get_loaded).
+        refreshed = await self.vendors.get_loaded(vendor_id)
         assert refreshed is not None
         return refreshed
 

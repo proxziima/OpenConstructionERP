@@ -87,15 +87,18 @@ def pg_async_url(tmp_path_factory) -> str:
     from sqlalchemy import create_engine
     from sqlalchemy.engine import make_url
 
+    # Register all models + import Base BEFORE booting pgserver. ``get_server``
+    # chdir's into the pgdata directory; doing the cwd-relative ``app`` imports
+    # first keeps them resolving against the source tree regardless.
+    _register_all_models()
+    from app.database import Base
+
     pgdata = str(tmp_path_factory.mktemp("oe_pgdata"))
     srv = pgserver.get_server(pgdata)
     try:
         base = make_url(srv.get_uri())  # TCP on Windows, unix socket on Linux
         async_url = base.set(drivername="postgresql+asyncpg")
         sync_url = base.set(drivername="postgresql+psycopg2")
-
-        _register_all_models()
-        from app.database import Base
 
         sync_engine = create_engine(sync_url)
         Base.metadata.create_all(sync_engine)

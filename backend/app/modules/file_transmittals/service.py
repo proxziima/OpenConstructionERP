@@ -474,6 +474,13 @@ class TransmittalService:
             logger.exception("Failed to persist transmittal cover sheet to storage")
             transmittal.cover_sheet_path = None
         await self.session.flush()
+        # Refresh the scalar columns mutated above so the response builder
+        # can read them synchronously (asyncpg cannot lazy-reload an expired
+        # attribute outside the async greenlet). Relationships stay selectin.
+        await self.session.refresh(
+            transmittal,
+            attribute_names=["updated_at", "cover_sheet_path", "sent_at", "status"],
+        )
         return transmittal
 
     # ── Acknowledge (public) ──────────────────────────────────────────

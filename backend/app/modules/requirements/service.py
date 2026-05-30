@@ -1080,7 +1080,10 @@ class RequirementsService:
         logger.info(
             "Imported %d requirements from text into set %s (errors: %d)",
             len(items),
-            req_set.id,
+            # Use the captured local, not req_set.id: update_fields() above issues
+            # a Core UPDATE that expires req_set, so reading req_set.id here would
+            # emit a sync lazy reload (MissingGreenlet on asyncpg).
+            set_id_val,
             len(parse_errors),
         )
 

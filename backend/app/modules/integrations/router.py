@@ -137,6 +137,10 @@ async def update_integration_config(
         setattr(config, col, value)
 
     await session.flush()
+    # Reload server-computed columns (updated_at onupdate=func.now()) inside the
+    # async greenlet so model_validate below doesn't lazy-load them and raise
+    # MissingGreenlet.
+    await session.refresh(config)
     return IntegrationConfigResponse.model_validate(config)
 
 

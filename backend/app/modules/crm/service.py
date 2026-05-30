@@ -887,21 +887,31 @@ class CrmService:
         )
         await self.opportunity_repo.create(opp)
 
+        # Snapshot opportunity scalars before update_fields(): the repository's
+        # expire_all() expires `opp`, and session.refresh(lead) only refreshes
+        # the lead. Reading opp.* afterwards would emit a sync lazy SELECT ->
+        # MissingGreenlet on asyncpg.
+        opp_id = opp.id
+        opp_stage_id = opp.stage_id
+
         now_iso = datetime.now(UTC).isoformat()
         await self.lead_repo.update_fields(
             lead_id,
             status="converted",
             converted_at=now_iso,
-            converted_opportunity_id=opp.id,
+            converted_opportunity_id=opp_id,
         )
+        # Refresh both ORM instances: update_fields() expired the whole
+        # identity map, and `opp` is returned to the router for serialization.
         await self.session.refresh(lead)
+        await self.session.refresh(opp)
 
         # Initial stage history entry
         await self.history_repo.create(
             OpportunityStageHistory(
-                opportunity_id=opp.id,
+                opportunity_id=opp_id,
                 from_stage_id=None,
-                to_stage_id=opp.stage_id,
+                to_stage_id=opp_stage_id,
                 changed_at=now_iso,
                 changed_by=_to_uuid_or_none(user_id),
             )
@@ -1422,6 +1432,10 @@ class CrmService:
         # at 100) and log a system Activity with the full breakdown.
         new_prob = int(min(100, max(0, round(score["total"]))))
         new_weighted = compute_weighted_value(opp.estimated_value, new_prob)
+        # Snapshot attributes read after update_fields(): the repository's
+        # expire_all() expires `opp`, and reading it back would emit a sync
+        # lazy SELECT -> MissingGreenlet on asyncpg.
+        opp_account_id = opp.account_id
         await self.opportunity_repo.update_fields(
             opportunity_id,
             probability_percent=new_prob,
@@ -1429,7 +1443,7 @@ class CrmService:
         )
         score_activity = CrmActivity(
             owner_user_id=_to_uuid_or_none(user_id),
-            account_id=opp.account_id,
+            account_id=opp_account_id,
             opportunity_id=opportunity_id,
             kind="score",
             subject=f"BANT score: {score['total']} ({score['band']})",

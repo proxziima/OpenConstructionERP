@@ -172,6 +172,13 @@ class SavedViewService:
         except IntegrityError as exc:
             await self.session.rollback()
             raise SavedViewConflictError(view.name) from exc
+        # ``updated_at`` carries an ``onupdate=func.now()`` server-default,
+        # so SQLAlchemy expires the column after the flush to refetch the
+        # DB-computed value. Touching it during response serialisation would
+        # trigger a synchronous lazy-load outside the active greenlet and
+        # raise MissingGreenlet under asyncio. Refresh explicitly so every
+        # column is hydrated before the row leaves the service.
+        await self.session.refresh(view)
         return view
 
     # ── Delete ────────────────────────────────────────────────────────────

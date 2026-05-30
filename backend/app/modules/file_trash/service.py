@@ -50,6 +50,37 @@ def _validate_kind(kind: str) -> None:
         )
 
 
+def _required_columns(model: type) -> list[str]:
+    """Mandatory NOT NULL columns a restore payload must carry.
+
+    Derived straight from the mapper so it stays correct as models
+    evolve: a column counts as required when it is non-nullable, is not
+    the primary key, and has neither a client-side ``default`` nor a
+    ``server_default`` to fall back on. These are exactly the columns
+    that would trigger a NOT NULL violation (asyncpg ``NotNullViolationError``
+    / SQLite ``IntegrityError``) on INSERT if absent.
+    """
+    out: list[str] = []
+    for col_attr in model.__mapper__.column_attrs:  # type: ignore[attr-defined]
+        for col in col_attr.columns:
+            if col.nullable or col.primary_key:
+                continue
+            if col.default is not None or col.server_default is not None:
+                continue
+            out.append(col_attr.key)
+            break
+    return out
+
+
+def _missing_required(model: type, payload: dict[str, Any]) -> list[str]:
+    """Return required column keys absent / null in ``payload``."""
+    return [
+        key
+        for key in _required_columns(model)
+        if payload.get(key) in (None, "")
+    ]
+
+
 def _serialise_row(row: object) -> dict[str, Any]:
     """JSON-snapshot every column on an ORM row.
 
@@ -179,8 +210,8 @@ class FileTrashService:
         caller_supplied_snapshot = payload is not None
         original_row: Any | None = None
 
+        model = _kind_model(kind)
         if not caller_supplied_snapshot:
-            model = _kind_model(kind)
             try:
                 pk_value: Any = uuid.UUID(original_id)
             except (ValueError, TypeError):
@@ -192,6 +223,20 @@ class FileTrashService:
                     detail=f"Original {kind} row not found: {original_id}",
                 )
             snapshot = _serialise_row(original_row)
+        else:
+            # Caller pre-snapshotted (no live row to delete). Reject a
+            # synthetic payload that lacks the columns the kind table
+            # marks NOT NULL — such a row could never be restored and
+            # would only blow up later with an unhandled INSERT error.
+            missing = _missing_required(model, snapshot)
+            if missing:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"Snapshot for kind {kind!r} is missing required "
+                        f"field(s): {', '.join(sorted(missing))}"
+                    ),
+                )
 
         now = datetime.now(UTC)
         row = FileTrash(
@@ -256,6 +301,21 @@ class FileTrashService:
         # Build the ORM row using only attributes the model accepts.
         valid = {c.key for c in model.__mapper__.column_attrs}  # type: ignore[attr-defined]
         clean = {k: v for k, v in payload.items() if k in valid}
+
+        # Guard against an incomplete snapshot (e.g. a legacy / synthetic
+        # trash row whose payload never carried the kind's NOT NULL
+        # columns). Re-inserting it would raise an unhandled INSERT error
+        # (asyncpg ``NotNullViolationError`` / SQLite ``IntegrityError``);
+        # surface a clear 422 instead.
+        missing = _missing_required(model, clean)
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Cannot restore {row.original_kind!r}: snapshot is missing "
+                    f"required field(s): {', '.join(sorted(missing))}"
+                ),
+            )
 
         # SQLAlchemy assigns a fresh ``created_at`` / ``updated_at``
         # server-default; force the original id back so cross-module

@@ -441,6 +441,10 @@ async def update_webhook_target(
         target.active = body.active
     await session.flush()
     await session.commit()
+    # ``expire_on_commit`` cleared every attribute above; reload eagerly so the
+    # response build below does not trigger a sync lazy load outside the
+    # async greenlet (MissingGreenlet on asyncpg).
+    await session.refresh(target)
     return _webhook_to_response(target)
 
 

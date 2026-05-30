@@ -9,7 +9,7 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, MetaData, String, TypeDecorator, func
 from sqlalchemy import event as sa_event
@@ -131,6 +131,11 @@ class GUID(TypeDecorator):
             return value
 
 
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now — Python-side default/onupdate for timestamps."""
+    return datetime.now(UTC)
+
+
 class Base(DeclarativeBase):
     """‌⁠‍Base class for all ORM models.
 
@@ -145,15 +150,27 @@ class Base(DeclarativeBase):
         primary_key=True,
         default=uuid.uuid4,
     )
+    # created_at / updated_at use **Python-side** ``default``/``onupdate`` so the
+    # value is populated on the in-memory instance during flush. The previous
+    # SQL-only ``server_default``/``onupdate=func.now()`` left the attribute
+    # *expired* after every INSERT/UPDATE (the DB computed it), so the next
+    # access — typically synchronous Pydantic ``model_validate`` in a router —
+    # emitted a lazy reload SELECT outside the async greenlet and raised
+    # ``MissingGreenlet`` on asyncpg (SQLite silently tolerated it). With a
+    # Python callable the ORM sets the value itself and never re-fetches, fixing
+    # that entire class of bug across every model at once. ``server_default`` is
+    # kept so raw-SQL inserts and migrations still get a DB-side timestamp.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        default=_utcnow,
         server_default=func.now(),
         nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        default=_utcnow,
+        onupdate=_utcnow,
         server_default=func.now(),
-        onupdate=func.now(),
         nullable=False,
     )
 

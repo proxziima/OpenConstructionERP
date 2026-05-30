@@ -177,6 +177,10 @@ class OpenCDEService:
         comment.metadata_ = meta
 
         await self.session.flush()
+        # The UPDATE recomputes updated_at (onupdate=func.now()) and SQLAlchemy
+        # expires the attribute. Reload it inside the async greenlet so the sync
+        # serialize below does not trigger lazy IO (MissingGreenlet on asyncpg).
+        await self.session.refresh(comment)
         logger.info("BCF topic updated: %s", topic_guid)
         return self._comment_to_topic(comment)
 

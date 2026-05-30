@@ -236,6 +236,12 @@ class ApprovalRouteService:
         if not changed:
             return route
         await self.session.flush()
+        # The UPDATE fires ``updated_at``'s server-side ``onupdate=func.now()``,
+        # which expires the attribute. Reload the scalar columns inside the
+        # async greenlet so the synchronous ``RouteResponse.model_validate``
+        # downstream doesn't trigger lazy IO (MissingGreenlet). Mirrors the
+        # refresh in ``submit_decision`` / ``cancel_instance``.
+        await self.session.refresh(route)
         await log_activity(
             self.session,
             actor_id=actor_id,

@@ -711,12 +711,20 @@ class SubcontractorService:
             raise HTTPException(
                 status_code=404, detail=translate("errors.prequalification_not_found", locale=get_locale())
             )
-        if entity.status == "submitted":
+        # Snapshot scalars up front. ``update_fields`` below ends with
+        # ``expire_all()``; afterwards any read OR write of ``entity`` would emit
+        # a sync lazy-load SELECT during the next autoflush -> MissingGreenlet on
+        # asyncpg (SQLite tolerated it). Track the FSM status in a local instead
+        # of mutating the now-expired ORM instance (the prior ``entity.status =``
+        # write on the expired row was the exact crash trigger).
+        current_status = entity.status
+        subcontractor_id = entity.subcontractor_id
+        if current_status == "submitted":
             # Auto-move through `under_review` so the state machine stays linear.
             await self.prequal.update_fields(prequal_id, status="under_review")
-            entity.status = "under_review"
-        _assert_transition(entity.status, "approved", _PREQUAL_TRANSITIONS, "prequalification")
-        prior_status = entity.status
+            current_status = "under_review"
+        _assert_transition(current_status, "approved", _PREQUAL_TRANSITIONS, "prequalification")
+        prior_status = current_status
         await self.prequal.update_fields(
             prequal_id,
             status="approved",
@@ -726,7 +734,7 @@ class SubcontractorService:
         )
         # Cascade: parent subcontractor is now approved.
         await self.subs.update_fields(
-            entity.subcontractor_id,
+            subcontractor_id,
             prequalification_status="approved",
         )
         await self.session.refresh(entity)
@@ -745,14 +753,14 @@ class SubcontractorService:
             reason=notes,
             module="subcontractors",
             parent_entity_type="subcontractor",
-            parent_entity_id=str(entity.subcontractor_id),
+            parent_entity_id=str(subcontractor_id),
             before_state={"status": prior_status},
             after_state={"status": "approved"},
         )
 
         event_bus.publish_detached(
             "subcontractors.prequalification.approved",
-            {"prequalification_id": str(entity.id), "subcontractor_id": str(entity.subcontractor_id)},
+            {"prequalification_id": str(prequal_id), "subcontractor_id": str(subcontractor_id)},
             source_module="subcontractors",
         )
         return entity
@@ -770,6 +778,9 @@ class SubcontractorService:
             )
         _assert_transition(entity.status, "rejected", _PREQUAL_TRANSITIONS, "prequalification")
         prior_status = entity.status
+        # Snapshot needed scalars before update_fields() expires the ORM instance,
+        # otherwise reading them later emits a sync lazy-load SELECT (MissingGreenlet on asyncpg).
+        subcontractor_id = entity.subcontractor_id
         await self.prequal.update_fields(
             prequal_id,
             status="rejected",
@@ -778,7 +789,7 @@ class SubcontractorService:
             decision_notes=notes,
         )
         await self.subs.update_fields(
-            entity.subcontractor_id,
+            subcontractor_id,
             prequalification_status="rejected",
         )
         await self.session.refresh(entity)
@@ -797,7 +808,7 @@ class SubcontractorService:
             reason=notes,
             module="subcontractors",
             parent_entity_type="subcontractor",
-            parent_entity_id=str(entity.subcontractor_id),
+            parent_entity_id=str(subcontractor_id),
             before_state={"status": prior_status},
             after_state={"status": "rejected"},
         )

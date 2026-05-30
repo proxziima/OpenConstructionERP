@@ -330,8 +330,13 @@ class ModuleLoader:
         manifest.enabled = True
         self._disabled.discard(module_name)
 
-        # Load if not already loaded
-        if module_name not in self._modules:
+        # Load if not already loaded. Also force a reload when a stale
+        # _modules record exists but the live app route table no longer
+        # carries this module's prefix (e.g. routes were stripped by a
+        # prior disable) — otherwise the router would never be re-included
+        # and the endpoints would keep 404ing until a process restart.
+        if module_name not in self._modules or not self._has_live_routes(module_name, app):
+            self._modules.pop(module_name, None)
             await self._load_module(module_name, app)
 
         # Persist
@@ -344,6 +349,20 @@ class ModuleLoader:
             "display_name": manifest.display_name,
             "version": manifest.version,
         }
+
+    def _has_live_routes(self, module_name: str, app: FastAPI) -> bool:
+        """True if the live ASGI route table carries this module's prefix.
+
+        Mirrors the prefix derivation used by _load_module / disable_module
+        (canonical kebab-case plus the legacy underscore mirror).
+        """
+        dir_name = module_name.removeprefix("oe_")
+        kebab_name = dir_name.replace("_", "-")
+        prefixes = (f"/api/v1/{kebab_name}", f"/api/v1/{dir_name}")
+        return any(
+            hasattr(r, "path") and any(getattr(r, "path", "").startswith(p) for p in prefixes)
+            for r in app.routes
+        )
 
     async def disable_module(self, module_name: str, app: FastAPI) -> dict[str, Any]:
         """Disable a module at runtime (removes router from app).
@@ -393,6 +412,13 @@ class ModuleLoader:
                 module_name,
                 ", ".join(sorted(prefixes)),
             )
+
+        # Drop the loaded record so a subsequent enable_module() re-runs
+        # _load_module() and re-includes the router via app.include_router.
+        # Without this, enable_module()'s `module_name not in self._modules`
+        # guard stays False, the router is never re-mounted, and every
+        # /api/v1/<module>/* route 404s until the process restarts.
+        self._modules.pop(module_name, None)
 
         # Mark as disabled
         manifest.enabled = False

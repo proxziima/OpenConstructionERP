@@ -479,6 +479,11 @@ class PunchListService:
                         )
                         continue
 
+                # Snapshot the prior status before update_fields() expires the
+                # in-memory instance (expire_all); reading it afterwards would
+                # trigger a sync lazy-reload outside the async greenlet.
+                from_status = item.status
+
                 update_fields: dict[str, Any] = {"status": "closed"}
                 if comment:
                     update_fields["resolution_notes"] = comment
@@ -491,7 +496,7 @@ class PunchListService:
                     {
                         "item_id": str(item_id),
                         "project_id": str(project_id),
-                        "from_status": item.status,
+                        "from_status": from_status,
                         "to_status": "closed",
                         "user_id": user_id,
                         "bulk": True,

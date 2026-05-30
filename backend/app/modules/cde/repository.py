@@ -94,13 +94,19 @@ class ContainerRepository:
         by_state = {row[0]: row[1] for row in state_rows}
 
         # Count by discipline
+        # Group by the bare column, not coalesce(): PostgreSQL emits the literal
+        # default as a bound parameter, so coalesce(col, $1) in SELECT and
+        # coalesce(col, $2) in GROUP BY are seen as *different* expressions and PG
+        # raises "column discipline_code must appear in the GROUP BY clause".
+        # Grouping by the column itself is valid on both dialects (the SELECT
+        # coalesce stays single-valued per group) and keeps the None->"other" map.
         disc_stmt = (
             select(
                 func.coalesce(DocumentContainer.discipline_code, "other"),
                 func.count(),
             )
             .where(DocumentContainer.project_id == project_id)
-            .group_by(func.coalesce(DocumentContainer.discipline_code, "other"))
+            .group_by(DocumentContainer.discipline_code)
         )
         disc_rows = (await self.session.execute(disc_stmt)).all()
         by_discipline = {row[0]: row[1] for row in disc_rows}
