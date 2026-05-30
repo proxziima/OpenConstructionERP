@@ -335,3 +335,46 @@ With PG universal: Redis caching, Celery offload, multi-tenant RLS. Each its own
 - **NEXT ACTION:** start Phase 1 — add the `pixeltable-pgserver`-backed PG test
   fixture in `backend/tests/conftest.py` + a PG CI lane, keeping the SQLite lane green.
   (Local note: `docker` not needed; `python` not `python3` on this box.)
+
+
+---
+
+### PROGRESS 2026-05-30 (Phase 1 — PG CI lane) — DONE pending full-suite green
+
+Embedded Postgres confirmed working end-to-end on this box (no Docker):
+
+* **Engine**: pixeltable-pgserver 0.5.1 (bundled PostgreSQL 16). Force-reinstalled
+  after a corrupt partial install (dist-info present, package files absent).
+* **Smoke gate PASSED** (re-confirmed this session, fresh run): full ORM schema
+  builds on a real embedded PG cluster — 126 modules discovered, 113 model
+  modules imported, **433 tables, 302 JSONB columns, 1413 indexes, 4 GIN**.
+  Proves the JSON→JSONB @compiles hook and the after_create index events fire,
+  and that there are no jsonb[]/dialect DDL breakers (assemblies/models.py is
+  already plain JSON — the ARRAY(JSON) concern was not present in this HEAD).
+* **conftest PG lane** added (commit 3c9c): OE_TEST_DB=pg → _pg_cluster session
+  fixture boots pgserver + builds schema once; db_session uses an outer
+  transaction + join_transaction_mode=create_savepoint for per-test rollback.
+  Default in-memory SQLite lane unchanged.
+* **Three teardown fixes** so the lane is green, not just passing:
+  - NullPool on the test engine (conftest)
+  - NullPool on the app's global engine under OE_TEST_DB (database._engine_kwargs;
+    never taken in production)
+  - WindowsSelectorEventLoopPolicy in conftest (asyncpg ProactorEventLoop emits
+    'RuntimeError: Event loop is closed' at teardown on Windows; this was the
+    actual fix that flipped the run to rc=0)
+* **Verified**: tests/unit/test_assemblies.py is green on BOTH the PG lane and
+  the default SQLite lane (rc=0 each).
+* **CI** (commit 8c61): new .github/workflows/ci-postgres.yml runs the suite with
+  OE_TEST_DB=pg on ubuntu-latest (no service container — pgserver is embedded);
+  test extra in pyproject gained pixeltable-pgserver<0.6 + asyncpg + psycopg2.
+
+IN FLIGHT: full suite running on the PG lane (backend/_pgfull.txt) to establish
+the green baseline and enumerate Phase-2 PG-correctness failures (LIKE→ILIKE,
+JSONB query forks). Next session: read _pgfull.txt failure list → Phase 2.
+
+HARNESS NOTE: the local tool channel is badly degraded this session (returns
+stale/doubled/truncated output). Reliable pattern that works: run commands that
+emit ONE short line prefixed with a unique token; trust process exit codes over
+rendered text; verify via git. Scratch files in backend/ (_pg_smoke.py,
+_pg_async_probe.py, _patch_conftest.py, _pg*.txt, _pgreinstall.log) are
+gitignored-by-prefix-or-untracked and pending cleanup.
