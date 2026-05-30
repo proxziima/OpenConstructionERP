@@ -136,3 +136,24 @@ async def test_uuid_primary_key_roundtrip(pg_session) -> None:
     )
     got = (await pg_session.execute(text("SELECT id FROM _t_uuid"))).scalar_one()
     assert uuid.UUID(str(got)) == rid
+
+
+async def test_gin_indexes_use_jsonb_path_ops(pg_session) -> None:
+    """Every JSONB GIN index declares the ``jsonb_path_ops`` opclass.
+
+    ``jsonb_path_ops`` is smaller and faster than the default ``jsonb_ops`` for
+    the ``@>`` containment queries the app runs on these columns. The only GIN
+    indexes in the schema are the ones ``pg_optimizations`` builds on the
+    path-queried JSON columns, so all of them must carry the opclass.
+    """
+    rows = (
+        await pg_session.execute(
+            text(
+                "SELECT indexname, indexdef FROM pg_indexes "
+                "WHERE schemaname='public' AND indexdef ILIKE '%USING gin%'"
+            )
+        )
+    ).all()
+    assert rows, "expected at least one GIN index on PostgreSQL"
+    missing = [name for name, ddl in rows if "jsonb_path_ops" not in ddl]
+    assert not missing, f"GIN indexes missing the jsonb_path_ops opclass: {missing}"

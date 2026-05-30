@@ -131,6 +131,13 @@ def _desired_indexes(table):  # noqa: ANN001, ANN202
                 _index_name(table.name, [col.name], gin=True),
                 col,
                 postgresql_using="gin",
+                # jsonb_path_ops: smaller and faster than the default jsonb_ops
+                # for the ``@>`` containment queries the app actually runs on
+                # these columns (it indexes only values/paths, not top-level
+                # keys). It supports @>, @@ and @? -- exactly the containment
+                # operators used -- at the cost of key-existence operators
+                # (?, ?|, ?&), which the app does not use on these columns.
+                postgresql_ops={col.name: "jsonb_path_ops"},
             )
 
 

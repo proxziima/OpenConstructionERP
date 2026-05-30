@@ -70,8 +70,16 @@ def _register_all_models() -> None:
 
 
 @pytest.fixture(scope="session")
-def pg_async_url() -> str:
-    """Boot embedded PG once, build the full schema once, yield the asyncpg URL."""
+def pg_async_url(tmp_path_factory) -> str:
+    """Boot embedded PG once, build the full schema once, yield the asyncpg URL.
+
+    Uses an EPHEMERAL pgdata (fresh ``initdb`` per session) on purpose: a
+    persistent cluster would keep a stale schema, and because ``create_all`` is
+    idempotent (``checkfirst``) it would never pick up DDL changes such as a new
+    index opclass. A clean cluster guarantees the schema always reflects the
+    current models and ``pg_optimizations`` output. First boot costs one initdb
+    (~5-15s); CI runners are fresh anyway.
+    """
     if not _is_pg():
         pytest.skip("PG lane only — set OE_TEST_DB=pg")
 
@@ -79,12 +87,7 @@ def pg_async_url() -> str:
     from sqlalchemy import create_engine
     from sqlalchemy.engine import make_url
 
-    # A stable per-user pgdata so re-runs reuse initdb (first boot is slower).
-    pgdata = os.environ.get(
-        "OE_TEST_PGDATA",
-        os.path.join(os.path.expanduser("~"), ".openestimate", "test_pgdata"),
-    )
-    os.makedirs(pgdata, exist_ok=True)
+    pgdata = str(tmp_path_factory.mktemp("oe_pgdata"))
     srv = pgserver.get_server(pgdata)
     try:
         base = make_url(srv.get_uri())  # TCP on Windows, unix socket on Linux

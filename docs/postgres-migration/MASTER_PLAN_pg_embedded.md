@@ -398,3 +398,49 @@ fix; unrelated to the PG migration.
 
 NEXT: Phase 2 - PG-correctness sweep (.like->.ilike audit, JSONB query forks,
 the 3 HIGH items from the code review), validated by extending tests/pg.
+
+
+---
+
+### PROGRESS 2026-05-30 (Phase 2 - PG correctness) - mostly DONE
+
+Scoped the dialect-divergence surface; it is MUCH smaller than the earlier
+"~95 .like sites" estimate:
+
+* **.like -> .ilike: already done.** Only 15 bare .like( remain vs 111 .ilike(.
+  Audited all 15: bim_hub/file_comments/file_search use func.lower(col).like(
+  lowered_pattern) (portably case-insensitive on both backends); costmodel/
+  finance/procurement match controlled code prefixes ("wif:%", "PO-%",
+  "{prefix}-%") where LIKE is intentional. No incorrect sites - nothing to change.
+* **JSON queries** are centralized in app/core/sql_json.py (dialect-aware);
+  runtime json_extract usage is small and gated. No raw-json_extract breakers.
+* **strftime/pragma/sqlite counts** in the audit were mostly false positives
+  (Python .strftime, "# pragma: no cover", comments/URLs).
+
+3 HIGH from the scale-foundation code review (docs .../_pg_code_review.md):
+* **HIGH #2 - GIN opclass: FIXED.** pg_optimizations.py now builds the JSONB
+  GIN indexes with postgresql_ops={col: "jsonb_path_ops"} (smaller/faster for
+  the @> containment queries; supports @>/@@/@?, drops unused ?/?|/?& key-exists).
+  Verified by tests/pg/test_gin_indexes_use_jsonb_path_ops (every GIN index in
+  the schema declares the opclass).
+* **HIGH #1 - migrate --truncate: FIXED.** migrate_sqlite_to_postgres.py replaced
+  the reverse-sorted per-table DELETE (which a self-referential / circular FK can
+  still violate) with a single TRUNCATE ... RESTART IDENTITY CASCADE over all
+  metadata tables. (delete import dropped; text added.)
+* **HIGH #3 - pool sizing: deferred to Phase 3.** Defaults are pool_size=24 +
+  max_overflow=10 = 34 conns/worker. Safe for the embedded-PG target (single
+  instance, 1 uvicorn worker, max_connections~100). The proper fix is to set
+  embedded PG max_connections when booting it in Phase 3 (so 34*workers + headroom
+  < max_connections holds); changing the LIVE SQLite default's pool now is
+  needless risk. Tracked as a Phase-3 boot-config item.
+
+Test-lane correctness fix: tests/pg/conftest.py now uses an EPHEMERAL pgdata
+(fresh initdb per session) instead of a persistent ~/.openestimate/test_pgdata.
+A persistent cluster kept a stale schema and - because create_all is idempotent -
+never picked up the new GIN opclass, so the jsonb_path_ops test falsely failed
+until the cluster was fresh. tests/pg now: 5/5 GREEN on PG, all SKIPPED on SQLite.
+
+NEXT: Phase 3 - embedded-PG opt-in (serve --embedded-pg / OE_USE_EMBEDDED_PG),
+lifecycle (boot before app import in cli.py, set max_connections, srv.cleanup on
+shutdown), data dir reconciliation (~/.openestimate vs ~/.openestimator), using
+the integration map already produced by the Explore agent.

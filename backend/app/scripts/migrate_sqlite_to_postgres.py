@@ -41,7 +41,7 @@ import sys
 from collections.abc import Iterator
 
 from sqlalchemy import JSON as _JSON
-from sqlalchemy import create_engine, delete, func, inspect, select
+from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.engine import Engine
 
 #: Rows per INSERT batch. Small enough to bound memory on a constrained VPS even
@@ -361,10 +361,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.truncate:
-        print("truncating target tables (reverse FK order)...")
-        with dst.begin() as dconn:
-            for table in reversed(base.metadata.sorted_tables):
-                dconn.execute(delete(table))
+        # TRUNCATE ... CASCADE clears every table in one statement, handling FK
+        # order that an ordered DELETE cannot: self-referential FKs (e.g. BOQ
+        # ``position.parent_id``) and circular cross-module FKs make a per-table
+        # DELETE fail even in reverse ``sorted_tables`` order. RESTART IDENTITY
+        # also resets sequences so the later ``_reset_sequences`` starts clean.
+        print("truncating target tables (TRUNCATE ... RESTART IDENTITY CASCADE)...")
+        table_list = ", ".join(f'"{t.name}"' for t in base.metadata.sorted_tables)
+        if table_list:
+            with dst.begin() as dconn:
+                dconn.execute(text(f"TRUNCATE TABLE {table_list} RESTART IDENTITY CASCADE"))
 
     skipped = _copy_all(src, dst, base, args.batch_size)
     _reset_sequences(dst, base)
