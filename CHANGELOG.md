@@ -5,6 +5,43 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.1.1] - 2026-05-31
+
+### Fixed
+
+- Release pipeline: the Docker image tag is now lowercased before it is pushed
+  to GHCR, so the container image publishes correctly. GHCR rejects any tag
+  whose repository path contains uppercase letters.
+- Desktop builds: raised the Node heap limit for the frontend build so the
+  macOS installer job no longer runs out of memory.
+
+## [6.1.0] - 2026-05-31
+
+### Added
+
+- Flagship reference project: a single residential house built from one real
+  DWG drawing, one Revit model, one IFC model and one PDF plan set. Each CAD
+  and BIM file is converted through the DDC cad2data console converters into
+  our canonical JSON, with no IfcOpenShell and no native IFC parsing. Element
+  groups are linked to bill-of-quantities positions with real quantities, real
+  CWICR cost rates and real resources, with navigation both ways: from a BOQ
+  line to its model elements and from any element back to its BOQ line.
+- Automatic CAD and BIM converter download on first use, with no manual install
+  step.
+
+### Changed
+
+- Showcase demo seeding is now opt-in (set `SEED_SHOWCASE=true`); the flagship
+  reference project always installs.
+
+### Fixed
+
+- Broad audit fix wave: owner checks and IDOR hardening on BOQ exports,
+  currency-correct money handling, RBAC and permission registration fixes,
+  API contract corrections, project geo-hub map rendering with OpenStreetMap
+  tiles, a PWA service-worker MIME-type fix, and silent session refresh so long
+  sessions no longer drop to the login screen.
+
 ## [6.0.0] - 2026-05-30
 
 ### Changed
