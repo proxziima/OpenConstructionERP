@@ -1239,7 +1239,11 @@ export function DocumentsPage() {
                       <DateDisplay value={doc.created_at} />
                     </p>
                     <div className="flex items-center gap-1.5 flex-wrap mt-2">
-                      <Badge variant="neutral" size="sm">{doc.category}</Badge>
+                      <Badge variant="neutral" size="sm">
+                        {t(`documents.cat_${doc.category}`, {
+                          defaultValue: doc.category.charAt(0).toUpperCase() + doc.category.slice(1),
+                        })}
+                      </Badge>
                       {doc.version > 1 && <Badge variant="blue" size="sm">v{doc.version}</Badge>}
                       {doc.cde_state && (
                         <Badge variant={CDE_STATE_COLORS[doc.cde_state] ?? 'neutral'} size="sm">

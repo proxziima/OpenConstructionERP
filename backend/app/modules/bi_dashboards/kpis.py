@@ -950,6 +950,8 @@ async def change_order_ratio_kpi(
 ) -> KPIComputation:
     co_value = Decimal("0")
     count = 0
+    base_currency, fx_map = await _project_currency_and_fx(session, project_id)
+    seen_codes: set[str] = set()
     try:
         from app.modules.changeorders.models import ChangeOrder  # type: ignore
 
@@ -958,9 +960,17 @@ async def change_order_ratio_kpi(
             stmt = stmt.where(ChangeOrder.project_id == project_id)
         rows = (await session.execute(stmt)).scalars().all()
         for row in rows:
-            co_value += _to_decimal(
-                getattr(row, "amount", None) or getattr(row, "total", 0),
+            # The approved figure is authoritative once a CO is signed off;
+            # before that, ``cost_impact`` carries the proposed delta.
+            amt = _to_decimal(
+                getattr(row, "approved_amount", None)
+                if getattr(row, "approved_amount", None) is not None
+                else getattr(row, "cost_impact", 0),
             )
+            code = str(getattr(row, "currency", "") or "")
+            if code:
+                seen_codes.add(code.upper())
+            co_value += _amount_in_base(amt, code, fx_map, base_currency)
             count += 1
     except ImportError:
         pass
@@ -989,14 +999,19 @@ async def change_order_ratio_kpi(
             source_record_count=count,
         )
     pct = co_value / contract_value * Decimal("100")
+    breakdown: dict[str, Any] = {
+        "change_order_total": str(co_value),
+        "contract_value": str(contract_value),
+        "currency": base_currency,
+    }
+    missing = _missing_fx_codes(seen_codes, fx_map, base_currency)
+    if missing:
+        breakdown["missing_fx_codes"] = missing
     return KPIComputation(
         value=pct,
         unit="percent",
         source_record_count=count,
-        breakdown={
-            "change_order_total": str(co_value),
-            "contract_value": str(contract_value),
-        },
+        breakdown=breakdown,
     )
 
 

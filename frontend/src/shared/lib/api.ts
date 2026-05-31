@@ -158,6 +158,19 @@ export function extractErrorMessageFromBody(body: unknown): string | null {
     if (parts.length > 0) return parts.slice(0, 3).join('; ');
   }
 
+  // FastAPI HTTPException with a STRUCTURED `detail` object — e.g. the
+  // bim_hub geometry errors return `{error, category, message, remediation,
+  // request_id, ...}`. Without this branch the object falls through and the
+  // caller's `${detail}` / `new Error(detail)` renders "[object Object]".
+  if (obj.detail && typeof obj.detail === 'object' && !Array.isArray(obj.detail)) {
+    const d = obj.detail as Record<string, unknown>;
+    const msg = typeof d.message === 'string' && d.message.length > 0 ? d.message : null;
+    const rem = typeof d.remediation === 'string' && d.remediation.length > 0 ? d.remediation : null;
+    if (msg) return rem ? `${msg} ${rem}` : msg;
+    const detailError = typeof d.error === 'string' && d.error.length > 0 ? d.error : null;
+    if (detailError) return detailError;
+  }
+
   // Generic envelopes
   if (typeof obj.message === 'string' && obj.message.length > 0) return obj.message;
   if (typeof obj.error === 'string' && obj.error.length > 0) return obj.error;
@@ -243,6 +256,12 @@ export function getErrorMessage(err: unknown): string {
     if (err.message && err.message.length < 200) return err.message;
   }
 
+  // A raw thrown value (plain object / array / FastAPI body) — run it through
+  // the same normaliser so a thrown `{detail: [...]}` or `{detail: {...}}`
+  // never reaches the UI as "[object Object]".
+  const fromBody = extractErrorMessageFromBody(err);
+  if (fromBody) return fromBody;
+
   return i18next.t('errors.unknown', { defaultValue: 'Something went wrong. Please try again.' });
 }
 
@@ -306,6 +325,17 @@ async function request<TResponse>(
 
   if (body !== undefined) {
     headers.set('Content-Type', 'application/json');
+  }
+
+  // Guard against the recurring "double /api prefix" bug class. Every helper
+  // here prepends BASE_URL ("/api"), so a caller that passes a path which
+  // already starts with "/api" would produce "/api/api/..." and 404. Strip a
+  // single leading duplicate BASE_URL from the path before we concatenate it
+  // below, so the whole class of mistakes cannot reach the network.
+  if (path === BASE_URL) {
+    path = '';
+  } else if (path.startsWith(`${BASE_URL}/`)) {
+    path = path.slice(BASE_URL.length);
   }
 
   // Abort budget: fast by default, long only when explicitly opted in for

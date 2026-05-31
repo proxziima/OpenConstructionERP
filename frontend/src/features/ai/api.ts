@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiPatch } from '@/shared/lib/api';
+import { apiGet, apiPost, apiPatch, extractErrorMessageFromBody } from '@/shared/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -218,7 +218,7 @@ export const aiApi = {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(body.detail || 'Photo estimate failed');
+      throw new Error(extractErrorMessageFromBody(body) ?? 'Photo estimate failed');
     }
     return res.json();
   },
@@ -245,7 +245,7 @@ export const aiApi = {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(body.detail || 'File estimate failed');
+      throw new Error(extractErrorMessageFromBody(body) ?? 'File estimate failed');
     }
     return res.json();
   },
@@ -271,7 +271,7 @@ export const aiApi = {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(body.detail || 'CAD extraction failed');
+      throw new Error(extractErrorMessageFromBody(body) ?? 'CAD extraction failed');
     }
     return res.json();
   },
@@ -288,7 +288,7 @@ export const aiApi = {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(body.detail || 'CAD column extraction failed');
+      throw new Error(extractErrorMessageFromBody(body) ?? 'CAD column extraction failed');
     }
     return res.json();
   },
@@ -326,7 +326,7 @@ export const aiApi = {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(body.detail || 'Export failed');
+      throw new Error(extractErrorMessageFromBody(body) ?? 'Export failed');
     }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);

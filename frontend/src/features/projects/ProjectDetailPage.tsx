@@ -60,7 +60,7 @@ import {
   ProjectWidgetsRollupProvider,
 } from './components/ProjectWidgets';
 import { useWidgetSettingsStore } from '@/stores/useWidgetSettingsStore';
-import { apiGet, apiPatch, ApiError } from '@/shared/lib/api';
+import { apiGet, apiPatch, ApiError, extractErrorMessageFromBody } from '@/shared/lib/api';
 import clsx from 'clsx';
 import { projectsApi, type Project } from './api';
 import { PhotosTab } from './PhotosTab';
@@ -184,23 +184,29 @@ async function smartImportFile(boqId: string, file: File): Promise<ImportResult>
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(body.detail || 'Import failed');
+    throw new Error(extractErrorMessageFromBody(body) ?? 'Import failed');
   }
   return res.json();
 }
 
-function formatCurrency(value: number, currency = 'EUR'): string {
-  // Validate currency code — must be 3 uppercase ASCII letters (ISO 4217)
-  const safeCurrency = /^[A-Z]{3}$/.test(currency) ? currency : 'EUR';
+function formatCurrency(value: number, currency?: string): string {
+  // Strict-currency policy (mirrors <MoneyDisplay>): never guess EUR when
+  // the project has no currency configured, which would silently mislabel
+  // a Saudi/UK/US project's money in Euros. Surface an em-dash instead so
+  // the configuration gap is visible.
+  const trimmed = typeof currency === 'string' ? currency.trim() : '';
+  if (!/^[A-Z]{3}$/.test(trimmed)) {
+    return '—';
+  }
   try {
     return new Intl.NumberFormat(i18n.language, {
       style: 'currency',
-      currency: safeCurrency,
+      currency: trimmed,
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     }).format(value);
   } catch {
-    return `${value.toFixed(2)} ${safeCurrency}`;
+    return `${value.toFixed(2)} ${trimmed}`;
   }
 }
 
@@ -1392,7 +1398,10 @@ export function ProjectDetailPage() {
     );
   }
 
-  const currency = project.currency || 'EUR';
+  // No silent EUR fallback — when the project has no currency configured
+  // formatCurrency() renders an em-dash so the gap is visible (the user
+  // can set the currency via the inline editor in the header).
+  const currency = project.currency || undefined;
 
   return (
     <div className="w-full animate-fade-in">
@@ -1525,7 +1534,11 @@ export function ProjectDetailPage() {
                         name: project.name,
                         description: project.description || '',
                         region: project.region || '',
-                        currency: project.currency || 'EUR',
+                        // Don't pre-fill a guessed EUR — leave blank when the
+                        // project has no currency so a click-Save doesn't
+                        // silently stamp EUR. The input placeholder hints the
+                        // ISO-4217 format.
+                        currency: project.currency || '',
                       });
                       setIsEditing(true);
                     }}
@@ -1554,7 +1567,7 @@ export function ProjectDetailPage() {
                       project.classification_standard}
                   </Badge>
                   <Badge variant="neutral" size="sm">
-                    {currency}
+                    {currency ?? t('projects.currency_not_set', { defaultValue: 'Currency not set' })}
                   </Badge>
                   <Badge variant="neutral" size="sm">
                     {project.region}
@@ -1607,7 +1620,7 @@ export function ProjectDetailPage() {
             <RFIInboxWidget projectId={projectId!} />
           )}
           {!isWidgetHidden('change-orders') && (
-            <ChangeOrdersPulseWidget projectId={projectId!} currency={currency} />
+            <ChangeOrdersPulseWidget projectId={projectId!} currency={currency ?? 'EUR'} />
           )}
           {!isWidgetHidden('daily-diary') && (
             <DailyDiaryWidget projectId={projectId!} />
@@ -1616,7 +1629,7 @@ export function ProjectDetailPage() {
             <HSEIncidentsWidget projectId={projectId!} />
           )}
           {!isWidgetHidden('variations') && (
-            <VariationsWidget projectId={projectId!} currency={currency} />
+            <VariationsWidget projectId={projectId!} currency={currency ?? 'EUR'} />
           )}
           {!isWidgetHidden('quality-ncr') && (
             <QualityNCRWidget projectId={projectId!} />
@@ -1631,7 +1644,7 @@ export function ProjectDetailPage() {
           )}
           {!isWidgetHidden('budget-burn') && (
             <div className="lg:col-span-2 xl:col-span-2">
-              <BudgetBurnWidget projectId={projectId!} currency={currency} />
+              <BudgetBurnWidget projectId={projectId!} currency={currency ?? 'EUR'} />
             </div>
           )}
           {!isWidgetHidden('recent-files') && (

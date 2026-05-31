@@ -129,7 +129,7 @@ async function uploadCostFile(file: File): Promise<ImportResult> {
     let detail = 'Upload failed';
     try {
       const body = await response.json();
-      detail = body.detail || detail;
+      detail = extractErrorMessageFromBody(body) ?? detail;
     } catch {
       // ignore parse error
     }
@@ -1151,7 +1151,7 @@ function VectorDatabaseSection() {
         queryClient.invalidateQueries({ queryKey: ['costs', 'vector'] });
       } else {
         const err = await res.json().catch(() => ({ detail: 'Indexing failed' }));
-        addToast({ type: 'error', title: t('costs.indexing_failed', { defaultValue: 'Indexing failed' }), message: err.detail });
+        addToast({ type: 'error', title: t('costs.indexing_failed', { defaultValue: 'Indexing failed' }), message: extractErrorMessageFromBody(err) ?? 'Indexing failed' });
       }
     } catch {
       addToast({ type: 'error', title: t('common.connection_error', { defaultValue: 'Connection error' }) });

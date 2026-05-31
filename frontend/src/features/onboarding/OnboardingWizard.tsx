@@ -42,7 +42,7 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { useModuleStore } from '@/stores/useModuleStore';
 import { useViewModeStore } from '@/stores/useViewModeStore';
 import { aiApi, type AIProvider } from '@/features/ai/api';
-import { apiPost } from '@/shared/lib/api';
+import { apiPost, extractErrorMessageFromBody } from '@/shared/lib/api';
 import {
   ALL_MODULES,
   MODULE_GROUPS,
@@ -1999,11 +1999,11 @@ function StepDataSetup({
           return true;
         }
         const err = await res.json().catch(() => ({ detail: 'Failed to load database' }));
-        updateQueueTask(taskId, { status: 'error', progress: 0, error: err.detail || 'Failed' });
+        updateQueueTask(taskId, { status: 'error', progress: 0, error: extractErrorMessageFromBody(err) ?? 'Failed' });
         addToast({
           type: 'error',
           title: 'Failed to load database',
-          message: err.detail || 'Unknown error',
+          message: extractErrorMessageFromBody(err) ?? 'Unknown error',
         });
         return false;
       } catch {

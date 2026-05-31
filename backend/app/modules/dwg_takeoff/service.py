@@ -941,9 +941,15 @@ class DwgTakeoffService:
                 )
                 return
 
-            # Store entities JSON
+            # Store entities JSON under the SAME relative key the DXF path
+            # uses ({drawing_id}/entities.json inside _get_entities_dir()), so
+            # get_entities()/list-versions resolve it via os.path.join on every
+            # platform and the row survives a DATA_DIR move or cross-host
+            # restore. Previously DWG stored an absolute, env-specific path
+            # next to the source file, which only resolved on the same machine.
             entities_key = f"{drawing_id}/entities.json"
-            entities_path = os.path.join(os.path.dirname(file_path), f"{drawing_id}_entities.json")
+            entities_path = os.path.join(_get_entities_dir(), entities_key)
+            os.makedirs(os.path.dirname(entities_path), exist_ok=True)
             import json
 
             with open(entities_path, "w", encoding="utf-8") as f:
@@ -955,7 +961,7 @@ class DwgTakeoffService:
                 drawing_id=drawing_id,
                 version_number=version_number,
                 layers=result["layers"],
-                entities_key=entities_path,
+                entities_key=entities_key,
                 entity_count=result["entity_count"],
                 extents=result["extents"],
                 units=result.get("units", "unitless"),

@@ -1317,6 +1317,14 @@ def detect_converter_capabilities(extension: str) -> dict[str, Any]:
     returned and cached — so the conversion path skips the extra args
     and avoids the exit-15 trap.
     """
+    # Resolve format aliases (e.g. .dxf is read by the DWG/DwgExporter
+    # binary, .rfa by RvtExporter) before probing. find_converter does not
+    # alias, so probing the literal "dxf" finds no converter, falls back to
+    # the legacy CLI profile, and the v18 DwgExporter then rejects the
+    # legacy positional args with exit 15. ensure_converter already aliases
+    # when locating the binary; this keeps the capability probe consistent.
+    norm_ext = extension.lower().lstrip(".")
+    extension = _CONVERTER_FORMAT_ALIASES.get(norm_ext, norm_ext)
     exe = find_converter(extension)
     if exe is None:
         # No binary installed at all — nothing to probe; mark as not-probed

@@ -10,6 +10,7 @@ import { useUploadQueueStore } from '@/stores/useUploadQueueStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useThemeStore } from '@/stores/useThemeStore';
 import { CountryFlag, PartnerLogoBadge } from '@/shared/ui';
+import { usePartnerPack } from '@/shared/hooks/usePartnerPack';
 import { NotificationBell } from '@/shared/ui/NotificationBell';
 import { apiGet } from '@/shared/lib/api';
 import {
@@ -24,45 +25,140 @@ import { useI18nReady } from '@/shared/lib/useI18nReady';
 import { SupportUsButton } from './SupportUsButton';
 import { SubscribeButton } from './SubscribeButton';
 
-/** Map English page titles (passed from App.tsx routes) to i18n keys. */
+/**
+ * Map the English page titles passed from App.tsx routes to i18n keys.
+ *
+ * The keys mirror the labelKey the Sidebar uses for the same destination, so
+ * the on-screen page heading, the browser tab title and the sidebar entry all
+ * resolve through the same locale bundle and can never disagree. When a title
+ * has no entry here the heading falls back to the English `defaultValue`
+ * (current behaviour), so adding a route without a mapping degrades gracefully
+ * rather than showing a raw key.
+ */
 const TITLE_I18N_MAP: Record<string, string> = {
+  // Overview
   'Dashboard': 'nav.dashboard',
-  'AI Quick Estimate': 'nav.ai_estimate',
-  'AI Cost Advisor': 'nav.ai_advisor',
-  'CAD/BIM Takeoff': 'nav.cad_takeoff',
-  'Match Elements': 'match_elements.title',
   'Projects': 'nav.projects',
   'New Project': 'projects.new_project',
   'Project': 'nav.projects',
+  'Project Settings': 'nav.settings',
+  'Project Files': 'nav.project_files',
+  'Project Intelligence': 'nav.estimation_dashboard',
+  // Estimation
+  'Match Elements': 'match_elements.title',
+  'AI Quick Estimate': 'nav.ai_estimate',
   'New BOQ': 'boq.new_estimate',
   'Bill of Quantities': 'nav.boq',
   'BOQ Editor': 'boq.editor',
   'BOQ Templates': 'nav.templates',
+  // Catalogues
   'Cost Database': 'nav.costs',
   'Import Cost Database': 'costs.import_title',
   'Resource Catalog': 'nav.resource_catalog',
   'Assemblies': 'nav.assemblies',
   'New Assembly': 'assemblies.new',
   'Assembly Editor': 'assemblies.editor',
-  'Validation': 'nav.validation',
+  // Takeoff & CAD/BIM
   'Quantity Takeoff': 'nav.takeoff_overview',
   'PDF Takeoff': 'nav.takeoff',
-  '4D Schedule': 'nav.schedule',
-  '5D Cost Model': 'nav.5d_cost_model',
-  'Reports': 'nav.reports',
-  'Sustainability': 'nav.sustainability',
+  'DWG Takeoff': 'nav.dwg_takeoff',
+  'CAD/BIM Takeoff': 'nav.cad_takeoff',
+  'Data Explorer': 'nav.cad_bim_explorer',
+  'BIM Viewer': 'nav.bim_viewer',
+  'BIM Federations': 'nav.bim_federations',
+  'BIM Rules': 'nav.bim_rules',
+  'Clash Detection': 'nav.clash_detection',
+  'Model Coordination': 'nav.coordination_hub',
+  'EIR Matrix': 'nav.eir_matrix',
+  'Geo Hub': 'sidebar.geo_hub',
+  // AI
+  'AI Agents': 'nav.ai_agents',
+  'AI Cost Advisor': 'nav.ai_advisor',
+  'AI Chat': 'nav.erp_chat',
+  // Commercial
+  'CRM': 'nav.crm',
+  'Contracts': 'nav.contracts',
+  'Subcontractors': 'nav.subcontractors',
+  'Bid Management': 'nav.bid_management',
   'Tendering': 'nav.tendering',
+  'Variations': 'nav.variations',
+  'Supplier Catalogs': 'nav.supplier_catalogs',
   'Change Orders': 'nav.change_orders',
-  'Documents': 'nav.documents',
-  'Project Photos': 'nav.photos',
-  'Project Files': 'nav.project_files',
+  // Property development
+  'Property Development': 'nav.property_dev',
+  'Property Development Dashboards': 'nav.property_dev_dashboards',
+  'House Type Catalogue': 'nav.property_dev_house_types',
+  'Document Templates': 'nav.property_dev_doc_templates',
+  'Bulk Operations': 'nav.property_dev_bulk_operations',
+  'Pricing Engine': 'nav.property_dev_pricing_engine',
+  'Inventory Map': 'nav.property_dev_inventory_map',
+  'Compliance Rule Builder': 'nav.compliance_rule_builder',
+  'Accommodation': 'nav.accommodation',
+  'Accommodation Calendar': 'nav.accommodation',
+  // Planning
+  '4D Schedule': 'nav.schedule',
+  'Advanced Schedule': 'nav.schedule_advanced',
+  'Tasks': 'tasks.title',
+  '5D Cost Model': 'nav.5d_cost_model',
   'Risk Register': 'nav.risk_register',
+  // Operations
+  'Daily Diary': 'nav.daily_diary',
+  'Field Reports': 'nav.field_reports',
+  'Equipment & Fleet': 'nav.equipment',
+  'Resources & Crew': 'nav.resources',
+  'Service & Maintenance': 'nav.service',
+  'Subcontractor Portal': 'nav.portal',
+  'Asset Register': 'nav.assets',
+  // Quality & safety
+  'Validation': 'nav.validation',
+  'Inspections': 'inspections.title',
+  'NCR': 'ncr.title',
+  'Punch List': 'nav.punchlist',
+  'Quality Management': 'nav.qms',
+  'Safety': 'safety.title',
+  'HSE Management': 'nav.hse_advanced',
+  'Carbon & ESG': 'nav.carbon',
+  // Communication & documentation
+  'Contacts': 'contacts.title',
+  'Meetings': 'meetings.title',
+  'RFI': 'rfi.title',
+  'Submittals': 'submittals.title',
+  'Transmittals': 'transmittals.title',
+  'Correspondence': 'correspondence.title',
+  'CDE': 'cde.title',
+  'Project Photos': 'nav.photos',
+  'Markups': 'nav.markups',
+  'Documents': 'nav.documents',
+  // Finance
+  'Finance': 'finance.title',
+  'Procurement': 'procurement.title',
+  // Analytics
+  'Reports': 'nav.reports',
+  'BI Dashboards': 'nav.bi_dashboards',
+  'Dashboards': 'nav.snapshots',
+  'Reporting Dashboards': 'nav.reporting_dashboards',
   'Analytics': 'nav.analytics',
-  'About': 'nav.about',
-  'Not Found': 'error.not_found',
+  'Architecture Map': 'nav.architecture_map',
+  'Sustainability': 'nav.sustainability',
+  // Admin
+  'User Management': 'sidebar.admin_grid.users',
+  'Audit Log': 'sidebar.admin_grid.audit',
+  'Governance': 'sidebar.admin_grid.governance',
   'Modules': 'nav.modules',
   'Settings': 'nav.settings',
+  'About': 'nav.about',
+  'Not Found': 'error.not_found',
 };
+
+/**
+ * Resolve the i18n key for a page title (or `null` when there is no mapping).
+ * Shared with AppLayout so the browser-tab `document.title` translates the
+ * same way the on-screen heading does.
+ */
+export function resolvePageTitleKey(title: string | undefined): string | null {
+  if (!title) return null;
+  return TITLE_I18N_MAP[title] ?? null;
+}
 
 interface HeaderProps {
   title?: string;
@@ -79,6 +175,11 @@ export function Header({ title, onMenuClick }: HeaderProps) {
   // returned version number is unused — its role is to invalidate the
   // memoization React applies to this render.
   useI18nReady();
+  // A partner pack drives the centered co-brand chip. When one is active we
+  // also condense the secondary header actions (search, Support, Subscribe)
+  // to their icon forms so the right cluster narrows and the chip lands in a
+  // clean, near-centered slot instead of colliding with the search field.
+  const packActive = usePartnerPack().data?.active === true;
   const translatedTitle = title
     ? t(TITLE_I18N_MAP[title] ?? title, { defaultValue: title })
     : undefined;
@@ -100,23 +201,8 @@ export function Header({ title, onMenuClick }: HeaderProps) {
           a calmer Linear/Vercel-style separation from the page below. */}
       <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
 
-      {/* Partner co-brand chip — absolute-centered so it sits between
-          the left workspace zone and the right action zones without
-          pushing either around. Only shown at xl+ (1280px) and width-
-          capped via max-w-[14rem] + truncate so it physically cannot
-          extend into the right action zone, which on a busy header
-          eats most of the space from ~830px onward. */}
-      <div
-        className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 hidden lg:flex justify-center"
-        aria-hidden={false}
-      >
-        <div className="pointer-events-auto max-w-[14rem] overflow-hidden">
-          <PartnerLogoBadge variant="nav" />
-        </div>
-      </div>
-
       {/* ── Zone 1 (Workspace): mobile menu + project breadcrumb + title ── */}
-      <div className="flex items-center gap-3 min-w-0">
+      <div className="flex items-center gap-3 min-w-0 shrink">
         {onMenuClick && (
           <button
             onClick={onMenuClick}
@@ -147,6 +233,24 @@ export function Header({ title, onMenuClick }: HeaderProps) {
         )}
       </div>
 
+      {/* ── Partner co-brand chip (center column) ───────────────────────
+          Sits in a flexible column between the workspace zone (left) and the
+          action cluster (right), centered within the clear space. The
+          header's true midpoint is occupied by the search box and action
+          buttons, so a chip pinned to the exact center lands on top of the
+          search field (the "slides under search" bug). Centering it in the
+          open gap keeps it fully visible and collision-free at every width,
+          which is what an absolute overlay cannot guarantee on a busy header.
+          Shown lg+; min-w-0 lets the column yield space instead of pushing
+          the zones, and the chip's own name truncation keeps it from
+          overflowing. Below lg the co-brand still shows in the dashboard
+          banner. */}
+      {packActive && (
+        <div className="hidden lg:flex flex-1 min-w-0 items-center justify-center px-2">
+          <PartnerLogoBadge variant="nav" />
+        </div>
+      )}
+
       {/* Right side — three zones separated by hairline dividers.
           Zone 2: Search · Zone 3: Notifications + Help · Zone 4: Account
           (Upload + Language + User). Each zone has internal `gap-1`,
@@ -158,12 +262,13 @@ export function Header({ title, onMenuClick }: HeaderProps) {
           centred across the header but that created awkward visual
           tension with the project switcher on the left; planted next
           to Support/Help, the two CTAs read as a coherent cluster. */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 shrink-0">
         {/* ── Zone 2 (Search) ──────────────────────────────────────── */}
         <button
           onClick={openCommandPalette}
           className={clsx(
-            'hidden sm:flex h-8 items-center gap-2 rounded-lg px-3',
+            packActive ? 'hidden' : 'hidden sm:flex',
+            'h-8 items-center gap-2 rounded-lg px-3',
             // Solid-ish white background so the field doesn't dissolve into
             // the translucent header background; falls back to a dark tint
             // in dark mode so the chip stays readable on the dark blurred
@@ -186,7 +291,10 @@ export function Header({ title, onMenuClick }: HeaderProps) {
         <button
           onClick={openCommandPalette}
           aria-label={t('common.search', { defaultValue: 'Search' })}
-          className="flex sm:hidden h-8 w-8 items-center justify-center rounded-lg text-content-secondary hover:bg-surface-secondary transition-colors"
+          className={clsx(
+            packActive ? 'flex' : 'flex sm:hidden',
+            'h-8 w-8 items-center justify-center rounded-lg text-content-secondary hover:bg-surface-secondary transition-colors',
+          )}
         >
           <Search size={16} />
         </button>
@@ -200,8 +308,8 @@ export function Header({ title, onMenuClick }: HeaderProps) {
             adjacent; Bug + Help sit on the right edge so a user filing a
             report doesn't have to scan past the marketing CTAs. */}
         <NotificationBell />
-        <SupportUsButton />
-        <SubscribeButton />
+        <SupportUsButton condensed={packActive} />
+        <SubscribeButton condensed={packActive} />
         <BugReportMenu />
         <HelpMenu />
 

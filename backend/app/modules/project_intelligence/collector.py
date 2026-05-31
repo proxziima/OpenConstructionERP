@@ -7,12 +7,15 @@ and run in parallel via asyncio.gather().
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import async_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -964,6 +967,22 @@ async def _collect_assemblies(
 # ── Main collector function ────────────────────────────────────────────────
 
 
+async def _with_own_session(
+    collector: Callable[[AsyncSession, str], Awaitable[Any]],
+    project_id: str,
+) -> Any:
+    """Run a ``_collect_*`` coroutine on its own short-lived session.
+
+    Each collector issues several SELECTs; on PostgreSQL one failing
+    statement aborts the whole transaction. Sharing a single session
+    across the concurrent ``asyncio.gather`` fan-out therefore lets one
+    collector's failure poison every sibling. Giving each collector an
+    isolated session contains failures and is concurrency-safe.
+    """
+    async with async_session_factory() as own_session:
+        return await collector(own_session, project_id)
+
+
 async def collect_project_state(
     session: AsyncSession,
     project_id: str,
@@ -971,12 +990,16 @@ async def collect_project_state(
     """Collect complete project state across all modules in parallel.
 
     Args:
-        session: Async database session.
+        session: Async database session. Retained for API compatibility
+            with the router; the per-domain collectors each open their
+            own isolated session (see :func:`_with_own_session`) so a
+            failing query in one cannot abort the others on PostgreSQL.
         project_id: UUID of the project.
 
     Returns:
         ProjectState with all domain states populated.
     """
+    del session  # collectors use isolated sessions; see _with_own_session
     now = datetime.now(UTC).isoformat()
 
     # Run all collectors in parallel.  v1.4.6 added the last 4
@@ -984,21 +1007,31 @@ async def collect_project_state(
     # collector was previously blind to these domains so the score
     # was a partial picture and the advisor could not surface gaps
     # like "no requirements defined" or "BIM elements not linked".
+    #
+    # Each collector gets its OWN short-lived AsyncSession rather than
+    # sharing the request-scoped ``session``. An AsyncSession is not
+    # safe for concurrent use, and on PostgreSQL (the v6 default) a
+    # single failing query inside one collector aborts the shared
+    # transaction — every concurrent sibling then dies with
+    # InFailedSQLTransactionError, gets swallowed by its broad except,
+    # and silently returns an empty default. Isolated sessions keep the
+    # parallel fan-out (each session used by exactly one coroutine) and
+    # contain any failure to the one collector that hit it.
     results = await asyncio.gather(
-        _collect_project_info(session, project_id),
-        _collect_boq(session, project_id),
-        _collect_schedule(session, project_id),
-        _collect_takeoff(session, project_id),
-        _collect_validation(session, project_id),
-        _collect_risk(session, project_id),
-        _collect_tendering(session, project_id),
-        _collect_documents(session, project_id),
-        _collect_reports(session, project_id),
-        _collect_cost_model(session, project_id),
-        _collect_requirements(session, project_id),
-        _collect_bim(session, project_id),
-        _collect_tasks(session, project_id),
-        _collect_assemblies(session, project_id),
+        _with_own_session(_collect_project_info, project_id),
+        _with_own_session(_collect_boq, project_id),
+        _with_own_session(_collect_schedule, project_id),
+        _with_own_session(_collect_takeoff, project_id),
+        _with_own_session(_collect_validation, project_id),
+        _with_own_session(_collect_risk, project_id),
+        _with_own_session(_collect_tendering, project_id),
+        _with_own_session(_collect_documents, project_id),
+        _with_own_session(_collect_reports, project_id),
+        _with_own_session(_collect_cost_model, project_id),
+        _with_own_session(_collect_requirements, project_id),
+        _with_own_session(_collect_bim, project_id),
+        _with_own_session(_collect_tasks, project_id),
+        _with_own_session(_collect_assemblies, project_id),
         return_exceptions=True,
     )
 

@@ -48,7 +48,7 @@ interface UpgradeResult {
 
 async function runRuntimeUpgrade(version?: string): Promise<UpgradeResult> {
   const qs = version ? `?version=${encodeURIComponent(version)}` : '';
-  return apiPost<UpgradeResult>(`/api/system/upgrade${qs}`, {});
+  return apiPost<UpgradeResult>(`/system/upgrade${qs}`, {});
 }
 
 const CURRENT_VERSION = APP_VERSION;

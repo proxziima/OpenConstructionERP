@@ -1527,6 +1527,15 @@ async def compute_rollup(
                 exc,
                 exc_info=True,
             )
+            # On PostgreSQL a failed statement aborts the whole transaction;
+            # without rolling back, every later widget on the shared session
+            # would die with InFailedSQLTransactionError and return nothing.
+            # Roll back to a clean state so one missing optional table only
+            # drops its own widget.
+            try:
+                await session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
             # Skip — frontend treats absence as "module not available".
             continue
     return result

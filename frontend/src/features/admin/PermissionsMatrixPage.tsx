@@ -426,6 +426,26 @@ function ModuleRows({
                   · {t('admin.permissions.min_role_label', { defaultValue: 'min' })}: {perm.min_role}
                 </span>
               </span>
+              {/* Plain-language description — resolved from a per-permission
+                  i18n key, with a deterministic humanized fallback so every
+                  row is described (no stubs / no undescribed rows). */}
+              {(() => {
+                const desc = t(`perm_desc.${perm.key}`, {
+                  defaultValue: t('perm_desc.fallback', {
+                    action: permissionAction(perm.key),
+                    module: friendlyName,
+                    defaultValue: 'Allows {{action}} in {{module}}',
+                  }),
+                });
+                return (
+                  <span
+                    className="mt-0.5 block max-w-[280px] text-[11px] leading-snug text-text-tertiary line-clamp-2 font-normal normal-case"
+                    title={desc}
+                  >
+                    {desc}
+                  </span>
+                );
+              })()}
             </th>
             {roles.map((role) => {
               const state = cellState(role, perm.min_role, hierarchy);

@@ -601,8 +601,16 @@ export function BIMViewer({
    *  (browser releases via Esc) while the toolbar button stays armed
    *  until the user explicitly disables it. */
   const [walkActive, setWalkActive] = useState(false);
+  /** True only when walk mode is running in true pointer-lock (FPS) mode —
+   *  the only mode that hides the cursor. Gates the centred crosshair so the
+   *  default drag-to-look (cursor visible) doesn't show a redundant reticle. */
+  const [walkPointerLockMode, setWalkPointerLockMode] = useState(false);
+  /** True while the WebGL context is lost and recovering (pdf11). Drives a
+   *  non-fatal banner so a transient GPU reset no longer reads as a crash. */
+  const [contextLost, setContextLost] = useState(false);
   const categoryOpacity = useBIMViewerStore((s) => s.categoryOpacity);
   const hiddenCategories = useBIMViewerStore((s) => s.hiddenCategories);
+  const resetHiddenCategories = useBIMViewerStore((s) => s.resetHiddenCategories);
   const measureActive = useBIMViewerStore((s) => s.measureActive);
   const setMeasureActive = useBIMViewerStore((s) => s.setMeasureActive);
   const measureKind = useBIMViewerStore((s) => s.measureKind);
@@ -884,6 +892,13 @@ export function BIMViewer({
     // the scene initialises.
     setSceneManagerReady(scene);
 
+    // pdf11 — surface a non-fatal banner when the GPU drops the WebGL
+    // context (large models / driver reset) so the recovering viewer no
+    // longer looks like a hard crash. Cleared automatically on restore.
+    scene.onContextStateChange((lost) => {
+      setContextLost(lost);
+    });
+
     const elementMgr = new ElementManager(scene);
     elementMgrRef.current = elementMgr;
     // W6.6 Stream C — subscribe to hidden-count changes so the floating
@@ -1059,10 +1074,16 @@ export function BIMViewer({
       renderer: scene.renderer,
       domElement: canvas,
       orbitControls: scene.controls,
+      // Drag-to-look is the DEFAULT: the OS cursor stays visible and the
+      // browser never shows its "site has taken control of your cursor"
+      // banner (pdf07). The user holds the primary mouse button and drags
+      // to look. Pointer-lock FPS mode stays available behind
+      // ``lockCursor: true`` but is not the default.
+      lockCursor: false,
       // OrbitControls is disabled while walk mode is active, so its
       // `change` listener (the only thing that normally invalidates the
       // on-demand render loop) never fires. WalkMode pings us every
-      // frame the camera moved or the cursor is pointer-locked.
+      // frame the camera moved or (in FPS mode) the cursor is pointer-locked.
       onChange: () => scene.requestRender(),
       // Pointer-lock lost unexpectedly (alt-tab / browser Esc) while still
       // in walk mode → gracefully fall back to orbit so the user is never
@@ -1084,10 +1105,14 @@ export function BIMViewer({
     sectionBoxRef.current = sectionBox;
     walkModeRef.current = walkModeHelper;
     measureToolRef.current = measureToolHelper;
-    // Drive the on-screen Walk hint from the actual pointer-lock state —
-    // the user sees the overlay only while the cursor is captured.
+    // Drive the on-screen Walk chrome from the actual lock state. In FPS
+    // (pointer-lock) mode this tracks the captured cursor; in the default
+    // drag-to-look mode the helper also flips this true while a look-drag is
+    // in progress. The crosshair is gated on FPS mode (below) so it never
+    // appears in drag mode regardless.
     const unsubWalkLock = walkModeHelper.onLockChange((locked) => {
       setWalkLocked(locked);
+      setWalkPointerLockMode(walkModeHelper.isPointerLockMode());
     });
     setViewerToolsReady(true);
 
@@ -1717,18 +1742,27 @@ export function BIMViewer({
   }, [qualityMode, sceneManagerReady, elements]);
 
   // Sync hidden-category toggles from the Layers tab.
+  //
+  // Iterate EVERY distinct category (keyed the same way the Layers panel
+  // buckets them — `element_type || 'Unknown'`) and drive each one both
+  // ways: hide when the store flags it, reveal otherwise. Reveal goes
+  // through ElementManager.setCategoryVisible, which is BatchedMesh-aware
+  // and refuses to un-hide elements the user hid individually or that are
+  // masked by an active isolate — so toggling a category off then on (or
+  // hitting Reset, which clears the whole `hiddenCategories` map) correctly
+  // restores visibility without stomping context-menu Hide / isolation.
   useEffect(() => {
     const mgr = elementMgrRef.current;
     if (!mgr) return;
+    const categories = new Set<string>();
     for (const el of mgr.getAllElements()) {
-      const mesh = mgr.getMesh(el.id);
-      if (!mesh) continue;
-      if (hiddenCategories[el.element_type] === true) {
-        mesh.visible = false;
-      }
+      categories.add(el.element_type || 'Unknown');
+    }
+    for (const cat of categories) {
+      mgr.setCategoryVisible(cat, hiddenCategories[cat] !== true);
     }
     sceneRef.current?.requestRender();
-  }, [hiddenCategories, elements]);
+  }, [hiddenCategories, elements, hiddenIds]);
 
   // Toggle the measure tool in response to the Zustand flag. Selection is
   // suspended while measure is active so clicks land only on the ruler and
@@ -2300,9 +2334,13 @@ export function BIMViewer({
     elementMgrRef.current.showAll();
     setHiddenIds(new Set());
     setIsIsolated(false);
+    // Clear Layers-tab category hides too so "Show all" really shows
+    // everything (the eye toggles flip back on and the sync effect leaves
+    // every category visible). Opacity tuning is preserved.
+    resetHiddenCategories();
     onIsolationChange?.(null);
     sceneRef.current?.zoomToFit();
-  }, [onIsolationChange]);
+  }, [onIsolationChange, resetHiddenCategories]);
 
   const handleClearSelection = useCallback(() => {
     selectionMgrRef.current?.clearSelection();
@@ -2725,6 +2763,32 @@ export function BIMViewer({
             >
               <X size={14} />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* WebGL context-loss banner (pdf11) — the GPU can drop the rendering
+          context on large models / driver resets. The browser can restore
+          it, so rather than letting the viewer look crashed we show a
+          non-blocking "recovering" notice and clear it on
+          ``webglcontextrestored``. Non-fatal: pointer-events disabled on the
+          wrapper so the rest of the UI stays interactive. */}
+      {contextLost && (
+        <div
+          data-testid="bim-context-lost-banner"
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none flex justify-center px-2 max-w-[90%]"
+        >
+          <div
+            className="pointer-events-auto flex items-center gap-2.5 rounded-lg border border-sky-300/80 bg-sky-50/95 px-4 py-2.5 text-sky-900 shadow-md backdrop-blur-sm dark:border-sky-500/60 dark:bg-sky-950/90 dark:text-sky-100"
+            role="status"
+            aria-live="polite"
+          >
+            <Loader2 size={18} className="shrink-0 animate-spin text-sky-600 dark:text-sky-400" />
+            <span className="text-xs leading-relaxed">
+              {t('bim.context_lost_banner', {
+                defaultValue: '3D view was interrupted and is recovering…',
+              })}
+            </span>
           </div>
         </div>
       )}
@@ -3315,11 +3379,12 @@ export function BIMViewer({
           MeasureTool helpers stay wired so the top-toolbar Walk button
           and any future re-introduction can grab them. */}
 
-      {/* Walk mode on-screen hint — only visible while the pointer is
-          actually locked (i.e. WASD/mouse actively control the camera).
-          Anchored top-center so the user notices it; auto-disappears when
-          the browser releases pointer lock. */}
-      {walkLocked && (
+      {/* Walk mode on-screen hint — visible the whole time walk mode is
+          armed so the drag-to-look instruction is always discoverable
+          (drag-look has no persistent pointer-lock state to gate on).
+          Anchored top-center so the user notices it; disappears when the
+          user exits walk mode. */}
+      {walkActive && (
         <div
           className="absolute top-3 start-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900/85 backdrop-blur text-white text-[11px] font-medium shadow-lg pointer-events-none select-none"
           data-testid="bim-walk-hint"
@@ -3330,7 +3395,7 @@ export function BIMViewer({
           <span>
             {t('viewerTools.walk_hint_overlay', {
               defaultValue:
-                'Mouse: look · WASD: move · Space/Q: up/down · Shift: sprint · Esc: exit',
+                'Drag to look · WASD/arrows move · Space/Shift up/down · Esc exit',
             })}
           </span>
         </div>
@@ -3338,9 +3403,11 @@ export function BIMViewer({
 
       {/* Walk-mode crosshair — a thin centred reticle so the user has a
           fixed aim point while free-looking with the cursor hidden. Only
-          shown while pointer-lock is held; purely decorative (no pointer
-          events, hidden from the a11y tree). */}
-      {walkLocked && (
+          shown in pointer-lock (FPS) mode, which is the only mode that hides
+          the cursor; drag-to-look keeps the cursor visible so a reticle would
+          be redundant. Purely decorative (no pointer events, hidden from the
+          a11y tree). */}
+      {walkLocked && walkPointerLockMode && (
         <div
           className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center"
           data-testid="bim-walk-crosshair"

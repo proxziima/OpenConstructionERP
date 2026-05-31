@@ -1011,6 +1011,12 @@ async def delete_baseline(
     await service.delete_baseline(bid)
 
 
+# The delta endpoint carries the current task list in the request body. A GET
+# with a body is non-standard and triggers a 405 from the frontend (which POSTs
+# the array via ``baselineDelta`` in ``schedule-advanced/api.ts``). Register
+# POST as the canonical verb and keep GET registered on the same handler for
+# back-compat with any existing callers.
+@router.post("/baselines/{bid}/delta", response_model=BaselineDeltaResponse)
 @router.get("/baselines/{bid}/delta", response_model=BaselineDeltaResponse)
 async def baseline_delta_endpoint(
     bid: uuid.UUID,

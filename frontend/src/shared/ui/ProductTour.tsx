@@ -143,6 +143,12 @@ export interface ProductTourStep {
   bodyKey: string;
   /** Preferred position relative to target.  Falls back if it would clip. */
   preferredPosition?: 'top' | 'right' | 'bottom' | 'left';
+  /** When the target lives inside a collapsible sidebar group that is
+   *  collapsed by default, the row is unmounted from the DOM and cannot be
+   *  measured.  Set this to the sidebar group id so the tour can dispatch
+   *  `oe:tour-reveal` to expand the group (and switch to advanced view if the
+   *  group is hidden in simple mode) before re-attempting measurement. */
+  revealGroupId?: string;
 }
 
 interface SpotlightRect {
@@ -189,12 +195,16 @@ export const DEFAULT_PRODUCT_TOUR_STEPS: ProductTourStep[] = [
     titleKey: 'tour.step.5.title',
     bodyKey: 'tour.step.5.body',
     preferredPosition: 'right',
+    // Row lives in the collapsed-by-default "property" group (hideInSimple).
+    revealGroupId: 'property',
   },
   {
     selector: '[data-testid="sidebar-nav-geo-hub"]',
     titleKey: 'tour.step.6.title',
     bodyKey: 'tour.step.6.body',
     preferredPosition: 'right',
+    // Row lives in the collapsed-by-default "cad_bim_analytics" group.
+    revealGroupId: 'cad_bim_analytics',
   },
   {
     selector: '[data-testid="header-help-menu"]',
@@ -866,6 +876,14 @@ export function ProductTour({ steps, defaultTourId = 'global' }: ProductTourProp
   // Track which missing-target warnings we've already emitted so we don't
   // spam the console on resize/recompute.
   const warnedRef = useRef<Set<string>>(new Set());
+  // Pending reveal-retry timers (steps whose target lives in a collapsed
+  // sidebar group). Cleared on step change / unmount so a stale retry never
+  // re-positions onto a newer step's target.
+  const revealTimersRef = useRef<number[]>([]);
+  const clearRevealTimers = useCallback(() => {
+    for (const id of revealTimersRef.current) window.clearTimeout(id);
+    revealTimersRef.current = [];
+  }, []);
 
   const step = resolvedSteps[currentStep];
   const isFirst = currentStep === 0;
@@ -910,41 +928,84 @@ export function ProductTour({ steps, defaultTourId = 'global' }: ProductTourProp
       const s = resolvedSteps[idx];
       if (!s) return;
 
+      // Cancel any reveal-retry timers from a previous step so they can't
+      // re-position onto this step's spotlight after the fact.
+      clearRevealTimers();
+
       // Wrap-up step (no selector) → centred modal, no spotlight.
       if (s.selector == null) {
         setSpotlight(null);
         setTooltipCoords(centerOfViewport());
         return;
       }
+      const selector = s.selector;
 
-      const el = document.querySelector(s.selector);
+      const el = document.querySelector(selector);
       if (el) {
         try {
           (el as Element).scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
         } catch {
           /* older browsers — ignore */
         }
-      } else if (!warnedRef.current.has(s.selector)) {
-        warnedRef.current.add(s.selector);
+      } else if (s.revealGroupId) {
+        // Target's sidebar group is collapsed (and possibly hidden in simple
+        // view), so the row is unmounted. Ask the Sidebar to expand it; the
+        // bounded retry below re-queries once the row mounts.
+        window.dispatchEvent(
+          new CustomEvent('oe:tour-reveal', { detail: { groupId: s.revealGroupId } }),
+        );
+      } else if (!warnedRef.current.has(selector)) {
+        warnedRef.current.add(selector);
         // eslint-disable-next-line no-console
-        console.warn(`[ProductTour] target not found, skipping step: ${s.selector}`);
+        console.warn(`[ProductTour] target not found, skipping step: ${selector}`);
       }
 
-      // Defer measurement so the smooth scroll has a chance to settle.
-      window.setTimeout(() => {
-        const rect = measureSpotlight(s.selector!);
+      // Latch onto the target once it settles. The first attempt is deferred
+      // so the smooth scroll has a chance to finish; if the row needs to be
+      // revealed first we retry a few times at ~80ms intervals before
+      // degrading to a centred modal.
+      const apply = (rect: SpotlightRect) => {
+        setSpotlight(rect);
+        setTooltipCoords(placeTooltip(rect, s.preferredPosition));
+      };
+      const degrade = () => {
+        // Target missing — degrade gracefully to a centred modal so the tour
+        // never stalls on a broken selector.
+        setSpotlight(null);
+        setTooltipCoords(centerOfViewport());
+      };
+      const MAX_ATTEMPTS = 5;
+      const attempt = (n: number) => {
+        const rect = measureSpotlight(selector);
         if (rect) {
-          setSpotlight(rect);
-          setTooltipCoords(placeTooltip(rect, s.preferredPosition));
-        } else {
-          // Target missing — degrade gracefully to a centred modal so the
-          // tour never stalls on a broken selector.
-          setSpotlight(null);
-          setTooltipCoords(centerOfViewport());
+          // The row may have just mounted/scrolled — ensure it's in view.
+          if (n > 0) {
+            const just = document.querySelector(selector);
+            try {
+              (just as Element | null)?.scrollIntoView({
+                behavior: 'smooth',
+                block: 'nearest',
+                inline: 'nearest',
+              });
+            } catch {
+              /* older browsers — ignore */
+            }
+          }
+          apply(rect);
+          return;
         }
-      }, 180);
+        if (n + 1 >= MAX_ATTEMPTS) {
+          degrade();
+          return;
+        }
+        const id = window.setTimeout(() => attempt(n + 1), 80);
+        revealTimersRef.current.push(id);
+      };
+      // First measurement deferred to let the initial smooth scroll settle.
+      const firstId = window.setTimeout(() => attempt(0), 180);
+      revealTimersRef.current.push(firstId);
     },
-    [resolvedSteps],
+    [resolvedSteps, clearRevealTimers],
   );
 
   /* ── (Re)compute on currentStep change + resize/scroll/observer ──────── */
@@ -980,8 +1041,10 @@ export function ProductTour({ steps, defaultTourId = 'global' }: ProductTourProp
       window.removeEventListener('resize', recompute);
       window.removeEventListener('scroll', recompute, true);
       if (ro) ro.disconnect();
+      // Stop any pending reveal-retry timers when the step changes / unmounts.
+      clearRevealTimers();
     };
-  }, [active, currentStep, positionForStep, resolvedSteps]);
+  }, [active, currentStep, positionForStep, resolvedSteps, clearRevealTimers]);
 
   /* ── Esc key — soft-confirm dismiss ──────────────────────────────────── */
   useEffect(() => {

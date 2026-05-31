@@ -92,6 +92,7 @@ interface EditCellProps {
 }
 
 function EditCell({ value, onSave, onCancel, placeholder }: EditCellProps) {
+  const { t } = useTranslation();
   const [localValue, setLocalValue] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -118,14 +119,14 @@ function EditCell({ value, onSave, onCancel, placeholder }: EditCellProps) {
       <button
         onClick={() => onSave(localValue)}
         className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-semantic-success hover:bg-semantic-success/10 transition-colors"
-        title="Save"
+        title={t('common.save', { defaultValue: 'Save' })}
       >
         <Check size={13} />
       </button>
       <button
         onClick={onCancel}
         className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-content-tertiary hover:bg-surface-secondary transition-colors"
-        title="Cancel"
+        title={t('common.cancel', { defaultValue: 'Cancel' })}
       >
         <X size={13} />
       </button>

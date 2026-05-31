@@ -40,6 +40,7 @@ import {
   LayoutGrid,
 } from 'lucide-react';
 import { Card, CardHeader, CardContent, Button, Badge, Skeleton, ActivityFeed as CrossModuleActivityFeed, EmptyState, ModuleHelpButton, PartnerLogoBadge } from '@/shared/ui';
+import { MultiCurrencyTotal } from '@/shared/ui/MultiCurrencyTotal';
 import { WhatsNewCard } from '@/shared/ui/WhatsNewCard';
 import BIMCoverageCard from './BIMCoverageCard';
 import { CompactProjectCard } from './components/CompactProjectCard';
@@ -900,6 +901,17 @@ interface AnalyticsOverview {
   total_planned: number;
   total_actual: number;
   total_variance: number;
+  // A-DASH-01: each project carries its own currency, so the flat
+  // total_* scalars above blend currencies whenever multi_currency is
+  // true and must NOT be rendered as a single headline figure. Use
+  // totals_by_currency for an honest per-currency rollup.
+  multi_currency?: boolean;
+  totals_by_currency?: {
+    currency: string;
+    total_planned: number;
+    total_actual: number;
+    total_variance: number;
+  }[];
   over_budget_count: number;
   projects: {
     id: string;
@@ -926,12 +938,19 @@ function PortfolioOverview({ projects: _projects }: { projects: ProjectSummary[]
   if (!analytics) return null;
 
   const hasWarnings = analytics.over_budget_count > 0;
-  const totalPlannedNum = Number(analytics.total_planned ?? 0);
-  const totalBudgetFormatted = totalPlannedNum >= 1_000_000
-    ? `${(totalPlannedNum / 1_000_000).toFixed(1)}M`
-    : totalPlannedNum >= 1_000
-      ? `${(totalPlannedNum / 1_000).toFixed(0)}K`
-      : totalPlannedNum.toLocaleString();
+
+  // A-DASH-01: the flat total_planned scalar blends per-project
+  // currencies. Render the Total Budget card honestly: when more than
+  // one currency is in play (multi_currency flag, or totals_by_currency
+  // carries >1 ISO entry) show a per-currency rollup via
+  // <MultiCurrencyTotal>; only show a single headline figure when there
+  // is exactly one currency, and always attach its ISO code so we never
+  // print a bare, currency-less number.
+  const totalsByCurrency = analytics.totals_by_currency ?? [];
+  const totalBudgetItems = totalsByCurrency.map((row) => ({
+    amount: row.total_planned,
+    currency: row.currency,
+  }));
 
   const overBudgetProjects = (analytics.projects || []).filter(
     (p) => p.status === 'over_budget',
@@ -968,7 +987,7 @@ function PortfolioOverview({ projects: _projects }: { projects: ProjectSummary[]
             {t('dashboard.total_budget_all', { defaultValue: 'Total Budget' })}
           </div>
           <div className="mt-1 text-xl font-bold tabular-nums text-content-primary">
-            {totalBudgetFormatted}
+            <MultiCurrencyTotal items={totalBudgetItems} variant="inline" compact />
           </div>
         </div>
         <div className="rounded-lg bg-surface-secondary p-3">

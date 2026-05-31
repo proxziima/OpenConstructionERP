@@ -75,6 +75,17 @@ export class SceneManager {
   private _onPointerDown: ((e: PointerEvent) => void) | null = null;
   private _canvasEl: HTMLCanvasElement | null = null;
   private _activeRestoreListeners = new Set<() => void>();
+  /** True between a `webglcontextlost` event and its `webglcontextrestored`
+   *  partner. While set, the animation loop skips rendering — the GL context
+   *  is gone and any draw call would throw. */
+  private _contextLost = false;
+  /** Bound WebGL context-loss handlers, kept so dispose() can detach them. */
+  private _onContextLost: ((e: Event) => void) | null = null;
+  private _onContextRestored: (() => void) | null = null;
+  /** Optional host callback fired with `true` on context loss and `false`
+   *  on restore. The BIM viewer wires this to a non-fatal recovery banner so
+   *  a transient GPU reset no longer reads as a hard crash (pdf11). */
+  private _onContextStateChange: ((lost: boolean) => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     const parent = canvas.parentElement;
@@ -107,6 +118,29 @@ export class SceneManager {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
     this.updateSize();
+
+    // WebGL context-loss handling. On large models the GPU can drop the
+    // context (driver reset / VRAM pressure / tab backgrounded); without
+    // handling this the next render() throws and the viewer looks crashed
+    // (pdf11). Calling preventDefault() on the loss event lets the browser
+    // restore the context; we pause the render loop until it does, then
+    // resume. The renderer rebuilds its own GL resources on restore, so we
+    // only need to flag, notify the host, and re-request a frame.
+    this._canvasEl = canvas;
+    this._onContextLost = (e: Event) => {
+      e.preventDefault();
+      this._contextLost = true;
+      this._onContextStateChange?.(true);
+    };
+    this._onContextRestored = () => {
+      this._contextLost = false;
+      // Three.js re-initialises its internal GL state on the next render
+      // against the restored context. Force a redraw so the scene reappears.
+      this._needsRender = true;
+      this._onContextStateChange?.(false);
+    };
+    canvas.addEventListener('webglcontextlost', this._onContextLost as EventListener, false);
+    canvas.addEventListener('webglcontextrestored', this._onContextRestored, false);
 
     // Scene
     this.scene = new THREE.Scene();
@@ -322,6 +356,11 @@ export class SceneManager {
 
   private animate = (): void => {
     this.animationId = requestAnimationFrame(this.animate);
+    // While the GL context is lost, render() would throw — pause drawing
+    // until `webglcontextrestored` clears the flag. Damping/controls update
+    // is cheap and harmless, but skip it too so a queued damping-dirty flag
+    // doesn't try to draw against the dead context.
+    if (this._contextLost) return;
     // Damping requires controls.update() every frame to animate the
     // deceleration, but we only pay the GPU render cost when something
     // actually changed.
@@ -337,6 +376,20 @@ export class SceneManager {
    *  Call this after selection changes, colour mutations, or visibility toggles. */
   requestRender(): void {
     this._needsRender = true;
+  }
+
+  /** Register a callback notified when the WebGL context is lost (`true`)
+   *  or restored (`false`). The host wires this to a non-fatal recovery
+   *  banner. Pass `null` to clear. Fires immediately with the current state
+   *  so a listener attached after a loss still sees it. */
+  onContextStateChange(cb: ((lost: boolean) => void) | null): void {
+    this._onContextStateChange = cb;
+    if (cb) cb(this._contextLost);
+  }
+
+  /** True while the WebGL context is lost (between contextlost / restored). */
+  isContextLost(): boolean {
+    return this._contextLost;
   }
 
   /** Fit all objects (or a specific bounding box) into the camera view. */
@@ -998,6 +1051,16 @@ export class SceneManager {
       this._canvasEl.removeEventListener('pointerdown', this._onPointerDown, { capture: true } as EventListenerOptions);
     }
     this._onPointerDown = null;
+    // Detach the WebGL context-loss listeners before releasing the canvas ref.
+    if (this._canvasEl && this._onContextLost) {
+      this._canvasEl.removeEventListener('webglcontextlost', this._onContextLost as EventListener, false);
+    }
+    if (this._canvasEl && this._onContextRestored) {
+      this._canvasEl.removeEventListener('webglcontextrestored', this._onContextRestored, false);
+    }
+    this._onContextLost = null;
+    this._onContextRestored = null;
+    this._onContextStateChange = null;
     this._canvasEl = null;
     for (const restore of this._activeRestoreListeners) {
       window.removeEventListener('pointerup', restore);

@@ -21,7 +21,7 @@
 import { useMemo } from 'react';
 import { useQuery, useQueries } from '@tanstack/react-query';
 
-import { apiGet } from '@/shared/lib/api';
+import { apiGet, extractErrorMessageFromBody } from '@/shared/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
@@ -120,8 +120,11 @@ async function fetchMemberGeometry(
     try {
       const ct = resp.headers.get('content-type') ?? '';
       if (ct.includes('application/json')) {
-        const body = (await resp.json()) as { detail?: string };
-        detail = body?.detail ?? '';
+        // The geometry endpoint returns a STRUCTURED detail object on error
+        // ({error, category, message, remediation, ...}). Normalise it to a
+        // string so the messages below never interpolate "[object Object]".
+        const body = (await resp.json()) as unknown;
+        detail = extractErrorMessageFromBody(body) ?? '';
       } else {
         detail = (await resp.text()).slice(0, 240);
       }

@@ -48,6 +48,7 @@ import {
 } from '@/shared/ui/WideModal';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
+import { MultiCurrencyTotal } from '@/shared/ui/MultiCurrencyTotal';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { apiGet, apiPost, apiPatch, triggerDownload, extractErrorMessageFromBody } from '@/shared/lib/api';
 import { ContactSearchInput } from '@/shared/ui/ContactSearchInput';
@@ -280,7 +281,7 @@ async function importBudgetsFile(
     let detail = 'Import failed';
     try {
       const body = await response.json();
-      detail = body.detail || detail;
+      detail = extractErrorMessageFromBody(body) ?? detail;
     } catch {
       // ignore parse error
     }
@@ -1089,19 +1090,19 @@ function BudgetsTab({ projectId }: { projectId: string }) {
 
   const totals = useMemo(() => {
     if (!filtered.length) return null;
-    // Coerce to Number — DECIMAL columns can come back as strings from
-    // the API and "+" would concat instead of summing.  See the dashboard
-    // total above for the same defence.
+    // Each budget line carries its own currency; summing rows into one
+    // scalar and stamping the first row's code is financially meaningless
+    // across mixed currencies. Build per-column {amount, currency} item
+    // lists and let <MultiCurrencyTotal> group + render per ISO code
+    // (degrading to a single MoneyDisplay when only one currency is used).
+    const cur = (b: BudgetLine) => b.currency_code || b.currency || undefined;
     return {
-      original: filtered.reduce((s, b) => s + Number(b.original_budget ?? 0), 0),
-      revised: filtered.reduce((s, b) => s + Number(b.revised_budget ?? 0), 0),
-      committed: filtered.reduce((s, b) => s + Number(b.committed ?? 0), 0),
-      actual: filtered.reduce((s, b) => s + Number(b.actual ?? 0), 0),
-      forecast: filtered.reduce((s, b) => s + Number(b.forecast_final ?? b.forecast ?? 0), 0),
-      variance: filtered.reduce((s, b) => s + Number(b.variance ?? 0), 0),
-      // Currency from data, never hardcoded (task #217). undefined →
-      // MoneyDisplay falls back to the user's preferred currency symbol.
-      currency: filtered[0]?.currency_code || filtered[0]?.currency || undefined,
+      original: filtered.map((b) => ({ amount: Number(b.original_budget ?? 0), currency: cur(b) })),
+      revised: filtered.map((b) => ({ amount: Number(b.revised_budget ?? 0), currency: cur(b) })),
+      committed: filtered.map((b) => ({ amount: Number(b.committed ?? 0), currency: cur(b) })),
+      actual: filtered.map((b) => ({ amount: Number(b.actual ?? 0), currency: cur(b) })),
+      forecast: filtered.map((b) => ({ amount: Number(b.forecast_final ?? b.forecast ?? 0), currency: cur(b) })),
+      variance: filtered.map((b) => ({ amount: Number(b.variance ?? 0), currency: cur(b) })),
     };
   }, [filtered]);
 
@@ -1336,26 +1337,22 @@ function BudgetsTab({ projectId }: { projectId: string }) {
                   {t('common.total')}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MoneyDisplay amount={totals.original} currency={totals.currency} />
+                  <MultiCurrencyTotal items={totals.original} variant="inline" compact />
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MoneyDisplay amount={totals.revised} currency={totals.currency} />
+                  <MultiCurrencyTotal items={totals.revised} variant="inline" compact />
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MoneyDisplay amount={totals.committed} currency={totals.currency} />
+                  <MultiCurrencyTotal items={totals.committed} variant="inline" compact />
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MoneyDisplay amount={totals.actual} currency={totals.currency} />
+                  <MultiCurrencyTotal items={totals.actual} variant="inline" compact />
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MoneyDisplay amount={totals.forecast} currency={totals.currency} />
+                  <MultiCurrencyTotal items={totals.forecast} variant="inline" compact />
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MoneyDisplay
-                    amount={totals.variance}
-                    currency={totals.currency}
-                    colorize
-                  />
+                  <MultiCurrencyTotal items={totals.variance} variant="inline" compact />
                 </td>
                 <td />
               </tr>
@@ -1802,11 +1799,22 @@ function InvoicesTab({ projectId }: { projectId: string }) {
 
   const invoiceTotals = useMemo(() => {
     if (!filtered.length) return null;
-    const totalAmount = filtered.reduce((s, inv) => s + Number(inv.amount ?? 0), 0);
-    const totalPaid = filtered.filter((inv) => inv.status === 'paid').reduce((s, inv) => s + Number(inv.amount ?? 0), 0);
-    const currency = filtered[0]?.currency || projectCurrency || undefined;
-    return { totalAmount, totalPaid, currency };
-  }, [filtered]);
+    // Invoices can be in different currencies; summing them into one
+    // scalar and stamping the first row's code blends currencies. Build
+    // per-column {amount, currency} item lists for <MultiCurrencyTotal>,
+    // which groups per ISO code (single MoneyDisplay when homogeneous).
+    const totalAmount = filtered.map((inv) => ({
+      amount: Number(inv.amount ?? 0),
+      currency: inv.currency || projectCurrency || undefined,
+    }));
+    const totalPaid = filtered
+      .filter((inv) => inv.status === 'paid')
+      .map((inv) => ({
+        amount: Number(inv.amount ?? 0),
+        currency: inv.currency || projectCurrency || undefined,
+      }));
+    return { totalAmount, totalPaid };
+  }, [filtered, projectCurrency]);
 
   const approveMutation = useMutation({
     mutationFn: (invoiceId: string) =>
@@ -2126,11 +2134,11 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                         {t('common.total')}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <MoneyDisplay amount={invoiceTotals.totalAmount} currency={invoiceTotals.currency} />
+                        <MultiCurrencyTotal items={invoiceTotals.totalAmount} variant="inline" compact />
                       </td>
                       <td className="px-4 py-3 text-center text-xs text-content-tertiary">
                         {t('finance.total_paid', { defaultValue: 'Paid' })}:{' '}
-                        <MoneyDisplay amount={invoiceTotals.totalPaid} currency={invoiceTotals.currency} />
+                        <MultiCurrencyTotal items={invoiceTotals.totalPaid} variant="inline" compact />
                       </td>
                       <td />
                     </tr>
@@ -2496,11 +2504,15 @@ function PaymentsTab({
 
   const paymentTotals = useMemo(() => {
     if (!payments || !payments.length) return null;
-    const total = payments.reduce((s, p) => s + Number(p.amount ?? 0), 0);
-    // Currency from the payment data; undefined → MoneyDisplay uses the
-    // user's preferred currency symbol (never hardcode EUR — task #217).
-    const currency = payments[0]?.currency_code || payments[0]?.currency || undefined;
-    return { total, currency };
+    // Payments may be recorded in different currencies; summing into one
+    // scalar and stamping the first row's code blends them. Map rows to
+    // {amount, currency} for <MultiCurrencyTotal>, which groups per ISO
+    // code (and degrades to a single MoneyDisplay when homogeneous).
+    const total = payments.map((p) => ({
+      amount: Number(p.amount ?? 0),
+      currency: p.currency_code || p.currency || undefined,
+    }));
+    return { total };
   }, [payments]);
 
   if (isLoading) return <SkeletonTable rows={5} columns={5} />;
@@ -2606,7 +2618,7 @@ function PaymentsTab({
                   {t('common.total', { defaultValue: 'Total' })}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MoneyDisplay amount={paymentTotals.total} currency={paymentTotals.currency} />
+                  <MultiCurrencyTotal items={paymentTotals.total} variant="inline" compact />
                 </td>
                 <td colSpan={2} />
               </tr>

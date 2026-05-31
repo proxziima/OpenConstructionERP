@@ -571,7 +571,7 @@ export function HSEIncidentsWidget({ projectId }: { projectId: string }) {
   const icon = <HardHat size={16} />;
   const cta = {
     label: t('project.widget.view_all', { defaultValue: 'View all' }),
-    onClick: () => navigate('/hse'),
+    onClick: () => navigate('/hse-advanced'),
   };
 
   return (

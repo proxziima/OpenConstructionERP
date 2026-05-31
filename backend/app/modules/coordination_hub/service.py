@@ -18,7 +18,6 @@ the count queries on every tick.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 import uuid
@@ -119,6 +118,21 @@ def _normalise_trade(value: str | None) -> str:
 # ── Defensive aggregation primitives ────────────────────────────────────────
 
 
+async def _safe_rollback(session: AsyncSession) -> None:
+    """Roll an aborted (read-only) statement back so the next one can run.
+
+    On PostgreSQL a failed statement aborts the whole transaction; the
+    sub-aggregators run sequentially on the shared session, so without a
+    rollback one missing optional table would cascade
+    ``InFailedSQLTransactionError`` into every later counter and silently
+    zero the dashboard.
+    """
+    try:
+        await session.rollback()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _safe_count(
     session: AsyncSession,
     stmt: Any,
@@ -141,12 +155,14 @@ async def _safe_count(
             label,
             exc.__class__.__name__,
         )
+        await _safe_rollback(session)
         return 0
     except Exception:  # noqa: BLE001 — defensive: never 500 the dashboard
         logger.exception(
             "coordination_hub: unexpected error counting %s — returning 0",
             label,
         )
+        await _safe_rollback(session)
         return 0
 
 
@@ -166,12 +182,14 @@ async def _safe_scalar(
             label,
             exc.__class__.__name__,
         )
+        await _safe_rollback(session)
         return None
     except Exception:  # noqa: BLE001
         logger.exception(
             "coordination_hub: unexpected error fetching %s — returning None",
             label,
         )
+        await _safe_rollback(session)
         return None
 
 
@@ -191,12 +209,14 @@ async def _safe_list(
             label,
             exc.__class__.__name__,
         )
+        await _safe_rollback(session)
         return []
     except Exception:  # noqa: BLE001
         logger.exception(
             "coordination_hub: unexpected error fetching %s — returning []",
             label,
         )
+        await _safe_rollback(session)
         return []
 
 
@@ -576,24 +596,19 @@ class CoordinationHubService:
         now = datetime.now(UTC)
         # Per-counter errors are already swallowed inside _safe_count; the
         # outer sub-aggregators only raise on truly unexpected failures.
-        # Run them concurrently — keeping the default return_exceptions=False
-        # so any genuinely unexpected error still surfaces as a 500 rather
-        # than silently turning the whole dashboard into zeros.
-        (
-            federations,
-            clashes,
-            rule_packs,
-            smart_views,
-            bcf,
-            cost_total,
-        ) = await asyncio.gather(
-            self._federation_stats(project_id),
-            self._clash_stats(project_id),
-            self._rule_pack_stats(project_id),
-            self._smart_view_stats(project_id),
-            self._bcf_activity_stats(project_id),
-            self._open_cost_impact_total(project_id),
-        )
+        # Run them SEQUENTIALLY on the shared self.session: an AsyncSession is
+        # not safe for concurrent use, and on PostgreSQL (the v6 default) a
+        # concurrent fan-out would interleave statements on one connection and
+        # one failing query would abort the shared transaction — turning the
+        # rest of the dashboard into silent zeros. The per-counter _safe_*
+        # helpers roll the session back on error so a missing optional table
+        # cannot cascade to its neighbours.
+        federations = await self._federation_stats(project_id)
+        clashes = await self._clash_stats(project_id)
+        rule_packs = await self._rule_pack_stats(project_id)
+        smart_views = await self._smart_view_stats(project_id)
+        bcf = await self._bcf_activity_stats(project_id)
+        cost_total = await self._open_cost_impact_total(project_id)
 
         payload = CoordinationDashboardResponse(
             project_id=project_id,

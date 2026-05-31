@@ -106,6 +106,15 @@ export class FederatedViewerScene {
   private _needsRender = true;
   private _isVisible = true;
   private _disposed = false;
+  /** True between a `webglcontextlost` event and its `webglcontextrestored`
+   *  partner. While set, the animation loop skips rendering. */
+  private _contextLost = false;
+  /** Bound WebGL context-loss handlers, kept so dispose() can detach them. */
+  private _onContextLost: ((e: Event) => void) | null = null;
+  private _onContextRestored: (() => void) | null = null;
+  /** Optional host callback fired with `true` on context loss / `false` on
+   *  restore — wired to a non-fatal recovery banner (pdf11). */
+  private _onContextStateChange: ((lost: boolean) => void) | null = null;
 
   /** modelId → member root group. */
   private members = new Map<string, THREE.Group>();
@@ -145,6 +154,23 @@ export class FederatedViewerScene {
     this.renderer.toneMappingExposure = 1.0;
     this.renderer.shadowMap.enabled = false;
     this.updateSize();
+
+    // WebGL context-loss handling — a federated scene composes several fat
+    // IFC/RVT GLBs and is a prime candidate for a driver reset / VRAM-pressure
+    // context drop. preventDefault() on the loss event lets the browser
+    // restore the context; we pause rendering until it does (pdf11).
+    this._onContextLost = (e: Event) => {
+      e.preventDefault();
+      this._contextLost = true;
+      this._onContextStateChange?.(true);
+    };
+    this._onContextRestored = () => {
+      this._contextLost = false;
+      this._needsRender = true;
+      this._onContextStateChange?.(false);
+    };
+    canvas.addEventListener('webglcontextlost', this._onContextLost as EventListener, false);
+    canvas.addEventListener('webglcontextrestored', this._onContextRestored, false);
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(
@@ -234,6 +260,9 @@ export class FederatedViewerScene {
     if (this._disposed) return;
     this.animationId = requestAnimationFrame(this.animate);
     if (!this._isVisible) return;
+    // Skip while the GL context is lost — render() would throw against a
+    // dead context. Resumes on `webglcontextrestored`.
+    if (this._contextLost) return;
     const dampingDirty = this.controls.update();
     if (dampingDirty) this._needsRender = true;
     if (this._needsRender) {
@@ -245,6 +274,19 @@ export class FederatedViewerScene {
   /** Mark dirty so the next animation tick re-renders. */
   requestRender(): void {
     this._needsRender = true;
+  }
+
+  /** Register a callback notified when the WebGL context is lost (`true`)
+   *  or restored (`false`). Pass `null` to clear. Fires immediately with the
+   *  current state so a listener attached after a loss still sees it. */
+  onContextStateChange(cb: ((lost: boolean) => void) | null): void {
+    this._onContextStateChange = cb;
+    if (cb) cb(this._contextLost);
+  }
+
+  /** True while the WebGL context is lost (between contextlost / restored). */
+  isContextLost(): boolean {
+    return this._contextLost;
   }
 
   /** Swap the scene background between dark and light mode.
@@ -548,6 +590,16 @@ export class FederatedViewerScene {
       this.intersectionObserver.disconnect();
       this.intersectionObserver = null;
     }
+    // Detach the WebGL context-loss listeners.
+    if (this._onContextLost) {
+      this.canvas.removeEventListener('webglcontextlost', this._onContextLost as EventListener, false);
+      this._onContextLost = null;
+    }
+    if (this._onContextRestored) {
+      this.canvas.removeEventListener('webglcontextrestored', this._onContextRestored, false);
+      this._onContextRestored = null;
+    }
+    this._onContextStateChange = null;
     this.clear();
     this.controls.dispose();
     this.renderer.dispose();

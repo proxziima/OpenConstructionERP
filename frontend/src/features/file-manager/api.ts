@@ -1,6 +1,6 @@
 /** API client for the project file manager (Issue #109). */
 
-import { apiDelete, apiGet, apiPost } from '@/shared/lib/api';
+import { apiDelete, apiGet, apiPost, extractErrorMessageFromBody } from '@/shared/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 import type {
   EmailLinkResponse,
@@ -125,7 +125,7 @@ export async function validateImport(file: File): Promise<ImportPreview> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.detail || `Bundle is invalid (${res.status})`);
+    throw new Error(extractErrorMessageFromBody(body) ?? `Bundle is invalid (${res.status})`);
   }
   return (await res.json()) as ImportPreview;
 }
@@ -148,7 +148,7 @@ export async function commitImport(opts: {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.detail || `Import failed (${res.status})`);
+    throw new Error(extractErrorMessageFromBody(body) ?? `Import failed (${res.status})`);
   }
   return (await res.json()) as ImportResult;
 }
@@ -200,7 +200,7 @@ export async function revokeShareLink(
   );
   if (!res.ok && res.status !== 204) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.detail || `Revoke failed (${res.status})`);
+    throw new Error(extractErrorMessageFromBody(body) ?? `Revoke failed (${res.status})`);
   }
 }
 
@@ -215,7 +215,7 @@ export async function fetchShareLinkInfo(
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.detail || `Link not found (${res.status})`);
+    throw new Error(extractErrorMessageFromBody(body) ?? `Link not found (${res.status})`);
   }
   return (await res.json()) as ShareLinkPublicInfo;
 }
@@ -260,7 +260,7 @@ export async function revokeFolderPermission(
   );
   if (!res.ok && res.status !== 204) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.detail || `Revoke failed (${res.status})`);
+    throw new Error(extractErrorMessageFromBody(body) ?? `Revoke failed (${res.status})`);
   }
 }
 
@@ -284,7 +284,7 @@ export async function accessShareLink(
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.detail || `Access failed (${res.status})`);
+    throw new Error(extractErrorMessageFromBody(body) ?? `Access failed (${res.status})`);
   }
   return (await res.json()) as ShareLinkAccessResponse;
 }

@@ -2375,16 +2375,16 @@ async def list_loaded_databases(
     * ``count > 0`` and ``vectorized_count > 0``  — ready for matching
 
     Cheap: the SQL count comes from a single ``GROUP BY region`` against
-    the indexed ``region`` column; the vector count is a substring-LIKE
-    on the LanceDB ``payload`` column, capped at the table size and
-    short-circuited when LanceDB is unavailable.
+    the indexed ``region`` column; the vector count comes from
+    ``vector_count_for_region`` which counts the same ``cost_items`` store
+    the ``/vector/index/`` action writes, filtered by the region field, so
+    the badge tracks vectorisation progress instead of staying stuck (#170).
     """
     _ = user_id  # auth required via dependency; unused beyond that
     from sqlalchemy import func, select  # noqa: PLC0415
 
     from app.core.match_service.region_language import language_for  # noqa: PLC0415
-    from app.core.vector import vector_count_with_payload_substring  # noqa: PLC0415
-    from app.core.vector_index import COLLECTION_COSTS  # noqa: PLC0415
+    from app.core.vector import vector_count_for_region  # noqa: PLC0415
     from app.modules.costs.models import CostItem  # noqa: PLC0415
 
     result = await session.execute(
@@ -2399,7 +2399,7 @@ async def list_loaded_databases(
     for region, sql_count in result.all():
         if not region or sql_count <= 0:
             continue
-        vectorized = vector_count_with_payload_substring(COLLECTION_COSTS, region)
+        vectorized = vector_count_for_region(region)
         out.append(
             {
                 "id": region,

@@ -8,7 +8,7 @@
  *   GET  /v1/bim_hub/models/{id}/geometry   — serve DAE geometry file
  */
 
-import { apiGet, apiPost, apiPatch, apiDelete } from '@/shared/lib/api';
+import { apiGet, apiPost, apiPatch, apiDelete, extractErrorMessageFromBody } from '@/shared/lib/api';
 import { isModuleLoaded } from '@/shared/lib/moduleProbe';
 import { useAuthStore } from '@/stores/useAuthStore';
 import type { BIMElementData, BIMModelData } from '@/shared/ui/BIMViewer';
@@ -639,7 +639,7 @@ export async function uploadBIMData(
     let detail = `Upload failed (HTTP ${response.status})`;
     try {
       const body = await response.json();
-      detail = body.detail || detail;
+      detail = extractErrorMessageFromBody(body) ?? detail;
     } catch {
       // ignore parse errors
     }
@@ -1257,7 +1257,7 @@ export async function uploadCADFile(
     let detail = `Upload failed (HTTP ${response.status})`;
     try {
       const body = await response.json();
-      detail = body.detail || detail;
+      detail = extractErrorMessageFromBody(body) ?? detail;
     } catch {
       // ignore parse errors
     }
@@ -1348,7 +1348,7 @@ export async function importBIMRequirements(
     let detail = `Import failed (HTTP ${resp.status})`;
     try {
       const body = await resp.json();
-      detail = body.detail || detail;
+      detail = extractErrorMessageFromBody(body) ?? detail;
     } catch {
       // ignore json parse error
     }

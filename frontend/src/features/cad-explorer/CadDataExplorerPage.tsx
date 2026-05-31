@@ -20,7 +20,7 @@ import {
 import { Button, Card, Badge, Breadcrumb, EmptyState } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
 import { useUploadQueueStore } from '@/stores/useUploadQueueStore';
-import { apiGet, apiPost, ApiError, getErrorMessage } from '@/shared/lib/api';
+import { apiGet, apiPost, ApiError, getErrorMessage, extractErrorMessageFromBody } from '@/shared/lib/api';
 import {
   describeSession,
   valueCounts,
@@ -2300,9 +2300,39 @@ function LazyRechart({ slices, kind, formatAxis, onSliceClick, onSliceDoubleClic
     if (d?.index != null && slices[d.index]) onSliceDoubleClick(slices[d.index]!);
   }) as unknown as () => void;
 
+  // Category legend. Scatter and pie encode the category only by colour — the
+  // axes carry count/value, so without a swatch→label key the user cannot tell
+  // which point or wedge is which group. Each item is clickable to select the
+  // matching slice, mirroring the on-chart click behaviour.
+  const categoryLegend = (
+    <ul
+      data-testid="chart-legend"
+      className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 max-h-24 overflow-y-auto px-1"
+    >
+      {slices.map((s, i) => (
+        <li key={`lg-${i}`}>
+          <button
+            type="button"
+            onClick={() => onSliceClick(s)}
+            className="flex items-center gap-1.5 text-[11px] text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100 transition-colors"
+            title={`${s.label}: ${formatAxis(s.value)}`}
+          >
+            <span
+              aria-hidden
+              className="inline-block h-2.5 w-2.5 rounded-sm shrink-0"
+              style={{ backgroundColor: s.colour }}
+            />
+            <span className="truncate max-w-[160px]">{s.label}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+
   if (kind === 'pie') {
     return (
-      <div data-testid="chart-pie" className="w-full h-[360px]">
+      <>
+        <div data-testid="chart-pie" className="w-full h-[360px]">
         <ResponsiveContainer width="100%" height="100%">
           <RPieChart>
             <Pie
@@ -2326,7 +2356,9 @@ function LazyRechart({ slices, kind, formatAxis, onSliceClick, onSliceDoubleClic
             <Tooltip formatter={tooltipFormatter} />
           </RPieChart>
         </ResponsiveContainer>
-      </div>
+        </div>
+        {categoryLegend}
+      </>
     );
   }
 
@@ -2356,7 +2388,8 @@ function LazyRechart({ slices, kind, formatAxis, onSliceClick, onSliceDoubleClic
 
   if (kind === 'scatter') {
     return (
-      <div data-testid="chart-scatter" className="w-full h-[360px]">
+      <>
+        <div data-testid="chart-scatter" className="w-full h-[360px]">
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart margin={{ top: 10, right: 20, left: 10, bottom: 40 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -2376,7 +2409,9 @@ function LazyRechart({ slices, kind, formatAxis, onSliceClick, onSliceDoubleClic
             </Scatter>
           </ScatterChart>
         </ResponsiveContainer>
-      </div>
+        </div>
+        {categoryLegend}
+      </>
     );
   }
 
@@ -3105,7 +3140,7 @@ function UploadConvertZone({
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(body.detail || 'Conversion failed');
+        throw new Error(extractErrorMessageFromBody(body) ?? 'Conversion failed');
       }
 
       const data = await res.json();

@@ -177,7 +177,12 @@ export const KIND_MODULES: Record<FileKind, ModuleTarget[]> = {
       description: 'Open the parent PDF in the takeoff viewer',
       descriptionI18nKey: 'files.module.pdf_takeoff_desc_sheet',
       icon: Ruler,
-      route: (_p, f) => withParam('/takeoff', 'sheet', f),
+      // TakeoffPage reads `doc`/`source`/`tab` (not `sheet`), so mirror the
+      // document-kind builder: open the source PDF with the measurements tab.
+      route: (_p, f) =>
+        f
+          ? `/takeoff?doc=${encodeURIComponent(f)}&source=document&tab=measurements`
+          : '/takeoff',
     },
     {
       label: 'File Manager',
@@ -263,7 +268,12 @@ export const KIND_MODULES: Record<FileKind, ModuleTarget[]> = {
       description: 'Continue measuring or review takeoff results',
       descriptionI18nKey: 'files.module.takeoff_desc',
       icon: Ruler,
-      route: (_p, f) => withParam('/takeoff', 'session', f),
+      // TakeoffPage reads `doc`/`source`/`tab` (not `session`), so mirror the
+      // document-kind builder so the file actually opens in the viewer.
+      route: (_p, f) =>
+        f
+          ? `/takeoff?doc=${encodeURIComponent(f)}&source=document&tab=measurements`
+          : '/takeoff',
     },
   ],
   report: [
@@ -273,7 +283,9 @@ export const KIND_MODULES: Record<FileKind, ModuleTarget[]> = {
       description: 'Browse generated cost & validation reports',
       descriptionI18nKey: 'files.module.reports_desc',
       icon: FileBarChart,
-      route: (_p, f) => withParam('/reporting', 'report', f),
+      // /reporting reads no query params, so a `?report=` deep-link is dead.
+      // Keep the file selected in /files (which reads `?file=`) instead.
+      route: (p, f) => withParam(PROJECT(p, 'files'), 'file', f),
     },
   ],
   markup: [

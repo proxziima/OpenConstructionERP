@@ -393,7 +393,7 @@ export async function linkAnnotationToBoq(
 /* ── Pins ──────────────────────────────────────────────────────────────── */
 
 export async function fetchPins(drawingId: string): Promise<DwgPin[]> {
-  return apiGet<DwgPin[]>(`/v1/dwg_takeoff/drawings/${drawingId}/pins`);
+  return apiGet<DwgPin[]>(`/v1/dwg-takeoff/pins/?drawing_id=${encodeURIComponent(drawingId)}`);
 }
 
 /* ── Entity Groups (RFC 11) ───────────────────────────────────────────── */

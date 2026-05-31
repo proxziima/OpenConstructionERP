@@ -6481,7 +6481,7 @@ async def get_resource_summary(
 @router.post(
     "/boqs/{boq_id}/enrich-resources/",
     summary="Enrich position resources",
-    dependencies=[Depends(RequirePermission("boq.write"))],
+    dependencies=[Depends(RequirePermission("boq.update"))],
 )
 async def enrich_resources(
     boq_id: uuid.UUID,
@@ -6584,7 +6584,7 @@ async def list_epd_materials(
     "/boqs/{boq_id}/enrich-co2/",
     response_model=CO2EnrichResponse,
     summary="Enrich BOQ with CO2 data",
-    dependencies=[Depends(RequirePermission("boq.write"))],
+    dependencies=[Depends(RequirePermission("boq.update"))],
 )
 async def enrich_co2(
     boq_id: uuid.UUID,
@@ -6646,7 +6646,7 @@ async def enrich_co2(
 @router.put(
     "/positions/{position_id}/co2/",
     summary="Assign CO2 data to position",
-    dependencies=[Depends(RequirePermission("boq.write"))],
+    dependencies=[Depends(RequirePermission("boq.update"))],
 )
 async def assign_position_co2(
     position_id: uuid.UUID,
@@ -7657,7 +7657,7 @@ async def boq_vector_status() -> dict[str, Any]:
 
 @router.post(
     "/vector/reindex/",
-    dependencies=[Depends(RequirePermission("boq.write"))],
+    dependencies=[Depends(RequirePermission("boq.update"))],
 )
 async def boq_vector_reindex(
     session: SessionDep,

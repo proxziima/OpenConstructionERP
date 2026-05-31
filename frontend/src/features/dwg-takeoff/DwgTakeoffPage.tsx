@@ -950,16 +950,31 @@ export function DwgTakeoffPage() {
       if (s === 'ready' || s === 'error' || s === 'empty') return false;
       return 3500;
     },
-    refetchIntervalInBackground: false,
+    // Keep polling even when the tab is backgrounded so a long DWG/IFC
+    // conversion that completes while the user is on another tab is reflected
+    // the moment they return, instead of staying pinned on "Converting your
+    // drawing…" until a manual reload.
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
     staleTime: 0,
     gcTime: 0,
   });
-  /** Effective backend status. Prefer the live-poll result; fall back
-   *  to whatever the drawings list carried (so we don't briefly drop
-   *  back into "loading…" between the first paint and the first poll
-   *  response). */
+  /** Effective backend status. A terminal status (ready/error/empty) from
+   *  EITHER the live poll or the cached drawings list wins, so a stale
+   *  "processing" left over in one source after the other has already reached
+   *  "ready" can no longer pin the conversion card open until a manual reload.
+   *  Otherwise prefer the live-poll value, then the list value, so we don't
+   *  briefly drop back into "loading…" between first paint and first poll. */
+  const _listStatus = selectedDrawingFromList?.status;
+  const _pollStatus = liveDrawing?.status;
+  const _isTerminalStatus = (s: string | null | undefined) =>
+    s === 'ready' || s === 'error' || s === 'empty';
   const drawingStatus =
-    liveDrawing?.status ?? selectedDrawingFromList?.status ?? null;
+    (_isTerminalStatus(_listStatus) ? _listStatus : undefined) ??
+    (_isTerminalStatus(_pollStatus) ? _pollStatus : undefined) ??
+    _pollStatus ??
+    _listStatus ??
+    null;
   const isConverting =
     !!selectedDrawingId &&
     (drawingStatus === 'processing' || drawingStatus === 'uploaded');

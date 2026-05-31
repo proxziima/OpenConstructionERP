@@ -343,7 +343,7 @@ export async function importFieldReportsFile(
     let detail = 'Import failed';
     try {
       const body = await response.json();
-      detail = body.detail || detail;
+      detail = extractErrorMessageFromBody(body) ?? detail;
     } catch {
       // ignore parse error
     }

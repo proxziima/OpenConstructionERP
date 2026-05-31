@@ -118,6 +118,10 @@ interface BIMViewerState {
   setCategoryOpacity: (category: string, opacity: number) => void;
   setCategoryHidden: (category: string, hidden: boolean) => void;
   resetCategoryOverrides: () => void;
+  /** Clear only the per-category visibility hides, leaving opacity
+   *  overrides intact. Called by the viewer's "Show all" affordance so
+   *  un-hiding everything doesn't also reset transparency tuning. */
+  resetHiddenCategories: () => void;
   setRightPanelTab: (tab: BIMRightPanelTab) => void;
   setRightPanelOpen: (open: boolean) => void;
   setMeasureActive: (active: boolean) => void;
@@ -162,6 +166,8 @@ export const useBIMViewerStore = create<BIMViewerState>((set) => ({
     })),
 
   resetCategoryOverrides: () => set({ categoryOpacity: {}, hiddenCategories: {} }),
+
+  resetHiddenCategories: () => set({ hiddenCategories: {} }),
 
   setRightPanelTab: (tab) => set({ rightPanelTab: tab, rightPanelOpen: true }),
   setRightPanelOpen: (open) => set({ rightPanelOpen: open }),

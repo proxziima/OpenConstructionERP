@@ -742,6 +742,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
   const location = useLocation();
   const { isModuleEnabled } = useModuleStore();
   const isAdvanced = useViewModeStore((s) => s.isAdvanced);
+  const setViewMode = useViewModeStore((s) => s.setMode);
   const badgeCounts = useSidebarBadges();
   const modulePresence = useModulePresence();
   const openSearch = useGlobalSearchStore((s) => s.openModal);
@@ -885,6 +886,28 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
   const toggleGroup = useCallback((groupId: string) => {
     setCollapsed((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
   }, []);
+
+  // ── Product-tour reveal bridge ──────────────────────────────────────
+  // The global tour spotlights rows that live inside collapsible groups
+  // (e.g. "property" / "cad_bim_analytics"). Those groups are collapsed by
+  // default — and some are hidden entirely in simple view — so the target
+  // row is unmounted and the tour can't measure it. When the tour hits such
+  // a step it dispatches `oe:tour-reveal` with the group id; we force that
+  // group expanded and switch to advanced view if the group is gated behind
+  // it, so the row mounts and the spotlight can latch on.
+  useEffect(() => {
+    const onReveal = (evt: Event) => {
+      const groupId = (evt as CustomEvent<{ groupId?: string }>).detail?.groupId;
+      if (!groupId) return;
+      setCollapsed((prev) => ({ ...prev, [groupId]: false }));
+      const group = navGroups.find((g) => g.id === groupId);
+      if (group?.hideInSimple && useViewModeStore.getState().mode !== 'advanced') {
+        setViewMode('advanced');
+      }
+    };
+    window.addEventListener('oe:tour-reveal', onReveal);
+    return () => window.removeEventListener('oe:tour-reveal', onReveal);
+  }, [setViewMode]);
 
   const togglePin = useCallback((route: string) => {
     setPinned((prev) =>

@@ -1409,7 +1409,14 @@ async def _process_cad_in_background(
                 from datetime import UTC as _UTC
                 from datetime import datetime as _dt
 
-                model.import_date = _dt.now(_UTC)
+                # ``import_date`` is a string column (ISO-8601), not a
+                # timestamp.  Assigning a ``datetime`` worked on SQLite (silent
+                # coercion) but asyncpg rejects a datetime bound to a
+                # ``::VARCHAR`` parameter, so every RVT/IFC conversion failed to
+                # persist on PostgreSQL ("expected str, got datetime").  Store a
+                # second-precision UTC ISO string (20 chars) so it fits both the
+                # column and the API schema's length bound.
+                model.import_date = _dt.now(_UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
                 if glb_key:
                     model.canonical_file_path = glb_key
                 elif geo_key:
@@ -3087,7 +3094,7 @@ async def update_asset_info(
     element_id: uuid.UUID,
     payload: AssetInfoUpdateRequest,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
-    _perm: None = Depends(RequirePermission("bim.write")),
+    _perm: None = Depends(RequirePermission("bim.update")),
     service: BIMHubService = Depends(_get_service),
 ) -> BIMElementResponse:
     """Merge-update asset_info on a BIMElement.

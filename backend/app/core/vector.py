@@ -762,6 +762,27 @@ def vector_status() -> dict[str, Any]:
     return _lancedb_status()
 
 
+def _qdrant_vector_size(client: Any, name: str) -> int | None:
+    """Return the configured vector dimension of an existing Qdrant collection.
+
+    Handles both the single-unnamed-vector layout (``VectorParams``) and the
+    named-vectors layout (``dict[str, VectorParams]``).  Returns ``None`` when
+    the size cannot be determined so callers can fall back gracefully.
+    """
+    try:
+        cfg = client.get_collection(name).config.params.vectors
+    except Exception:
+        return None
+    size = getattr(cfg, "size", None)
+    if size is not None:
+        return int(size)
+    if isinstance(cfg, dict) and cfg:
+        first = next(iter(cfg.values()))
+        size = getattr(first, "size", None)
+        return int(size) if size is not None else None
+    return None
+
+
 def vector_index(items: list[dict]) -> int:
     """Index items into vector DB. Items: [{id, vector, code, description, unit, rate, region}]."""
     if _backend() == "qdrant":
@@ -770,12 +791,43 @@ def vector_index(items: list[dict]) -> int:
             raise RuntimeError("Qdrant not available")
         from qdrant_client.models import Distance, PointStruct, VectorParams
 
-        # Ensure collection
+        # The collection dimension must match the vectors we are about to
+        # write.  Those come from the active embedding model, so derive the
+        # size from the data itself (falling back to the configured model dim
+        # for an empty call).  Creating the cost collection at the fixed
+        # GitHub-snapshot dimension instead made every local upsert fail with a
+        # Qdrant 400 ("expected dim 3072, got 384"), so the catalogue badge
+        # stayed stuck at 0 vectorised items (issue #170).
+        vec_dim = (
+            len(items[0]["vector"])
+            if items and items[0].get("vector") is not None
+            else _resolve_active_model()[1]
+        )
+
         collections = [c.name for c in client.get_collections().collections]
         if COST_TABLE not in collections:
             client.create_collection(
-                COST_TABLE, vectors_config=VectorParams(size=QDRANT_SNAPSHOT_DIM, distance=Distance.COSINE)
+                COST_TABLE, vectors_config=VectorParams(size=vec_dim, distance=Distance.COSINE)
             )
+        else:
+            # A collection left over from a different embedding model (for
+            # example a 3072-d prebuilt snapshot that was later cleared) is
+            # incompatible with locally generated vectors.  Rebuild it at the
+            # correct size so indexing proceeds instead of 400-ing — the old
+            # vectors could not be searched with the current model anyway.
+            existing_dim = _qdrant_vector_size(client, COST_TABLE)
+            if existing_dim is not None and existing_dim != vec_dim:
+                logger.warning(
+                    "Cost vector collection %r has dim %d but the active model "
+                    "produces dim %d; rebuilding it to match the model.",
+                    COST_TABLE,
+                    existing_dim,
+                    vec_dim,
+                )
+                client.delete_collection(COST_TABLE)
+                client.create_collection(
+                    COST_TABLE, vectors_config=VectorParams(size=vec_dim, distance=Distance.COSINE)
+                )
 
         points = [
             PointStruct(
@@ -1032,4 +1084,52 @@ def vector_count_with_payload_substring(
         return int(tbl.count_rows(filter=f"payload LIKE '%{substring}%'"))
     except Exception as exc:
         logger.debug("vector_count_with_payload_substring failed: %s", exc)
+        return 0
+
+
+def vector_count_for_region(region: str) -> int:
+    """Count cost-item vectors for a single catalogue region.
+
+    Reads the SAME store the ``/vector/index/`` action writes — the cost
+    collection ``COST_TABLE`` (``cost_items``) on both backends — filtered by
+    the dedicated ``region`` field. This is what the per-catalogue
+    "vectorised" badge in the UI must reflect, so the count rises right after
+    a vectorise run instead of staying stuck (issue #170). Returns 0 on any
+    failure so the call site stays one line.
+
+    Note: the older ``vector_count_with_payload_substring`` counted a
+    different collection (``oe_cost_items``) against a non-existent
+    ``payload`` column, which is why the loaded-databases count never moved.
+    """
+    if not region:
+        return 0
+    if _backend() == "qdrant":
+        client = _get_qdrant()
+        if client is None:
+            return 0
+        try:
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+            flt = Filter(must=[FieldCondition(key="region", match=MatchValue(value=region))])
+            # Qdrant create_collection is lazy; an un-vectorised region's
+            # collection may not exist yet, in which case count() raises.
+            collections = [c.name for c in client.get_collections().collections]
+            if COST_TABLE not in collections:
+                return 0
+            return int(client.count(COST_TABLE, count_filter=flt, exact=True).count)
+        except Exception as exc:
+            logger.debug("vector_count_for_region (qdrant) failed: %s", exc)
+            return 0
+    db = _get_lancedb()
+    if db is None:
+        return 0
+    try:
+        if COST_TABLE not in db.table_names():
+            return 0
+        safe = _safe_quote_scalar(region, "region")
+        if safe is None:
+            return 0
+        return int(db.open_table(COST_TABLE).count_rows(filter=f"region = {safe}"))
+    except Exception as exc:
+        logger.debug("vector_count_for_region (lancedb) failed: %s", exc)
         return 0

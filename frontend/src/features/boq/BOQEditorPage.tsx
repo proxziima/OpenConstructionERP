@@ -7,7 +7,7 @@ import { Database, Download, ExternalLink, X, Sparkles, AlertTriangle as WarnTri
 import { Button, Badge, Breadcrumb, ModuleHelpButton, ConfirmDialog } from '@/shared/ui';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { useProgressStore } from '@/shared/ui/GlobalProgress';
-import { apiGet, apiPost, triggerDownload } from '@/shared/lib/api';
+import { apiGet, apiPost, triggerDownload, extractErrorMessageFromBody } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 import { useRecentStore } from '@/stores/useRecentStore';
 import { useAuthStore } from '@/stores/useAuthStore';
@@ -3585,7 +3585,7 @@ export function BOQEditorPage() {
 
         if (!res.ok) {
           const body = await res.json().catch(() => ({ detail: res.statusText }));
-          throw new Error(body.detail || 'Import failed');
+          throw new Error(extractErrorMessageFromBody(body) ?? 'Import failed');
         }
 
         const result: {

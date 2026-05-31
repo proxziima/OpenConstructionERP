@@ -638,6 +638,12 @@ export class ElementManager {
    *  Used so `hasHidden()` returns the intuitive answer when "everything
    *  but X" is the current state. */
   private isolateActive = false;
+  /** Categories hidden via the Layers tab (`setCategoryVisible(cat, false)`).
+   *  Kept separate from `hiddenElementIds` (context-menu Hide / isolate) so
+   *  the two visibility systems don't corrupt each other's counts — a
+   *  category hide must not bump the hide/isolate badge, and un-hiding a
+   *  category must not reveal an element the user hid individually. */
+  private hiddenCategorySet = new Set<string>();
   /** Subscribers for hidden-count changes — wired by BIMViewer to drive a
    *  small "{n} hidden — Show all" badge above the canvas. */
   private hiddenCountSubscribers = new Set<(count: number) => void>();
@@ -2300,6 +2306,7 @@ export class ElementManager {
     }
     this.hiddenElementIds.clear();
     this.isolateActive = false;
+    this.hiddenCategorySet.clear();
     this.notifyHiddenCount();
     this.sceneManager.requestRender();
   }
@@ -2507,10 +2514,15 @@ export class ElementManager {
     this.hideElements(new Set(ids));
   }
 
-  /** Returns true when at least one element is hidden by `hide()`
-   *  or `isolate()`. Used to gate the "Show all" affordance. */
+  /** Returns true when at least one element is hidden by `hide()`,
+   *  `isolate()`, or a Layers-tab category toggle. Used to gate the
+   *  "Show all" affordance so it appears for category hides too. */
   hasHidden(): boolean {
-    return this.hiddenElementIds.size > 0 || this.isolateActive;
+    return (
+      this.hiddenElementIds.size > 0 ||
+      this.isolateActive ||
+      this.hiddenCategorySet.size > 0
+    );
   }
 
   /** Current count of hidden elements (driven by hide/isolate, not by
@@ -2714,6 +2726,53 @@ export class ElementManager {
       m.transparent = clamped < 1;
       m.needsUpdate = true;
     }
+    this.sceneManager.requestRender();
+  }
+
+  /**
+   * Show or hide every mesh whose category (`element_type || 'Unknown'`)
+   * matches `category`. Drives the Layers-tab visibility toggles.
+   *
+   * Bidirectional and batched-aware: it uses the same `batchHandle`
+   * pattern as `applyFilter` / `hideElements` so it works on BatchedMesh
+   * instances (which ignore `mesh.visible`) as well as standalone meshes.
+   *
+   * When revealing (`visible === true`) it never un-hides an element that
+   * the user hid individually via `hide()` / context-menu Hide. While an
+   * `isolate()` is active, isolation owns visibility and this method only
+   * updates the tracked hidden-category set without touching any mesh — so
+   * a category toggle can't stomp the isolated subset. The set of hidden
+   * categories is tracked so `hasHidden()` and the Show-all affordance
+   * reflect Layers-tab hides too.
+   */
+  setCategoryVisible(category: string, visible: boolean): void {
+    if (visible) {
+      this.hiddenCategorySet.delete(category);
+    } else {
+      this.hiddenCategorySet.add(category);
+    }
+    // Isolation is the higher-priority visibility owner: leave meshes alone
+    // and just record intent. `showAll()`/exiting isolate re-derives the
+    // correct state, and a later category toggle outside isolation applies.
+    if (this.isolateActive) {
+      this.notifyHiddenCount();
+      return;
+    }
+    for (const [elementId, mesh] of this.meshMap) {
+      const el = this.elementDataMap.get(elementId);
+      if (!el) continue;
+      const cat = el.element_type || 'Unknown';
+      if (cat !== category) continue;
+      // Never reveal an element the user hid individually — that hide wins.
+      const shouldShow = visible && !this.hiddenElementIds.has(elementId);
+      const handle = (mesh.userData as { batchHandle?: { batched: THREE.BatchedMesh; instanceId: number } }).batchHandle;
+      if (handle) {
+        handle.batched.setVisibleAt(handle.instanceId, shouldShow);
+      } else {
+        mesh.visible = shouldShow;
+      }
+    }
+    this.notifyHiddenCount();
     this.sceneManager.requestRender();
   }
 
@@ -2940,9 +2999,14 @@ export class ElementManager {
     // drop them so a fresh model doesn't try to restore stale materials.
     this.ghostedIds.clear();
     // W6.6: hidden / isolate / color-by-property state is per-model — wipe.
-    if (this.hiddenElementIds.size > 0 || this.isolateActive) {
+    if (
+      this.hiddenElementIds.size > 0 ||
+      this.isolateActive ||
+      this.hiddenCategorySet.size > 0
+    ) {
       this.hiddenElementIds.clear();
       this.isolateActive = false;
+      this.hiddenCategorySet.clear();
       this.notifyHiddenCount();
     }
     this.colorByPropertyConfig = null;

@@ -1706,7 +1706,7 @@ function ConverterStatusPanel() {
   const { t } = useTranslation();
   const { data, isLoading, isError, refetch, isFetching } = useQuery<ConverterStatusResponse>({
     queryKey: ['system', 'converters', 'version-check'],
-    queryFn: () => apiGet<ConverterStatusResponse>('/api/system/converters/version-check'),
+    queryFn: () => apiGet<ConverterStatusResponse>('/system/converters/version-check'),
     staleTime: 5 * 60 * 1000,
   });
 

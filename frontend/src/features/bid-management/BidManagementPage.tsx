@@ -440,7 +440,7 @@ export function BidManagementPage() {
           <PackageTable
             rows={filteredPackages}
             onSelect={(id) => setSelectedPackageId(id)}
-            currency={currentProject?.currency || 'EUR'}
+            currency={currentProject?.currency || undefined}
             emptyAction={() => setCreateOpen(true)}
           />
         ) : tab === 'invitations' ? (
@@ -448,7 +448,7 @@ export function BidManagementPage() {
         ) : tab === 'submissions' ? (
           <SubmissionsLevelingView
             packages={filteredPackages}
-            currency={currentProject?.currency || 'EUR'}
+            currency={currentProject?.currency || undefined}
           />
         ) : (
           <QAView packages={filteredPackages} />
@@ -459,14 +459,14 @@ export function BidManagementPage() {
         <PackageDrawer
           packageId={selectedPackageId}
           onClose={() => setSelectedPackageId(null)}
-          currency={currentProject?.currency || 'EUR'}
+          currency={currentProject?.currency || undefined}
         />
       )}
 
       {createOpen && (
         <CreatePackageModal
           projectId={projectId}
-          currency={currentProject?.currency || 'EUR'}
+          currency={currentProject?.currency || undefined}
           onClose={() => setCreateOpen(false)}
         />
       )}
@@ -484,7 +484,7 @@ function PackageTable({
 }: {
   rows: BidPackage[];
   onSelect: (id: string) => void;
-  currency: string;
+  currency?: string;
   emptyAction: () => void;
 }) {
   const { t } = useTranslation();
@@ -691,7 +691,7 @@ function SubmissionsLevelingView({
   currency,
 }: {
   packages: BidPackage[];
-  currency: string;
+  currency?: string;
 }) {
   const { t } = useTranslation();
   // Controlled selection that *defaults* to the first package even when
@@ -785,7 +785,7 @@ function LevelingTable({
   awardable,
 }: {
   packageId: string;
-  currency: string;
+  currency?: string;
   awardable: boolean;
 }) {
   const { t } = useTranslation();
@@ -1334,7 +1334,7 @@ function PackageDrawer({
 }: {
   packageId: string;
   onClose: () => void;
-  currency: string;
+  currency?: string;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -1758,7 +1758,7 @@ function CreatePackageModal({
   onClose,
 }: {
   projectId: string;
-  currency: string;
+  currency?: string;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -1769,7 +1769,10 @@ function CreatePackageModal({
     title: '',
     scope_description: '',
     submission_deadline: '',
-    currency,
+    // Seed the currency input from the project currency when known. When
+    // the project has none configured, start blank (rather than a guessed
+    // EUR) so the user must enter an explicit ISO-4217 code.
+    currency: currency ?? '',
     total_budget_estimate: '0',
   });
   const [busy, setBusy] = useState(false);
