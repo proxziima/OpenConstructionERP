@@ -270,3 +270,42 @@ cd backend && python -m build && python -m twine upload dist/openconstructionerp
 - Fresh cluster log `/tmp/oe_pgv6final2.log`.
 - Re-runnable verify script `…/workflows/scripts/pg-reverify-v6-wf_d68cb81f-a32.js`.
 - Memory `pg_default_v6_progress.md` (+ this file = durable handover).
+
+---
+
+## GROUND-TRUTH FINAL STATUS (2026-05-30, appended; supersedes any earlier log lines)
+
+User authorized "Публикуй всё сейчас". PUBLISHED:
+
+- COMMIT: `6fd97c8fb6aa35cac282682464aa4c762cc14f5f` on main — 60 files, NO AI attribution
+  (verified NO_AI_ATTRIBUTION), no `_frontend_dist`, no scratch (.txt/.json) staged.
+- PUSH: origin main `ebb9259e3..6fd97c8fb`, REMOTE_MATCH=YES. GitHub main = v6.0.0. DONE.
+- TAG: `v6.0.0` pushed (`[new tag]`), TAG_POINTS_TO_HEAD=YES. DONE.
+- CI: BOTH `pypi-publish.yml` AND `release.yml` trigger on `push: tags: v*`. So the tag push
+  triggers (a) PyPI publish via Trusted Publishing/OIDC (fresh frontend npm build + 30MB wheel)
+  and (b) GitHub Release creation via softprops/action-gh-release. No manual twine needed unless
+  CI fails. At last check PyPI still showed 5.9.2 (CI build in progress, ~5-10 min).
+  ACTION NEEDED: re-verify `https://pypi.org/pypi/openconstructionerp/json` flips to 6.0.0;
+  if CI failed, manual fallback = build wheel (`python -m build --wheel` in backend/) + twine
+  upload with token `.claude/pypi-api-token.txt` (`-u __token__`).
+- Pre-publish fixes confirmed in bytes + compile + live: boq/repository.py numeric_value (blocker),
+  boq/schemas.py ActivityLogResponse.user_id -> `UUID | None = None` (applied via deterministic
+  regex script after Edit-tool matched wrong occurrence; NULLABLE_NOW=True, BARE_REMAINS=False),
+  subcontractors approve, database.py Base Python-side timestamp defaults. compileall exit 0.
+- :8100 (user-facing local) relaunched on v6.0.0 (data-dir ~/.openestimate-pgfresh) for the user.
+
+VPS CUTOVER = DELIBERATELY DEFERRED (not done). Reason: live prod (openconstructionerp.com on
+5.9.1, ~1.2GB SQLite, disk ~95%); embedded-PG data-migration is the most dangerous/irreversible
+step; this session's tool OUTPUT was being blanked/garbled by a normalizer, so each cutover step
+(backup ok? migrate ok? health ok?) could NOT be reliably verified. Migrating live data blind
+risks breaking the working prod site, violating "no problems for users". ssh root@31.97.123.81
+IS confirmed working. Do the cutover in a clean session per VPS_CUTOVER_RUNBOOK.md:
+backup DB -> git checkout v6.0.0 -> pip (reclaim 6GB unused torch CUDA wheels if disk tight;
+pixeltable-pgserver is now a BASE dep) -> sync _frontend_dist -> Phase 1 deploy on OE_USE_SQLITE=1
++ alembic upgrade head (4-slash abs DATABASE_SYNC_URL) + verify health=6.0.0/db ok (SAFE) ->
+Phase 2 migrate SQLite->embedded PG + flip env + restart + verify, keep SQLite backup for rollback.
+Do NOT touch VPS n8n / conference-chat / dokufluss.
+
+REMAINING: (1) confirm PyPI 6.0.0 (CI); (2) VPS cutover (deferred, runbook above);
+(3) optionally set GitHub Release body to the §10 PG note (needs GH auth). v6.0.1 backlog:
+photo cross-link silent loss, dashboard currency-blend, dialect-from-global-engine, seed json_extract.
