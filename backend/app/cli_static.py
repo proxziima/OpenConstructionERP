@@ -104,6 +104,12 @@ def mount_frontend(app: FastAPI) -> None:
 
     # Serve other root-level static files (e.g. manifest.json, robots.txt)
     # that may exist in the frontend dist directory.
+    # NB: ``.js``/``.mjs``/``.css``/``.map``/``.wasm`` MUST be here — Vite-PWA
+    # emits ``registerSW.js``, ``sw.js`` and ``workbox-*.js`` at the dist ROOT
+    # (not under ``/assets``), and Cesium ships root-level ``.css``/``.wasm``.
+    # Without these suffixes the SPA 404 fallback returned ``index.html`` for
+    # them, so the browser refused the service worker (wrong MIME) and the PWA
+    # never registered.
     _root_static_extensions = {
         ".ico",
         ".png",
@@ -123,6 +129,11 @@ def mount_frontend(app: FastAPI) -> None:
         ".tsv",
         ".xlsx",
         ".xls",
+        ".js",
+        ".mjs",
+        ".css",
+        ".map",
+        ".wasm",
     }
 
     # ── Conventional API path aliases ────────────────────────────────────

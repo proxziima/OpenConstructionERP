@@ -628,12 +628,16 @@ class PunchlistPinResponse(BaseModel):
 
 
 class AnchoredProjectResponse(BaseModel):
-    """A single anchored project for the Global map's project-pin layer.
+    """A single locatable project for the Global map's project-pin layer.
 
-    Returned by ``GET /api/v1/geo-hub/projects`` — only projects the
-    caller can access AND that have a registered ``GeoAnchor`` are
-    included. Used by the global Geo Hub to drop a pin per project on
-    the earth-scale view (no tilesets at this LOD).
+    Returned by ``GET /api/v1/geo-hub/projects`` — projects the caller can
+    access that have a location, either a registered ``GeoAnchor`` OR
+    ``lat``/``lng`` coordinates on their address. Used by the global Geo
+    Hub to drop a pin per project on the earth-scale view (no tilesets at
+    this LOD).
+
+    ``anchor_id`` is ``None`` for projects pinned purely from their address
+    coordinates (no GeoAnchor row yet).
 
     ``project_type`` and ``status`` let the viewer pick the right pin
     icon (residential / commercial / civil) and tint by lifecycle
@@ -644,7 +648,7 @@ class AnchoredProjectResponse(BaseModel):
 
     project_id: UUID
     project_name: str
-    anchor_id: UUID
+    anchor_id: UUID | None = None
     lat: Decimal
     lon: Decimal
     alt: Decimal

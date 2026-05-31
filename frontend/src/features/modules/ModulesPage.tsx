@@ -1140,21 +1140,39 @@ function DataPackagesTab() {
 
         try {
           const status = await apiGet<{ backend: string; connected: boolean; can_restore_snapshots: boolean; can_generate_locally: boolean }>('/v1/costs/vector/status/');
+          let vecRes: { restored?: boolean; indexed?: number; database?: string; duration_seconds?: number } | undefined;
           if (status.can_restore_snapshots) {
-            await apiPost<{ restored?: boolean; indexed?: number; database?: string; duration_seconds?: number }>(`/v1/costs/vector/restore-snapshot/${dbId}`);
+            vecRes = await apiPost<{ restored?: boolean; indexed?: number; database?: string; duration_seconds?: number }>(`/v1/costs/vector/restore-snapshot/${dbId}`);
           } else if (status.connected) {
-            await apiPost<{ restored?: boolean; indexed?: number; database?: string; duration_seconds?: number }>(`/v1/costs/vector/load-github/${dbId}`);
+            vecRes = await apiPost<{ restored?: boolean; indexed?: number; database?: string; duration_seconds?: number }>(`/v1/costs/vector/load-github/${dbId}`);
           } else {
             throw new Error(t('marketplace.no_vector_backend', { defaultValue: 'No vector database available. Install LanceDB (pip install lancedb) or start Qdrant (docker run -p 6333:6333 qdrant/qdrant)' }));
           }
-          addToast({
-            type: 'success',
-            title: t('marketplace.vector_imported', { defaultValue: 'Vector index loaded' }),
-            message: t('marketplace.vector_ready_message', {
-              defaultValue: 'Vector index ready for {{region}}',
-              region: dbId,
-            }),
-          });
+          // The POST can return ``indexed: 0`` when the backend is reachable but
+          // could not actually build the index (no embedding model, or an empty
+          // snapshot). Reflect that truthfully instead of always claiming success.
+          const vecIndexed = vecRes?.indexed ?? 0;
+          if (vecIndexed > 0) {
+            addToast({
+              type: 'success',
+              title: t('marketplace.vector_imported', { defaultValue: 'Vector index loaded' }),
+              message: t('marketplace.vector_ready_count', {
+                defaultValue: '{{count}} vectors ready for {{region}}',
+                count: vecIndexed,
+                region: dbId,
+              }),
+            });
+          } else {
+            addToast({
+              type: 'info',
+              title: t('marketplace.vector_no_index', { defaultValue: 'No vectors indexed' }),
+              message: t('marketplace.vector_no_index_message', {
+                defaultValue:
+                  'The vector backend is reachable but indexed 0 vectors for {{region}}. The embedding model is likely unavailable here, so semantic cost search stays limited until vectors are generated.',
+                region: dbId,
+              }),
+            });
+          }
           queryClient.invalidateQueries({ queryKey: ['marketplace'] });
           queryClient.invalidateQueries({ queryKey: ['vector-status'] });
         } catch (err) {

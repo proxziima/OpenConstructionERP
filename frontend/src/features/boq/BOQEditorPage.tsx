@@ -69,6 +69,7 @@ import {
   createFormatter,
   fmtWithCurrency,
   resourceAwareTotalInBase,
+  convertToBase,
   computeQualityScore,
   type QualityBreakdown,
   type Tip,
@@ -2604,6 +2605,27 @@ export function BOQEditorPage() {
 
   /* ── Resource management ────────────────────────────────────────────── */
 
+  /** Derive a position's per-unit rate from its resource list, in the
+   *  project BASE currency. Issue #88 / #111 — each resource may carry its
+   *  own ``currency`` (per-resource currency picker), so every subtotal is
+   *  converted via the project FX table BEFORE summing. Mirrors the grid
+   *  render path (``BOQGrid.insertResourceRows`` line ~1288) so the value we
+   *  persist matches what the editor displays — never a blended-currency sum.
+   *  Resource currency wins; absent ⇒ project base (no conversion). */
+  const perUnitRateInBase = useCallback(
+    (resources: Array<Record<string, unknown>>): number => {
+      let acc = 0;
+      for (const r of resources) {
+        const sub =
+          (r.total as number) ?? (((r.quantity as number) ?? 0) * ((r.unit_rate as number) ?? 0));
+        const ccy = ((r.currency as string) || '').trim() || currencyCode;
+        acc += convertToBase(sub, ccy, currencyCode, fxRates ?? null);
+      }
+      return Math.round(acc * 10000) / 10000;
+    },
+    [currencyCode, fxRates],
+  );
+
   /** Remove a resource from a position's metadata.resources array. */
   const handleRemoveResource = useCallback(
     (positionId: string, resourceIndex: number) => {
@@ -2613,18 +2635,15 @@ export function BOQEditorPage() {
       if (resourceIndex < 0 || resourceIndex >= resources.length) return;
       resources.splice(resourceIndex, 1);
       const newMeta = { ...pos.metadata, resources };
-      // Recalculate unit_rate from remaining resources
-      let computedRate = 0;
-      for (const r of resources) {
-        computedRate += ((r.quantity as number) ?? 0) * ((r.unit_rate as number) ?? 0);
-      }
-      computedRate = Math.round(computedRate * 100) / 100;
+      // Recalculate unit_rate from remaining resources, currency-converted
+      // into the project base (never blend currencies).
+      const computedRate = perUnitRateInBase(resources);
       updateMutation.mutate({
         id: positionId,
         data: { unit_rate: computedRate, metadata: newMeta },
       });
     },
-    [boq?.positions, updateMutation],
+    [boq?.positions, updateMutation, perUnitRateInBase],
   );
 
   /** Apply one or more field updates to a resource in a single mutation.
@@ -2646,17 +2665,15 @@ export function BOQEditorPage() {
       const rRate = (resources[resourceIndex].unit_rate as number) ?? 0;
       resources[resourceIndex].total = Math.round(rQty * rRate * 100) / 100;
       const newMeta = { ...pos.metadata, resources };
-      let resourceTotal = 0;
-      for (const r of resources) {
-        resourceTotal += (r.total as number) ?? (((r.quantity as number) ?? 0) * ((r.unit_rate as number) ?? 0));
-      }
-      const derivedUnitRate = Math.round(resourceTotal * 10000) / 10000;
+      // Convert each resource subtotal into the project base before summing
+      // (a resource may be priced in a foreign currency) — never blend.
+      const derivedUnitRate = perUnitRateInBase(resources);
       updateMutation.mutate({
         id: positionId,
         data: { unit_rate: derivedUnitRate, metadata: newMeta },
       });
     },
-    [boq?.positions, updateMutation],
+    [boq?.positions, updateMutation, perUnitRateInBase],
   );
 
   /** Single-field shim — delegates to the batched implementation. */
@@ -3146,18 +3163,16 @@ export function BOQEditorPage() {
       };
       const existing = [...((pos.metadata?.resources ?? []) as Array<Record<string, unknown>>)];
       const merged = [...existing, newRes];
-      let computedRate = 0;
-      for (const r of merged) {
-        computedRate += ((r.quantity as number) ?? 0) * ((r.unit_rate as number) ?? 0);
-      }
-      computedRate = Math.round(computedRate * 100) / 100;
+      // Convert each resource subtotal into the project base before summing
+      // (the new resource may carry a foreign currency) — never blend.
+      const computedRate = perUnitRateInBase(merged);
       updateMutation.mutate({
         id: positionId,
         data: { unit_rate: computedRate, metadata: { ...pos.metadata, resources: merged } },
       });
       addToast({ type: 'success', title: t('boq.resource_added', { defaultValue: 'Resource added' }) });
     },
-    [boq?.positions, updateMutation, addToast, t],
+    [boq?.positions, updateMutation, addToast, t, perUnitRateInBase],
   );
 
   /** Issue #133 — project-wide resource-code lookup for the manual

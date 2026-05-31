@@ -482,13 +482,20 @@ def _to_match_result(item: CostItem, *, score: float, channel: str) -> MatchResu
         rate_val = float(item.rate)
     except (TypeError, ValueError):
         rate_val = 0.0
+    # CWICR rows historically persisted ``currency = ''`` (the parquet has no
+    # currency column). Resolve it from the row's region so match results carry
+    # the catalogue's true currency — without this, callers like
+    # assemblies.apply_template received an empty currency for every CWICR
+    # match. Lazy import avoids a circular dependency (router imports matcher).
+    from app.modules.costs.router import _resolve_currency
+
     return MatchResult(
         cost_item_id=str(item.id),
         code=item.code or "",
         description=item.description or "",
         unit=item.unit or "",
         unit_rate=rate_val,
-        currency=item.currency or "",
+        currency=_resolve_currency(item.currency, getattr(item, "region", None)),
         score=round(min(max(score, 0.0), 1.0), 4),
         source=channel,
     )

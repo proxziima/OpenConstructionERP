@@ -121,7 +121,7 @@ export function FilePreviewPane({ row, onClose, onEmail, onShare, onManageAccess
   // IFC → BIM Viewer, DWG → DWG Takeoff). Falls back to the kind's
   // default module when the extension isn't in the override map.
   const primary = primaryModule(row.kind, row.extension);
-  const allModules = modulesForKind(row.kind);
+  const allModules = modulesForKind(row.kind, row.extension);
   const PrimaryIcon = primary.icon;
   // `row` is narrowed by the `if (!row) return` guard above, but TS
   // doesn't carry that narrowing into nested function declarations —

@@ -410,8 +410,14 @@ export class FederatedViewerScene {
         const mats = Array.isArray(state.override) ? state.override : [state.override];
         for (const m of mats) m.dispose();
       }
-      state.override = null;
-      state.cloned = false;
+      // Fully evict the per-mesh state from the WeakMap, not just null out its
+      // fields. If the stale state object lingered, applyOverrideColor's
+      // `if (!state)` branch would be skipped on the next enable, so the mesh
+      // would be re-tinted but never re-added to overriddenMeshes — leaving the
+      // sweep set empty and breaking the following disable (off→on→off would
+      // get stuck tinted). Deleting the entry makes re-enabling rebuild state
+      // from scratch, so repeated toggling is idempotent.
+      this.meshOverrides.delete(mesh);
     }
     // Clear the sweep set now that all overrides are reverted. Without this
     // the set would accumulate stale mesh refs across add/remove cycles —

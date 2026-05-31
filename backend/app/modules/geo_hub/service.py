@@ -1827,12 +1827,23 @@ class GeoHubService:
         *,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
-        """Return anchored projects the caller can access.
+        """Return locatable projects the caller can access.
 
         Powers the global Geo Hub's project-pin layer — non-admin users
-        see only their own projects, admins see everything. Projects
-        without a ``GeoAnchor`` are excluded so the pin layer never
-        contains zero-coord placeholders. Cheap single-join query.
+        see only their own projects, admins see everything.
+
+        A project is "locatable" (and thus pinned) when EITHER:
+
+        * it has a ``GeoAnchor`` row (manual or auto-geocoded), OR
+        * its ``address`` JSONB carries usable ``lat`` + ``lng``/``lon``
+          coordinates (as the showcase / demo seeds do).
+
+        The anchor takes precedence when both exist. This is a LEFT OUTER
+        join — projects with address coords but no anchor used to be
+        silently dropped, so the global map looked empty even though the
+        projects clearly had a location. Projects with neither an anchor
+        nor address coordinates are still excluded so the pin layer never
+        paints null-island placeholders.
         """
         if payload is None:
             raise HTTPException(
@@ -1849,9 +1860,11 @@ class GeoHubService:
         if user_id is None and not is_admin:
             return []
 
+        # LEFT OUTER join so address-only projects survive — the previous
+        # inner join silently dropped every project without a GeoAnchor.
         stmt = (
-            select(GeoAnchor, Project)
-            .join(Project, Project.id == GeoAnchor.project_id)
+            select(Project, GeoAnchor)
+            .outerjoin(GeoAnchor, GeoAnchor.project_id == Project.id)
             .where(Project.status != "archived")
         )
         if not is_admin:
@@ -1892,22 +1905,75 @@ class GeoHubService:
             line = ", ".join(p for p in parts if isinstance(p, str) and p.strip())
             return line or None
 
-        return [
-            {
-                "project_id": project.id,
-                "project_name": project.name,
-                "anchor_id": anchor.id,
-                "lat": anchor.lat,
-                "lon": anchor.lon,
-                "alt": anchor.alt,
-                "region_code": anchor.region_code,
-                "address": anchor.address,
-                "project_type": project.project_type,
-                "status": project.status,
-                "project_address_text": _project_address_text(project.address),
-            }
-            for (anchor, project) in rows
-        ]
+        def _address_coords(addr: Any) -> tuple[Decimal, Decimal] | None:
+            """Lift ``lat`` + ``lng``/``lon`` out of the project address JSONB.
+
+            Seeds store the geocoded point on the address dict (``lat`` +
+            ``lng``); some hand-entered data uses ``lon``. Returns
+            ``(lat, lon)`` only when both are present and inside the valid
+            WGS-84 range — bad/partial coords are treated as "no location"
+            rather than dropping a pin on null island.
+            """
+            if not isinstance(addr, dict):
+                return None
+            lat_raw = addr.get("lat")
+            # Seeds use ``lng``; accept ``lon`` as an alias for hand-entered data.
+            lon_raw = addr.get("lng")
+            if lon_raw is None:
+                lon_raw = addr.get("lon")
+            if lat_raw is None or lon_raw is None:
+                return None
+            try:
+                lat = Decimal(str(lat_raw))
+                lon = Decimal(str(lon_raw))
+            except (ArithmeticError, ValueError, TypeError):
+                return None
+            if not (Decimal("-90") <= lat <= Decimal("90")):
+                return None
+            if not (Decimal("-180") <= lon <= Decimal("180")):
+                return None
+            return lat, lon
+
+        out: list[dict[str, Any]] = []
+        for project, anchor in rows:
+            if anchor is not None:
+                lat = anchor.lat
+                lon = anchor.lon
+                alt = anchor.alt
+                anchor_id = anchor.id
+                region_code = anchor.region_code
+                anchor_address = anchor.address
+            else:
+                coords = _address_coords(project.address)
+                if coords is None:
+                    # No anchor and no usable address coords — not locatable.
+                    continue
+                lat, lon = coords
+                alt = Decimal("0")
+                anchor_id = None
+                # Derive a country region hint from the address when present
+                # so the rail's region chip still renders for address-only
+                # pins. ``country_code`` is what the seeds store.
+                addr = project.address if isinstance(project.address, dict) else {}
+                cc = addr.get("country_code")
+                region_code = str(cc).upper() if isinstance(cc, str) and cc.strip() else None
+                anchor_address = None
+            out.append(
+                {
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "anchor_id": anchor_id,
+                    "lat": lat,
+                    "lon": lon,
+                    "alt": alt,
+                    "region_code": region_code,
+                    "address": anchor_address,
+                    "project_type": project.project_type,
+                    "status": project.status,
+                    "project_address_text": _project_address_text(project.address),
+                }
+            )
+        return out
 
     # ── Map-config one-shot bundle ──────────────────────────────────────
 

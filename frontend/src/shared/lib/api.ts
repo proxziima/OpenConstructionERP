@@ -27,14 +27,16 @@ export const API_BASE = BASE_URL;
 /**
  * Default client-side request timeouts (ms).
  *
- * Most interactive reads/writes resolve in well under a second; a snappy
+ * Most interactive reads/writes resolve in well under a second; a moderate
  * default keeps a stalled endpoint from blocking the UI for a minute and a
  * half (the old 44.3s GET budget combined with a React-Query retry meant a
- * single hung GET could freeze a screen for ~88s). The long budget is kept
- * for genuinely heavy operations (CWICR import, AI estimation, CAD/BIM
+ * single hung GET could freeze a screen for ~88s). The 30s GET budget still
+ * covers legitimately slow reads (e.g. the /api/health alembic check and the
+ * dashboard rollup) so they finish before the abort fires. The long budget is
+ * kept for genuinely heavy operations (CWICR import, AI estimation, CAD/BIM
  * conversion) and must be opted into explicitly via `longRunning: true`.
  */
-const DEFAULT_GET_TIMEOUT_MS = 15_000;
+const DEFAULT_GET_TIMEOUT_MS = 30_000;
 const DEFAULT_MUTATION_TIMEOUT_MS = 30_000;
 const LONG_RUNNING_TIMEOUT_MS = 300_000; // 5 min — import / AI / CAD only
 
@@ -245,18 +247,60 @@ export function getErrorMessage(err: unknown): string {
 }
 
 /**
+ * Paths that must NEVER trigger the silent-refresh-and-retry dance on a 401.
+ *
+ * The auth endpoints themselves return 401 to mean "these credentials / this
+ * refresh token are bad" — retrying them with a refreshed token is nonsensical
+ * and would mask the real error. A 401 from `/auth/refresh` in particular is
+ * the one signal that genuinely warrants logging out.
+ */
+function isAuthEndpoint(path: string): boolean {
+  return (
+    path.includes('/auth/login') ||
+    path.includes('/auth/refresh') ||
+    path.includes('/auth/register') ||
+    path.includes('/auth/demo-login') ||
+    path.includes('/auth/forgot-password') ||
+    path.includes('/auth/reset-password')
+  );
+}
+
+/**
+ * Tear down the session and bounce to the login page.
+ *
+ * Called ONLY when the token is genuinely unrecoverable — i.e. a 401 survived
+ * a silent refresh attempt, or the 401 came from an auth endpoint itself. A
+ * plain per-feature 403 (permission denied) or an isolated, refreshable 401
+ * must never reach this path; that distinction is what stops a single
+ * incidental error from logging the whole session out.
+ */
+function forceLogoutRedirect(path: string, statusText: string): void {
+  logApiError(path, 401, statusText);
+  useAuthStore.getState().logout();
+  if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+    window.location.href = '/login';
+  }
+}
+
+/**
  * Core fetch wrapper.
  *
  * - Prepends `BASE_URL` to the path.
  * - Sets JSON content-type when a body is provided.
  * - Automatically parses JSON responses (returns `undefined` for 204 No Content).
- * - Redirects to `/login` on 401 Unauthorized.
+ * - On 401 from a protected endpoint, silently refreshes the access token and
+ *   retries once; only a 401 that survives the refresh (or a 401 from the auth
+ *   endpoints themselves) logs out and redirects to `/login`.
+ *
+ * `_isRetry` is an internal flag set on the single post-refresh retry so we
+ * never loop: a second 401 after a fresh token is a real auth failure.
  */
 async function request<TResponse>(
   method: string,
   path: string,
   body?: unknown,
   init?: ApiRequestInit,
+  _isRetry = false,
 ): Promise<TResponse> {
   const headers = buildHeaders(init?.headers);
 
@@ -346,13 +390,33 @@ async function request<TResponse>(
     throw err;
   }
 
-  // Handle 401 – logout via auth store and redirect to login.
+  // Handle 401 – try a silent token refresh before tearing down the session.
+  //
+  // A 401 most commonly means the short-lived access token expired while the
+  // user was actively working. Rather than logging them out (the historical
+  // behaviour, which caused "random logout" mid-session), we transparently
+  // exchange the stored refresh token for a new access token and replay the
+  // original request exactly once. Only if that refresh fails — or the 401
+  // came from an auth endpoint, or this is already the post-refresh retry —
+  // do we log out and redirect. A per-feature permission denial returns 403
+  // (handled below), so it never reaches this branch and never logs out.
   if (response.status === 401) {
-    logApiError(path, 401, response.statusText);
-    useAuthStore.getState().logout();
-    if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
-      window.location.href = '/login';
+    if (_isRetry || isAuthEndpoint(path)) {
+      forceLogoutRedirect(path, response.statusText);
+      throw new ApiError(response.status, response.statusText, undefined);
     }
+
+    const newToken = await useAuthStore.getState().refreshAccessToken();
+    if (newToken) {
+      // Refresh succeeded — replay the original request with the fresh token.
+      // buildHeaders() inside the recursive call reads the now-updated store,
+      // so the retry carries the new Authorization header automatically.
+      return request<TResponse>(method, path, body, init, true);
+    }
+
+    // No refresh token, or the refresh token is itself invalid/expired →
+    // the session is genuinely unrecoverable. Log out and redirect.
+    forceLogoutRedirect(path, response.statusText);
     throw new ApiError(response.status, response.statusText, undefined);
   }
 

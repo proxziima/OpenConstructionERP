@@ -54,6 +54,7 @@ from app.modules.costs.intelligence import (
     CostUsageRecorder,
     RegionalIndexService,
 )
+from app.modules.costs.cwicr_v3_catalogue import CWICR_V3_CATALOGUES
 from app.modules.costs.matcher import (
     MatchResult,
     match_cwicr_for_position,
@@ -121,53 +122,46 @@ class CertaintyBatchRequest(BaseModel):
 #
 # CWICR catalogues are imported per-region, but the parquet files don't
 # carry an explicit currency column — every rate is denominated in the
-# region's local currency. Mirror the frontend ``REGION_MAP`` so we can
-# resolve the right ISO 4217 code at ingestion time AND lazily on read
-# for legacy rows that landed with ``currency = ''`` before this map
-# existed.
+# region's local currency. We resolve the right ISO 4217 code at ingestion
+# time (so rates persist with their true currency) AND lazily on read for
+# legacy rows that landed with ``currency = ''`` before this map existed.
 #
-# Keep the keys exactly aligned with the parquet ``db_id`` / ``region``
-# convention (UPPERCASE, country prefix). Unknown keys fall back to the
-# explicit currency on the row, then to "EUR" so the picker never crashes.
-_REGION_CURRENCY: dict[str, str] = {
-    "DE_BERLIN": "EUR",
-    "DE_MUNICH": "EUR",
+# Single source of truth: the v3 catalogue registry
+# (:data:`CWICR_V3_CATALOGUES`) already declares the ISO currency of every
+# region DDC ships. Deriving the map from it means new catalogue rows are
+# covered automatically and the two can never drift — the old hand-kept
+# literal omitted ~18 live regions (KES/GHS/KRW/THB/VND/…) and silently
+# mislabeled their rates as EUR.
+#
+# Legacy / alias keys that are NOT in the v3 registry (older parquet
+# ``db_id`` tags the importer still accepts) are merged on top so they keep
+# resolving. Keys follow the parquet ``db_id`` / ``region`` convention
+# (UPPERCASE, country prefix).
+_REGION_CURRENCY_LEGACY: dict[str, str] = {
     "DE_HAMBURG": "EUR",
-    "AT_VIENNA": "EUR",
-    "CH_ZURICH": "CHF",
-    "FR_PARIS": "EUR",
-    "ES_MADRID": "EUR",
-    "IT_ROME": "EUR",
-    "NL_AMSTERDAM": "EUR",
     "BE_BRUSSELS": "EUR",
-    "PT_LISBON": "EUR",
-    # NOTE: ``PT_SAOPAULO`` was historically present as ``BRL`` — that's a
-    # mislabeled entry (São Paulo is Brazil, prefix should be ``BR_``).
-    # Kept canonical key is ``BR_SAOPAULO`` (see below). The bogus
-    # ``PT_SAOPAULO`` is intentionally not registered here.
-    "GB_LONDON": "GBP",
     "IE_DUBLIN": "EUR",
-    "PL_WARSAW": "PLN",
-    "CZ_PRAGUE": "CZK",
-    "RO_BUCHAREST": "RON",
-    "RU_STPETERSBURG": "RUB",
-    "RU_MOSCOW": "RUB",
-    "USA_USD": "USD",
     "USA_NEWYORK": "USD",
-    "CA_TORONTO": "CAD",
-    "MX_MEXICO": "MXN",
-    "BR_SAOPAULO": "BRL",
-    "AR_BUENOSAIRES": "ARS",
-    "CN_SHANGHAI": "CNY",
-    "JP_TOKYO": "JPY",
-    "IN_MUMBAI": "INR",
-    "AE_DUBAI": "AED",
     "SA_RIYADH": "SAR",
-    "TR_ISTANBUL": "TRY",
-    "AU_SYDNEY": "AUD",
-    "NZ_AUCKLAND": "NZD",
-    "ZA_JOHANNESBURG": "ZAR",
+    # NOTE: ``PT_SAOPAULO`` is intentionally NOT registered — it was a
+    # mislabeled tag (São Paulo is Brazil; canonical key is ``BR_SAOPAULO``,
+    # supplied by the v3 registry). A stray ``PT_SAOPAULO`` row should hit
+    # the unknown-region path, not silently resolve.
 }
+
+
+def _build_region_currency_map() -> dict[str, str]:
+    """Derive ``{region: ISO currency}`` from the v3 catalogue + legacy aliases."""
+    out: dict[str, str] = {
+        cat.region: cat.currency for cat in CWICR_V3_CATALOGUES if cat.currency
+    }
+    # Legacy/alias keys only fill gaps — never override a canonical v3 entry.
+    for region, currency in _REGION_CURRENCY_LEGACY.items():
+        out.setdefault(region, currency)
+    return out
+
+
+_REGION_CURRENCY: dict[str, str] = _build_region_currency_map()
 
 
 # CWICR region tags follow the convention ``<2-letter country>_<UPPERCASE city>``
@@ -196,16 +190,19 @@ def _resolve_currency(
 
     Resolution order:
         1. Non-empty incoming ``currency`` (caller-supplied wins).
-        2. ``_REGION_CURRENCY[region]`` when the region matches a known key.
-        3. ``"EUR"`` as a final fallback so the API never returns an
-           empty currency string to the frontend.
+        2. ``_REGION_CURRENCY[region]`` when the region matches a known key
+           (derived from the v3 catalogue registry, so every shipped region
+           resolves to its true ISO code).
+        3. ``""`` (unset) when the region is unknown or malformed.
 
-    When falling back to EUR (step 3), a structured warning is emitted via
+    A genuinely unknown region returns an EMPTY string rather than a wrong
+    "EUR" — mislabeling a Kenyan/Thai/Korean rate as EUR silently corrupts
+    every downstream cross-currency conversion, whereas an empty currency is
+    honestly "unknown" and is rendered as such (and skipped by FX maths).
+    When the region can't be resolved a structured warning is emitted via
     ``logger.warning`` and — if a ``warnings`` list is supplied by the caller
     — a short human-readable message is appended so the route handler can
     surface it to the API response (frontend renders as a non-blocking toast).
-    Malformed region strings (not matching ``XX_CITY``) are also flagged,
-    even when the lookup would otherwise have succeeded.
     """
     if isinstance(currency, str):
         cleaned = currency.strip().upper()
@@ -217,7 +214,7 @@ def _resolve_currency(
             if not _is_valid_region_format(normalized):
                 msg = (
                     f"Cost row uses non-canonical region tag {normalized!r} "
-                    f"(expected ``XX_CITY``); currency falls back to EUR."
+                    f"(expected ``XX_CITY``); currency left unset."
                 )
                 logger.warning(msg)
                 if warnings is not None and msg not in warnings:
@@ -226,11 +223,14 @@ def _resolve_currency(
                 mapped = _REGION_CURRENCY.get(normalized)
                 if mapped:
                     return mapped
-                msg = f"Unknown region {normalized!r} — no entry in _REGION_CURRENCY; currency falls back to EUR."
+                msg = (
+                    f"Unknown region {normalized!r} — no entry in _REGION_CURRENCY "
+                    f"(add it to the CWICR catalogue registry); currency left unset."
+                )
                 logger.warning(msg)
                 if warnings is not None and msg not in warnings:
                     warnings.append(msg)
-    return "EUR"
+    return ""
 
 
 def _get_service(session: SessionDep) -> CostItemService:
@@ -1354,14 +1354,31 @@ async def vectorize_cost_items(
 ) -> JSONResponse | dict:
     """Generate embeddings and index cost items into vector DB.
 
+    Thin HTTP wrapper around :func:`vectorize_region`; the work lives in that
+    module-level helper so the partner-pack one-click installer can build the
+    vector DB through the same path without going through HTTP.
+    """
+    return await vectorize_region(session, region=region, batch_size=batch_size)
+
+
+async def vectorize_region(
+    session: AsyncSession,
+    *,
+    region: str | None = None,
+    batch_size: int = 256,
+) -> JSONResponse | dict:
+    """Embed and index the cost items of one region into the vector DB.
+
     Uses FastEmbed/ONNX (all-MiniLM-L6-v2, 384d) locally — no API key needed.
     Default backend: LanceDB (embedded, no Docker required).
 
-    Returns ``503 Service Unavailable`` when the vector backend
-    (Qdrant / LanceDB / embedding model) is not reachable or not
-    installed. Body keeps the legacy ``{"indexed": 0, "message":
-    ..., "error": ...}`` shape so existing clients still parse it;
-    only the status code flips from the previous silent 200.
+    Returns ``503 Service Unavailable`` (as a ``JSONResponse``) when the vector
+    backend (Qdrant / LanceDB / embedding model) is not reachable or not
+    installed. The body keeps the legacy ``{"indexed": 0, "message": ...,
+    "error": ...}`` shape so existing clients still parse it. The happy path
+    returns a plain ``dict``. Reusable building block shared by the
+    ``POST /vector/index/`` route and the partner-pack ``full-install``
+    orchestrator (which treats a 503 as graceful degradation, not a failure).
     """
     import asyncio
     import time
@@ -3106,12 +3123,27 @@ async def load_cwicr_database(
 ) -> dict:
     """Load a CWICR regional database from local DDC Toolkit files.
 
+    Thin HTTP wrapper around :func:`load_cwicr_region`. The actual import work
+    lives in that module-level helper so the partner-pack one-click installer
+    can run the same load path without going through HTTP.
+    """
+    return await load_cwicr_region(db_id, session)
+
+
+async def load_cwicr_region(db_id: str, session: AsyncSession) -> dict:
+    """Load one CWICR regional cost database into the relational store.
+
     Optimized: reads Parquet, deduplicates by rate_code (55K unique items
     from 900K total rows), then bulk-inserts into SQLite.
     Typical time: 10-30 seconds.
 
     For databases not available locally (e.g. UK_GBP, USA_USD), automatically
     downloads from GitHub and caches at ~/.openestimator/cache/.
+
+    Reusable building block shared by the ``POST /load-cwicr/{db_id}`` route and
+    the partner-pack ``full-install`` orchestrator. Raises ``HTTPException`` on
+    a missing file (404) or an import failure (500); callers that need fail-soft
+    behaviour must catch it. Returns the same body dict the route returns.
     """
     import time
 
@@ -3183,10 +3215,18 @@ async def load_cwicr_database(
     # bulk-load path (single transaction + PRAGMAs). On PostgreSQL we must NOT
     # open a stray local ``openestimate.db`` — the worker uses a short-lived
     # sync SQLAlchemy engine built from ``database_sync_url`` instead.
-    if _is_sqlite(settings.database_url):
-        target = settings.database_url.split("///")[-1] if "///" in settings.database_url else "openestimate.db"
+    # Prefer the live process env: embedded PG (v6 default) sets
+    # DATABASE_URL/DATABASE_SYNC_URL there after the Settings cache is built, so
+    # the cached pydantic values can be stale/empty (mirrors auto_migrate +
+    # seed_demo_v2, which also read os.environ directly).
+    import os as _os
+
+    db_url = _os.environ.get("DATABASE_URL") or settings.database_url
+    sync_url = _os.environ.get("DATABASE_SYNC_URL") or settings.database_sync_url
+    if _is_sqlite(db_url):
+        target = db_url.split("///")[-1] if "///" in db_url else "openestimate.db"
     else:
-        target = settings.database_sync_url
+        target = sync_url
 
     # Run in thread to avoid blocking the event loop during heavy pandas + DB work.
     try:
@@ -3308,6 +3348,16 @@ def _pg_bulk_insert_cost_rows(sync_url: str, rows: list[tuple]) -> int:
             mapping[key] = value
         return mapping
 
+    # Embedded PostgreSQL (the v6 default) wires DATABASE_SYNC_URL into the
+    # process env *after* the pydantic Settings cache is built, so a caller may
+    # hand us an empty/stale sync URL. Fall back to the live env var (the
+    # authoritative source, same as auto_migrate_legacy_sqlite + seed_demo_v2)
+    # so the bulk load reaches the real embedded cluster instead of raising
+    # "Could not parse SQLAlchemy URL from given URL string".
+    if not sync_url:
+        import os as _os
+
+        sync_url = _os.environ.get("DATABASE_SYNC_URL", "")
     engine = create_engine(sync_url, pool_pre_ping=True)
     inserted = 0
     batch_size = 1000
@@ -3723,6 +3773,14 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
          is_active, region, metadata)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 
+    # CWICR parquet carries no currency column — every rate is denominated in
+    # the region's local currency. Resolve it ONCE from ``db_id`` (constant for
+    # the whole import) so each row persists its true ISO currency instead of
+    # the empty string that read-side fallbacks then had to paper over. This
+    # ``batch`` is reused for BOTH the SQLite executemany and the PostgreSQL
+    # bulk helper below, so this single value fixes both dialects.
+    resolved_currency = _resolve_currency(None, db_id)
+
     imported = 0
     skipped_count = 0
     # Bigger chunk and only ONE commit at the end (SQLite). On PostgreSQL we
@@ -3837,7 +3895,7 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
                 desc[:500],
                 unit,
                 str(rate),
-                "",
+                resolved_currency,
                 "cwicr",
                 _json.dumps(classification),
                 "[]",
@@ -4023,6 +4081,11 @@ def _bulk_insert_costs_sync(db_path: str, items: list[dict]) -> int:
     rows = []
     for item in items:
         region = item.get("region", "")
+        # Stamp the true region currency when the item didn't carry one, so
+        # rates never persist with an empty currency (mirrors the live CWICR
+        # ingest path). ``_resolve_currency`` returns "" only for genuinely
+        # unknown regions — honest, never a wrong "EUR".
+        currency = item.get("currency") or _resolve_currency(None, region)
 
         rows.append(
             (
@@ -4031,7 +4094,7 @@ def _bulk_insert_costs_sync(db_path: str, items: list[dict]) -> int:
                 item["description"][:500],
                 item["unit"][:20],
                 item["rate"],
-                item.get("currency", ""),
+                currency,
                 item.get("source", "cwicr"),
                 _json.dumps(item.get("classification", {})),
                 "[]",
@@ -4105,7 +4168,9 @@ async def _bulk_insert_costs(session: AsyncSession, items: list[dict]) -> int:
             item["description"][:500],
             item["unit"][:20],
             item["rate"],
-            item.get("currency", ""),
+            # Resolve the region currency when the item has none, so PG rows
+            # never land with an empty currency (matches the SQLite path).
+            item.get("currency") or _resolve_currency(None, item.get("region", "")),
             item.get("source", "cwicr"),
             _json.dumps(item.get("classification", {})),
             "[]",

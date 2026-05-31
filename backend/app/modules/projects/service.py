@@ -791,9 +791,9 @@ class ProjectService:
         except ImportError:
             pass
         try:
-            from app.modules.inspections.models import Inspection
+            from app.modules.inspections.models import QualityInspection
 
-            child_models.append(Inspection)
+            child_models.append(QualityInspection)
         except ImportError:
             pass
         try:
@@ -809,9 +809,9 @@ class ProjectService:
         except ImportError:
             pass
         try:
-            from app.modules.risk.models import Risk
+            from app.modules.risk.models import RiskItem
 
-            child_models.append(Risk)
+            child_models.append(RiskItem)
         except ImportError:
             pass
 

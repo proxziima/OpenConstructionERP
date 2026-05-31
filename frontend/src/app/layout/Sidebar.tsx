@@ -466,30 +466,21 @@ const navGroups: NavGroup[] = [
 // for admin/manager JWTs — backend `RequirePermission` remains
 // authoritative; the client gate just keeps the grid tidy.
 // Admin / setup surfaces — one 2-column button grid, ordered
-// most-important → least-important. Approval Routes + Validation Rules
-// sit right after Modules and Roles (Permissions) as plain tiles in the
-// flow — no labeled sub-section. Integrations is intentionally absent:
-// it lives under Settings → Integrations, so a tile would duplicate it.
+// most-important → least-important. Permissions, Approval Routes and
+// Validation Rules used to be three separate tiles here; they now share
+// one "Governance" surface (/governance, three /modules-style tabs), so
+// a single Governance tile sits right after Modules in the flow.
+// Integrations is intentionally absent: it lives under Settings →
+// Integrations, so a tile would duplicate it.
 const adminGridItems: NavItem[] = [
   { labelKey: 'sidebar.admin_grid.settings', to: '/settings', icon: Settings },
   { labelKey: 'sidebar.admin_grid.users', to: '/users', icon: Users },
   { labelKey: 'sidebar.admin_grid.modules', to: '/modules', icon: Package },
   {
-    labelKey: 'sidebar.admin_grid.permissions',
-    to: '/admin/permissions',
-    icon: ShieldCheck,
+    labelKey: 'sidebar.admin_grid.governance',
+    to: '/governance',
+    icon: Scale,
     roleGate: ['admin', 'manager'],
-  },
-  {
-    labelKey: 'sidebar.admin_grid.approval_routes',
-    to: '/approval-routes',
-    icon: BadgeCheck,
-    roleGate: ['admin', 'manager'],
-  },
-  {
-    labelKey: 'sidebar.admin_grid.validation_rules',
-    to: '/admin/validation-rules',
-    icon: ShieldCheck,
   },
   {
     labelKey: 'sidebar.admin_grid.audit',

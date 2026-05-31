@@ -39,6 +39,29 @@ from app.modules.dwg_takeoff.schemas import (
 logger = logging.getLogger(__name__)
 
 
+# Strong references to in-flight background conversion tasks. asyncio only
+# keeps a WEAK reference to a task, so a detached ``create_task`` whose
+# handle is dropped can be garbage-collected mid-run — cancelling the
+# conversion and leaving the drawing stuck at status=uploaded/processing
+# forever (the frontend poll of /drawings/{id} never completes). Holding
+# the task here until it finishes prevents that; the done-callback evicts
+# it so the set does not grow unbounded.
+_BACKGROUND_CONVERSION_TASKS: set["asyncio.Task[None]"] = set()
+
+
+def _spawn_dwg_conversion(drawing_id: uuid.UUID, file_path: str) -> "asyncio.Task[None]":
+    """Launch the detached DWG conversion and retain a strong reference.
+
+    Wraps ``asyncio.create_task`` so the returned task is stored in a
+    module-level set (preventing premature garbage collection) and removed
+    again once it completes. Returns the created task for callers/tests.
+    """
+    task = asyncio.create_task(_run_dwg_conversion_in_background(drawing_id, file_path))
+    _BACKGROUND_CONVERSION_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_CONVERSION_TASKS.discard)
+    return task
+
+
 # ── DWG version sniff & gating (Indian-user stability ticket 2026-05-13) ────
 
 
@@ -467,12 +490,213 @@ class DwgTakeoffService:
             await self._process_drawing(drawing_id, file_path)
         elif file_format == "dwg":
             await self.session.commit()
-            asyncio.create_task(
-                _run_dwg_conversion_in_background(drawing_id, file_path),
-            )
+            # Retain a strong reference so the detached task isn't GC'd
+            # mid-conversion (see _spawn_dwg_conversion).
+            _spawn_dwg_conversion(drawing_id, file_path)
 
         await self.session.refresh(drawing)
         return drawing
+
+    async def import_drawing_from_document(
+        self,
+        document_id: uuid.UUID,
+        user_id: str,
+        *,
+        name: str | None = None,
+        discipline: str | None = None,
+    ) -> DwgDrawing:
+        """Create a DWG/DXF drawing from an already-uploaded Document.
+
+        The Documents hub and DWG takeoff module both persist files on
+        disk; a CAD file uploaded through /files (or any other module)
+        lives only as a ``Document`` row and has no ``DwgDrawing`` to
+        render in the takeoff viewer. Opening it via "Open in DWG Takeoff"
+        previously produced a blank page because the deep-link handler
+        could only resolve an *existing* drawing. This method materialises
+        the missing drawing on demand so the document opens immediately.
+
+        Behaviour:
+
+        * **Idempotent** — if a drawing already references this document
+          (cross-link ``source_id`` / ``imported_from_document_id``) or
+          points at the same blob on disk, the existing one is returned
+          instead of creating a duplicate (re-clicking is a no-op).
+        * Reads the document's bytes from disk, runs the same magic-byte
+          validation as the direct upload path, copies the blob into the
+          DWG upload dir, creates the drawing row, and dispatches
+          processing (DXF inline → ``ready``; DWG fire-and-forget).
+        * Raises 404 when the document or its file is missing, 400 when
+          it is not a ``.dwg`` / ``.dxf`` file.
+
+        The owning project's access has already been gated by the router
+        (``verify_project_access`` on ``document.project_id``) before this
+        runs, so ``project_id`` here is trusted.
+        """
+        from app.modules.documents.models import Document
+
+        document = await self.session.get(Document, document_id)
+        if document is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found",
+            )
+
+        project_id = document.project_id
+        source_filename = document.name or "drawing.dxf"
+        ext = os.path.splitext(source_filename)[1].lower()
+        if ext not in (".dwg", ".dxf"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This document is not a DWG/DXF file and cannot be opened in DWG Takeoff.",
+            )
+        file_format = ext.lstrip(".")
+
+        # Idempotency — never create a second drawing for the same
+        # document. Two earlier rows can reference it:
+        #   1. A drawing imported here before (``imported_from_document_id``).
+        #   2. The drawing whose own upload created this document via the
+        #      cross-link (``Document.metadata.source_id`` → drawing id).
+        # Both are checked so re-clicking "Open in DWG Takeoff" reuses the
+        # existing drawing instead of duplicating files + DB rows.
+        doc_meta = dict(document.metadata_ or {})
+        if doc_meta.get("source_module") == "dwg_takeoff" and doc_meta.get("source_id"):
+            try:
+                existing = await self.drawing_repo.get_by_id(
+                    uuid.UUID(str(doc_meta["source_id"])),
+                )
+            except (ValueError, TypeError):
+                existing = None
+            if existing is not None and existing.project_id == project_id:
+                return existing
+
+        existing_by_link = await self._find_drawing_for_document(project_id, document_id)
+        if existing_by_link is not None:
+            return existing_by_link
+
+        # Read the source bytes from disk. A missing blob is a 404 (the
+        # document row exists but the file is gone) rather than a 500.
+        src_path = document.file_path or ""
+        if not src_path or not os.path.exists(src_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="The document's file is no longer available on disk.",
+            )
+        try:
+            with open(src_path, "rb") as f:
+                content = f.read()
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Unable to read the document's file.",
+            ) from exc
+
+        size_bytes = len(content)
+
+        # Same magic-byte gate as the direct upload path — a document
+        # whose name ends in .dwg/.dxf but whose bytes are a renamed
+        # PDF/ZIP/image is rejected before we burn a drawing row.
+        ok, reason = _validate_cad_magic_bytes(content, file_format)
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=reason,
+            )
+
+        # Copy the blob into the DWG upload dir under a fresh id so the
+        # drawing owns its own file (deleting the drawing won't strand the
+        # original document, and vice versa).
+        upload_dir = _get_upload_dir()
+        file_id = str(uuid.uuid4())
+        file_path = os.path.join(upload_dir, f"{file_id}{ext}")
+
+        drawing = DwgDrawing(
+            project_id=project_id,
+            name=name or os.path.splitext(source_filename)[0],
+            filename=source_filename,
+            file_format=file_format,
+            file_path=file_path,
+            size_bytes=size_bytes,
+            status="uploaded",
+            discipline=discipline,
+            created_by=user_id or "",
+            metadata_={"imported_from_document_id": str(document_id)},
+        )
+        drawing = await self.drawing_repo.create(drawing)
+        drawing_id = drawing.id
+
+        try:
+            with open(file_path, "wb") as f:
+                f.write(content)
+        except Exception:
+            await self.drawing_repo.delete(drawing_id)
+            raise
+
+        # Point the source document back at its new drawing so the
+        # Documents hub deep-link resolves the drawing directly next time
+        # (and the idempotency check above short-circuits future imports).
+        try:
+            document.metadata_ = {
+                **doc_meta,
+                "source_module": "dwg_takeoff",
+                "source_id": str(drawing_id),
+            }
+            self.session.add(document)
+            await self.session.flush()
+        except Exception as exc:  # noqa: BLE001 — best-effort cross-link
+            logger.warning(
+                "Failed to back-link document %s → drawing %s: %s",
+                document_id,
+                drawing_id,
+                exc,
+            )
+
+        logger.info(
+            "Imported drawing %s from document %s (%s, %d bytes) project=%s",
+            drawing_id,
+            document_id,
+            file_format,
+            size_bytes,
+            project_id,
+        )
+
+        # Same dispatch policy as upload_drawing: DXF parses inline so the
+        # response already carries status=ready; DWG is committed first and
+        # converted in a detached task while the client polls /drawings/{id}.
+        if file_format == "dxf":
+            await self._process_drawing(drawing_id, file_path)
+        elif file_format == "dwg":
+            await self.session.commit()
+            # Retain a strong reference so the detached task isn't GC'd
+            # mid-conversion (see _spawn_dwg_conversion).
+            _spawn_dwg_conversion(drawing_id, file_path)
+
+        await self.session.refresh(drawing)
+        return drawing
+
+    async def _find_drawing_for_document(
+        self,
+        project_id: uuid.UUID,
+        document_id: uuid.UUID,
+    ) -> DwgDrawing | None:
+        """Return a drawing already imported from ``document_id``, if any.
+
+        Scans the project's drawings for one whose metadata carries the
+        ``imported_from_document_id`` back-reference. The drawing count
+        per project is small (tens, not thousands), so a list scan is
+        cheaper than adding an indexed JSON column for a once-per-open
+        idempotency check.
+        """
+        items, _ = await self.drawing_repo.list_for_project(
+            project_id,
+            offset=0,
+            limit=200,
+        )
+        target = str(document_id)
+        for item in items:
+            meta = item.metadata_ or {}
+            if str(meta.get("imported_from_document_id") or "") == target:
+                return item
+        return None
 
     async def _process_drawing(self, drawing_id: uuid.UUID, file_path: str) -> None:
         """Process a DXF file: parse layers/entities, generate thumbnail."""

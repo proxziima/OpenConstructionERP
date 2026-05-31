@@ -53,7 +53,17 @@ export function usePartnerPack() {
   });
 }
 
-/** Direct URL helper for the partner logo (no auth needed). */
-export function partnerLogoUrl(): string {
-  return '/api/v1/partner-pack/logo';
+/**
+ * Direct URL helper for the partner logo (no auth needed).
+ *
+ * Pass the active pack's ``slug`` to hit the by-slug endpoint, which resolves
+ * the logo for BOTH pip-installed and source-checkout (in-app installed) packs.
+ * The arg-less ``/logo`` endpoint only resolves pip-installed packs, so an
+ * in-app one-click install would 404 and the badge ``<img>`` would break on
+ * every page. Always pass the slug when you have it.
+ */
+export function partnerLogoUrl(slug?: string): string {
+  return slug
+    ? `/api/v1/partner-pack/logo/${encodeURIComponent(slug)}`
+    : '/api/v1/partner-pack/logo';
 }

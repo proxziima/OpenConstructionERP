@@ -250,6 +250,26 @@ export async function deleteDrawing(id: string): Promise<void> {
   return apiDelete(`/v1/dwg_takeoff/drawings/${id}`);
 }
 
+/**
+ * Create (or reuse) a DWG/DXF drawing from an existing project Document.
+ *
+ * Powers the Documents / File Manager "Open in DWG Takeoff" action: a CAD
+ * file that lives only as a Document has no drawing to render, so opening it
+ * used to land on a blank page. The backend materialises the drawing on
+ * demand (status ``uploaded`` → ``processing`` → ``ready``) and is idempotent
+ * per document, so re-opening returns the same drawing. The caller then polls
+ * /drawings/{id} via the normal status-polling path while it converts.
+ */
+export async function importDrawingFromDocument(
+  documentId: string,
+  name?: string,
+): Promise<DwgDrawing> {
+  return apiPost<DwgDrawing>('/v1/dwg_takeoff/drawings/from-document/', {
+    document_id: documentId,
+    ...(name ? { name } : {}),
+  });
+}
+
 /* ── Entities & Layers ─────────────────────────────────────────────────── */
 
 /**

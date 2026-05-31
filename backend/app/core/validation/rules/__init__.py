@@ -84,6 +84,36 @@ def _get_locale(context: ValidationContext) -> str:
     return DEFAULT_LOCALE
 
 
+def _position_currency(pos: dict[str, Any]) -> str:
+    """‌⁠‍Resolve one position's currency from whatever shape the loader supplied.
+
+    The per-position currency is authoritative in the BOQ metadata
+    (``Position.metadata_['currency']`` — see ``boq.service._position_currency``),
+    but different callers flatten the position dict differently: some put
+    ``currency`` at the top level, some nest it under ``metadata`` /
+    ``metadata_``, and the BOQ validation loaders historically dropped it
+    entirely. Inspect every plausible location so this rule actually fires
+    whenever currency data is present, instead of silently passing because it
+    only ever read a bare top-level ``currency`` key.
+
+    Returns the upper-cased ISO code, or "" when no currency is recorded.
+    """
+    # Top-level keys (top-level ``currency`` wins, then the legacy aliases).
+    for key in ("currency", "position_currency", "project_currency"):
+        val = pos.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip().upper()
+    # Nested metadata blob (``metadata`` from API shapes, ``metadata_`` from ORM).
+    for meta_key in ("metadata", "metadata_"):
+        meta = pos.get(meta_key)
+        if isinstance(meta, dict):
+            for key in ("currency", "position_currency", "project_currency"):
+                val = meta.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip().upper()
+    return ""
+
+
 def _ok(locale: str) -> str:
     """Shared "OK" string — every rule that emits passing results uses this."""
     return translate("common.ok", locale=locale)
@@ -3284,7 +3314,7 @@ class CurrencyConsistency(ValidationRule):
             return []
         currencies: set[str] = set()
         for pos in positions:
-            ccy = (pos.get("currency") or "").strip().upper()
+            ccy = _position_currency(pos)
             if ccy:
                 currencies.add(ccy)
         if len(currencies) <= 1:

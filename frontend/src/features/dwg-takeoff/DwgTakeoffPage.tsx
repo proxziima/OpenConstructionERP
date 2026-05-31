@@ -76,6 +76,7 @@ import {
   createEntityGroup,
   fetchOfflineReadiness,
   updateDrawingScale,
+  importDrawingFromDocument,
   USER_MARKUP_LAYER,
 } from './api';
 import { Undo2, Redo2, Target } from 'lucide-react';
@@ -643,11 +644,22 @@ export function DwgTakeoffPage() {
     }
   }, [activeProjectId, projectId, projects, setActiveProject]);
 
-  // Deep-link support: ?drawingId=xxx opens a specific drawing
-  // Also supports ?docName=xxx from the Documents page (matches by filename)
+  // Deep-link support: ?drawingId=xxx opens a specific drawing.
+  // From the Documents / File Manager "Open in DWG Takeoff" action we also
+  // accept ?docId=xxx (+ optional ?docName=xxx). When a document has no
+  // matching drawing yet we import one on demand (see the effect below) so
+  // the document opens immediately instead of showing a blank viewer.
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDrawingId = searchParams.get('drawingId');
+  const deepLinkDocId = searchParams.get('docId');
   const deepLinkDocName = searchParams.get('docName');
+  /** Tracks the in-flight on-demand import from a document deep-link so the
+   *  viewer shows an honest "Opening document…" card instead of the empty
+   *  upload hero while the drawing is being created server-side. Latched by
+   *  document id so a single deep-link is imported exactly once even under
+   *  StrictMode's double-effect-invoke in dev. */
+  const [importingDocId, setImportingDocId] = useState<string | null>(null);
+  const importedDocRef = useRef<string | null>(null);
 
   // State
   const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
@@ -979,38 +991,108 @@ export function DwgTakeoffPage() {
     retry: 1,
   });
 
-  // Deep-link: auto-select drawing when ?drawingId= or ?docName= is in URL
-  useEffect(() => {
-    if (drawings.length === 0) return;
+  /** Strip the deep-link params off the URL after one shot so a refresh
+   *  doesn't re-trigger selection / import. */
+  const clearDeepLinkParams = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('drawingId');
+    next.delete('docId');
+    next.delete('docName');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
+  /* ── On-demand import from a Documents / File Manager deep-link ───────────
+   * The Documents page links here as ?docId=<uuid>&docName=<name> for a CAD
+   * file that lives only as a Document. Such a file has no drawing to render,
+   * so the viewer used to sit blank. We create (or reuse) a drawing from the
+   * document via POST /drawings/from-document/ — idempotent server-side — and
+   * select the result. Mirrors the BIM page's graceful fallback: on failure
+   * we open the upload panel rather than leaving the user on a blank page. */
+  const importFromDocumentMutation = useMutation({
+    mutationFn: (docId: string) => importDrawingFromDocument(docId, deepLinkDocName ?? undefined),
+    onSuccess: (drawing) => {
+      queryClient.invalidateQueries({ queryKey: ['dwg-drawings', projectId] });
+      setImportingDocId(null);
+      handleSelectDrawing(drawing.id);
+      clearDeepLinkParams();
+    },
+    onError: (err: Error) => {
+      setImportingDocId(null);
+      // Graceful fallback (BIM-page pattern): surface the reason and open the
+      // upload panel pre-filled with the document name so the user can still
+      // get the file into the viewer — never a silent blank page.
+      addToast({
+        type: 'error',
+        title: t('dwg_takeoff.import_doc_failed', {
+          defaultValue: 'Could not open this document in DWG Takeoff',
+        }),
+        message: err.message || undefined,
+      });
+      if (deepLinkDocName) setUploadName(decodeURIComponent(deepLinkDocName).replace(/\.[^.]+$/, ''));
+      setShowUpload(true);
+      clearDeepLinkParams();
+    },
+  });
+
+  // Deep-link: auto-select drawing when ?drawingId= / ?docName= is in URL, or
+  // import on demand when ?docId= points at a document with no drawing yet.
+  useEffect(() => {
     let target: typeof drawings[number] | undefined;
 
-    // 1. Try matching by exact drawing ID
+    // 1. Try matching by exact drawing ID.
     if (deepLinkDrawingId) {
       target = drawings.find((d) => d.id === deepLinkDrawingId);
     }
 
-    // 2. Fallback: match by document name from Documents page (?docName=)
+    // 2. Fallback: match by document name from the Documents page (?docName=).
+    //    Covers the case where the file was uploaded through the takeoff
+    //    module (so a drawing with the same name already exists).
     if (!target && deepLinkDocName) {
       const docNameLower = decodeURIComponent(deepLinkDocName).toLowerCase();
+      const docNameNoExt = docNameLower.replace(/\.[^.]+$/, '');
       target = drawings.find(
         (d) =>
           d.name.toLowerCase() === docNameLower ||
-          d.name.toLowerCase() === docNameLower.replace(/\.[^.]+$/, ''),
+          d.name.toLowerCase() === docNameNoExt ||
+          d.filename?.toLowerCase() === docNameLower,
       );
     }
 
-    if (target && selectedDrawingId !== target.id) {
-      handleSelectDrawing(target.id);
-      // Clean up the URL params
-      const next = new URLSearchParams(searchParams);
-      next.delete('drawingId');
-      next.delete('docId');
-      next.delete('docName');
-      setSearchParams(next, { replace: true });
+    if (target) {
+      if (selectedDrawingId !== target.id) {
+        handleSelectDrawing(target.id);
+        clearDeepLinkParams();
+      }
+      return;
+    }
+
+    // 3. No existing drawing matched. Materialise one on demand from the
+    //    source document. We import when either:
+    //      - ?docId= is present (the canonical Documents / File Manager
+    //        link), or
+    //      - ?drawingId= is present but matched nothing AND there's no
+    //        ?docId=. The Files page historically passed a Document id as
+    //        ?drawingId= (the blank-page bug), and stale bookmarks may
+    //        still carry it — treating it as a document id recovers them.
+    //    The backend is idempotent (returns the existing drawing if the
+    //    document already has one) and 404s a truly bogus id, where the
+    //    mutation's onError opens the upload panel instead of staying
+    //    blank. Wait for the drawings list to load first so we don't fire
+    //    an import for an id that simply hadn't arrived in the list yet.
+    const importCandidateId =
+      deepLinkDocId || (deepLinkDrawingId && !deepLinkDocName ? deepLinkDrawingId : null);
+    if (
+      importCandidateId &&
+      !loadingDrawings &&
+      importedDocRef.current !== importCandidateId &&
+      !importFromDocumentMutation.isPending
+    ) {
+      importedDocRef.current = importCandidateId;
+      setImportingDocId(importCandidateId);
+      importFromDocumentMutation.mutate(importCandidateId);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deepLinkDrawingId, deepLinkDocName, drawings]);
+  }, [deepLinkDrawingId, deepLinkDocId, deepLinkDocName, drawings, loadingDrawings]);
 
   // Layout support
   const [selectedLayout, setSelectedLayout] = useState<string | null>(null);
@@ -2545,7 +2627,36 @@ export function DwgTakeoffPage() {
       <div className="flex flex-1 overflow-hidden">
         {/* ── Center: DXF Viewer ──────────────────────────────────── */}
         <div className="flex flex-1 flex-col min-h-0 min-w-0">
-          {!selectedDrawingId ? (
+          {importingDocId && !selectedDrawingId ? (
+            // On-demand import from a Documents / File Manager deep-link is
+            // running. Show an honest progress card instead of the upload
+            // hero so the page is never blank while the drawing is created
+            // server-side (the BIM page's graceful-open analogue).
+            <div
+              className="oe-dwg-canvas relative flex flex-1 items-center justify-center overflow-hidden"
+              style={{ background: '#3f3f3f' }}
+            >
+              <GridBackground className="z-0" />
+              <div className="relative z-10 flex flex-col items-center gap-4 rounded-2xl bg-[#22252b]/90 backdrop-blur-sm border border-[#333842] shadow-2xl shadow-black/30 px-10 py-9 text-center">
+                <Loader2 size={36} className="text-blue-400 animate-spin" />
+                <div>
+                  <p className="text-base font-semibold text-gray-200">
+                    {t('dwg_takeoff.opening_document', { defaultValue: 'Opening document…' })}
+                  </p>
+                  <p className="text-sm text-gray-500 mt-1.5 max-w-xs">
+                    {t('dwg_takeoff.opening_document_hint', {
+                      defaultValue: 'Preparing this drawing for takeoff. This can take a few minutes for large DWG files.',
+                    })}
+                  </p>
+                  {deepLinkDocName && (
+                    <p className="text-xs font-mono text-gray-600 mt-3 truncate max-w-xs">
+                      {decodeURIComponent(deepLinkDocName)}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : !selectedDrawingId ? (
             <div
               className="oe-dwg-canvas relative flex flex-1 overflow-hidden overflow-y-auto"
               style={{ background: '#3f3f3f' }}

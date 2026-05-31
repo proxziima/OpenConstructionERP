@@ -20,7 +20,7 @@ import {
 import { Button, Card, Badge, Breadcrumb, EmptyState } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
 import { useUploadQueueStore } from '@/stores/useUploadQueueStore';
-import { apiGet, apiPost } from '@/shared/lib/api';
+import { apiGet, apiPost, ApiError, getErrorMessage } from '@/shared/lib/api';
 import {
   describeSession,
   valueCounts,
@@ -127,6 +127,61 @@ function formatNumber(n: number | null | undefined): string {
   if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 1 });
   if (Math.abs(n) >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
   return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+/* ── Describe-fetch error classification ───────────────────────────────────
+   The `describe` query can fail for very different reasons, and a single
+   generic "session expired" screen hid the real cause. We classify the
+   thrown error into three buckets so the UI can react honestly:
+
+     - `expired`   → 410 Gone (or a 404 whose body says the session is
+                     gone). The backend issues 410 for a discarded/expired
+                     CAD session — the right UX is "re-upload your file".
+     - `no_data`   → the takeoff/converter surface isn't available or this
+                     model has nothing extracted yet (module not loaded /
+                     404 routing / "no converter" / "no elements"). The
+                     right UX is a friendly empty-state, not a red error.
+     - `error`     → anything else (500, network, permission, …). We surface
+                     the real message + HTTP status instead of masking it.
+
+   `status` is the HTTP status when the error is an {@link ApiError}, else
+   `null` (network/timeout). `message` is always a human-readable string. */
+type DescribeErrorKind = 'expired' | 'no_data' | 'error';
+
+interface ClassifiedDescribeError {
+  kind: DescribeErrorKind;
+  status: number | null;
+  message: string;
+}
+
+function classifyDescribeError(err: unknown): ClassifiedDescribeError {
+  const message = getErrorMessage(err);
+  if (err instanceof ApiError) {
+    const status = err.status;
+    const lower = message.toLowerCase();
+    const looksGone = lower.includes('expired') || lower.includes('not found or expired');
+    const looksNoData =
+      lower.includes('no converter') ||
+      lower.includes('not installed') ||
+      lower.includes('no canonical') ||
+      lower.includes('no elements') ||
+      lower.includes('no extracted') ||
+      lower.includes('not extracted') ||
+      (lower.includes('module') && lower.includes('not'));
+
+    if (status === 410) return { kind: 'expired', status, message };
+    // A 404 here means either the takeoff module/route is absent (no
+    // converter surface) or the session record is gone. Treat a "gone"
+    // body as expired (re-upload), otherwise as "nothing extracted yet".
+    if (status === 404) {
+      return looksGone
+        ? { kind: 'expired', status, message }
+        : { kind: 'no_data', status, message };
+    }
+    if (status === 422 || looksNoData) return { kind: 'no_data', status, message };
+    return { kind: 'error', status, message };
+  }
+  return { kind: 'error', status: null, message };
 }
 
 /* ── Client-side pivot row puller ───────────────────────────────────────
@@ -4086,19 +4141,78 @@ export function CadDataExplorerPage() {
             <div className="h-6 w-6 animate-spin rounded-full border-2 border-oe-blue border-t-transparent" />
           </div>
         ) : error ? (
-          /* Session expired or invalid — show upload zone to re-upload */
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            <Card className="p-4 border-amber-200 bg-amber-50/50 dark:bg-amber-900/10 dark:border-amber-800">
-              <div className="flex items-center gap-3">
-                <AlertCircle size={18} className="text-amber-600 shrink-0" />
-                <div>
-                  <p className="text-sm font-medium text-content-primary">{t('explorer.session_expired_title', { defaultValue: 'Session expired or not found' })}</p>
-                  <p className="text-xs text-content-tertiary">{t('explorer.session_expired_desc', { defaultValue: 'CAD sessions are valid for 24 hours. Upload your file again to continue.' })}</p>
+          (() => {
+            // Don't mask the real failure behind a blanket "session expired"
+            // screen. Classify the error so an expired session, an
+            // empty/unconverted model, and a genuine fault each get the
+            // right treatment.
+            const classified = classifyDescribeError(error);
+
+            // Nothing extracted yet / converter unavailable → friendly
+            // empty-state (NOT a red error) that tells the user what to do.
+            if (classified.kind === 'no_data') {
+              return (
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  <EmptyState
+                    icon={<Database size={28} />}
+                    title={t('explorer.no_data_title', {
+                      defaultValue: 'No extracted data yet',
+                    })}
+                    description={t('explorer.no_data_desc', {
+                      defaultValue:
+                        'This model has no extracted data yet — convert a CAD/BIM file (RVT, IFC, DWG) to populate the explorer.',
+                    })}
+                  />
+                  <UploadConvertZone onSessionReady={handleSessionReady} />
                 </div>
+              );
+            }
+
+            // Expired / discarded session → keep the re-upload prompt.
+            if (classified.kind === 'expired') {
+              return (
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  <Card className="p-4 border-amber-200 bg-amber-50/50 dark:bg-amber-900/10 dark:border-amber-800">
+                    <div className="flex items-center gap-3">
+                      <AlertCircle size={18} className="text-amber-600 shrink-0" />
+                      <div>
+                        <p className="text-sm font-medium text-content-primary">{t('explorer.session_expired_title', { defaultValue: 'Session expired or not found' })}</p>
+                        <p className="text-xs text-content-tertiary">{t('explorer.session_expired_desc', { defaultValue: 'CAD sessions are valid for 24 hours. Upload your file again to continue.' })}</p>
+                      </div>
+                    </div>
+                  </Card>
+                  <UploadConvertZone onSessionReady={handleSessionReady} />
+                </div>
+              );
+            }
+
+            // Genuine failure → surface the real message + HTTP status so the
+            // cause isn't swallowed. Re-upload stays available as a recovery.
+            return (
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                <Card className="p-4 border-red-200 bg-red-50/50 dark:bg-red-900/10 dark:border-red-800">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle size={18} className="text-red-600 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-content-primary">
+                        {t('explorer.load_failed_title', { defaultValue: 'Could not load explorer data' })}
+                      </p>
+                      <p className="text-xs text-content-tertiary break-words">
+                        {classified.status != null
+                          ? t('explorer.load_failed_desc_status', {
+                              defaultValue: 'HTTP {{status}} — {{message}}',
+                              status: classified.status,
+                              message: classified.message,
+                            })
+                          : classified.message}
+                      </p>
+                    </div>
+                  </div>
+                </Card>
+                <UploadConvertZone onSessionReady={handleSessionReady} />
               </div>
-            </Card>
-            <UploadConvertZone onSessionReady={handleSessionReady} />
-          </div>
+            );
+          })()
         ) : describe ? (
           <>
             {/* KPI dashboard strip — project-wide totals */}

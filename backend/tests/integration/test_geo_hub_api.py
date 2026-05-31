@@ -997,3 +997,53 @@ class TestAnchoredProjects:
     async def test_list_anchored_projects_requires_auth(self, http_client):
         res = await http_client.get("/api/v1/geo-hub/projects")
         assert res.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_address_coords_without_anchor_are_pinned(
+        self,
+        http_client,
+        tenant_b,
+    ):
+        """A project with ``address.lat``/``lng`` but NO GeoAnchor must still
+        appear on the global map (the demo / showcase seeds store coords this
+        way and used to be silently dropped by the old inner join)."""
+        # Fresh project owned by tenant_b (non-admin editor) so it stays
+        # tenant-scoped and never pollutes other tests.
+        proj = await http_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": f"AddrOnly {uuid.uuid4().hex[:6]}",
+                "description": "address coords, no anchor",
+                "currency": "EUR",
+            },
+            headers=tenant_b["headers"],
+        )
+        assert proj.status_code == 201, proj.text
+        pid = proj.json()["id"]
+
+        # Stamp the address JSONB with coordinates directly — the project has
+        # NO GeoAnchor row, mirroring the showcase snapshot's shape.
+        from sqlalchemy import update
+
+        from app.database import async_session_factory
+        from app.modules.projects.models import Project
+
+        async with async_session_factory() as s:
+            await s.execute(
+                update(Project)
+                .where(Project.id == uuid.UUID(pid))
+                .values(address={"city": "Berlin", "lat": 52.5173885, "lng": 13.3951309})
+            )
+            await s.commit()
+
+        res = await http_client.get(
+            "/api/v1/geo-hub/projects",
+            headers=tenant_b["headers"],
+        )
+        assert res.status_code == 200, res.text
+        row = next((r for r in res.json() if r["project_id"] == pid), None)
+        assert row is not None, "address-only project should be pinned"
+        # Coords come from the address; no anchor exists yet.
+        assert row["anchor_id"] is None
+        assert abs(float(row["lat"]) - 52.5173885) < 1e-6
+        assert abs(float(row["lon"]) - 13.3951309) < 1e-6

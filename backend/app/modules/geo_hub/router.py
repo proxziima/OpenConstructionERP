@@ -896,12 +896,14 @@ async def list_anchored_projects(
     payload: CurrentUserPayload = None,  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("geo_hub.read")),
 ) -> list[AnchoredProjectResponse]:
-    """All anchored projects the caller can access.
+    """All locatable projects the caller can access.
 
     Returns only the minimum needed to render the global Geo Hub: project
-    id + name + anchor coords. Non-admin users see their own projects;
-    admins see all. Projects without a ``GeoAnchor`` are excluded so the
-    pin layer never paints null-island placeholders.
+    id + name + coords. Non-admin users see their own projects; admins see
+    all. A project is included when it has a ``GeoAnchor`` OR its address
+    carries usable ``lat``/``lng`` coordinates (the anchor wins when both
+    exist). Projects with neither are excluded so the pin layer never
+    paints null-island placeholders.
     """
     rows = await service.list_anchored_projects(payload, limit=limit)
     return [AnchoredProjectResponse.model_validate(r) for r in rows]

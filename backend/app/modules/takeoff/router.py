@@ -279,8 +279,14 @@ async def verify_converter(converter_id: str) -> dict[str, Any]:
 # branch under `DDC_WINDOWS_Converters/DDC_CONVERTER_{FORMAT}/`. Linux
 # users get separate `.deb` packages from the apt source maintained at
 # `pkg.datadrivenconstruction.io` (handled separately below).
-_DDC_REPO = "datadrivenconstruction/cad2data-Revit-IFC-DWG-DGN"
-_DDC_BRANCH = "main"
+#
+# Both the repo slug and the branch can be overridden via environment so
+# an operator can point the auto-installer at a fork or a pinned release
+# branch without a code change. ``OE_CONVERTER_REPO`` /
+# ``OE_CONVERTER_BRANCH`` are the canonical names; the defaults are the
+# real, publicly-readable upstream repository.
+_DDC_REPO = os.environ.get("OE_CONVERTER_REPO", "datadrivenconstruction/cad2data-Revit-IFC-DWG-DGN")
+_DDC_BRANCH = os.environ.get("OE_CONVERTER_BRANCH", "main")
 
 # Per-format directory inside the repo for Windows binaries. Each
 # directory contains the small `*Exporter.exe`, the matching
@@ -1321,8 +1327,10 @@ async def cad_extract(
     import time
 
     from app.modules.boq.cad_import import (
+        _CONVERTER_FORMAT_ALIASES,
+        ConverterUnavailableError,
         convert_cad_to_excel,
-        find_converter,
+        ensure_converter_async,
         group_cad_elements,
         parse_cad_excel,
     )
@@ -1338,16 +1346,22 @@ async def cad_extract(
             ),
         )
 
-    converter = find_converter(ext)
-    if not converter:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"DDC converter for .{ext} files is not installed. "
-                f"Install it from the Quantities page (/quantities) or download "
-                f"from https://github.com/datadrivenconstruction/ddc-community-toolkit/releases"
-            ),
-        )
+    # Normalise the upload extension to the converter that actually reads it
+    # before resolving/running the binary: Revit family files (.rfa) are
+    # handled by the RVT converter and AutoCAD .dxf by the DWG converter.
+    # Reuse cad_import's canonical alias map so .dxf/.rfa (advertised in
+    # ``_SUPPORTED_CAD_EXTS``) are routed instead of hard-failing. The
+    # original ``ext`` is kept for the response payload below.
+    conv_ext = _CONVERTER_FORMAT_ALIASES.get(ext, ext)
+
+    # Resolve the converter, auto-downloading it on first use if missing.
+    # This makes a fresh install work with zero user action: uploading a
+    # .rvt/.ifc/.dwg/.dgn/.rfa/.dxf fetches the matching converter
+    # automatically instead of returning "converter not installed".
+    try:
+        await ensure_converter_async(conv_ext)
+    except ConverterUnavailableError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     content = await file.read()
     if not content:
@@ -1369,7 +1383,7 @@ async def cad_extract(
         output_dir = Path(tmpdir) / "output"
         output_dir.mkdir()
 
-        excel_path = await convert_cad_to_excel(input_path, output_dir, ext)
+        excel_path = await convert_cad_to_excel(input_path, output_dir, conv_ext)
         if not excel_path:
             raise HTTPException(
                 status_code=502,
@@ -1563,8 +1577,10 @@ async def cad_columns(
     import time
 
     from app.modules.boq.cad_import import (
+        _CONVERTER_FORMAT_ALIASES,
+        ConverterUnavailableError,
         convert_cad_to_excel,
-        find_converter,
+        ensure_converter_async,
         get_available_columns,
         parse_cad_excel,
     )
@@ -1580,16 +1596,18 @@ async def cad_columns(
             ),
         )
 
-    converter = find_converter(ext)
-    if not converter:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"DDC converter for .{ext} files is not installed. "
-                f"Install it from the Quantities page (/quantities) or download "
-                f"from https://github.com/datadrivenconstruction/ddc-community-toolkit/releases"
-            ),
-        )
+    # Normalise the upload extension to the converter that actually reads it
+    # (.rfa -> rvt, .dxf -> dwg) via cad_import's canonical alias map. The
+    # original ``ext`` is preserved for ``get_available_columns`` (which
+    # special-cases ``rfa`` for the Revit preset set) and the session record.
+    conv_ext = _CONVERTER_FORMAT_ALIASES.get(ext, ext)
+
+    # Resolve the converter, auto-downloading it on first use if missing
+    # (zero-user-action provisioning — see /cad-extract/ for rationale).
+    try:
+        await ensure_converter_async(conv_ext)
+    except ConverterUnavailableError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     content = await file.read()
     if not content:
@@ -1611,7 +1629,7 @@ async def cad_columns(
         output_dir = Path(tmpdir) / "output"
         output_dir.mkdir()
 
-        excel_path = await convert_cad_to_excel(input_path, output_dir, ext)
+        excel_path = await convert_cad_to_excel(input_path, output_dir, conv_ext)
         if not excel_path:
             raise HTTPException(
                 status_code=502,
@@ -3417,14 +3435,21 @@ async def save_session_to_project(
         db_session.add(bim_element)
         element_count += 1
 
-    # 5. Update the CAD session to mark it as persistent and linked
+    # 5. Update the CAD session to mark it as persistent and linked.
+    # Write the LIVE ``is_permanent`` column (the dead ``is_persistent``
+    # column is read nowhere) and push ``expires_at`` far out, mirroring
+    # ``cad_data_save``. Without this the saved session keeps its original
+    # ~24h TTL and is reaped by ``_cleanup_db_sessions`` (which keys off
+    # ``is_permanent``), so a "Save to project" session would silently
+    # vanish and never appear under ``saved_only=true``.
     from sqlalchemy import update as sa_update
 
     stmt = (
         sa_update(CadExtractionSession)
         .where(CadExtractionSession.session_id == session_id)
         .values(
-            is_persistent=True,
+            is_permanent=True,
+            expires_at=datetime.now(UTC) + timedelta(days=365 * 10),
             bim_model_id=str(bim_model.id),
             project_id=project_id,
         )
@@ -4011,11 +4036,22 @@ async def analyze_document(
         }
         elements.append(element)
 
-        # Build category summary
-        if category not in categories:
-            categories[category] = {"count": 0, "total_quantity": 0, "unit": unit}
-        categories[category]["count"] += 1
-        categories[category]["total_quantity"] += quantity
+        # Build category summary, keyed PER (category, unit). Rows in one
+        # category routinely carry different units (m, m², pcs); summing
+        # them under a single arbitrary unit yields a dimensionally
+        # meaningless total. Mirror the D-TKC-019 fix in
+        # TakeoffService.extract_tables and bucket on (category, unit) so
+        # each unit is subtotalled separately and never cross-summed.
+        bucket_key = f"{category}|{unit}"
+        if bucket_key not in categories:
+            categories[bucket_key] = {
+                "category": category,
+                "count": 0,
+                "total_quantity": 0,
+                "unit": unit,
+            }
+        categories[bucket_key]["count"] += 1
+        categories[bucket_key]["total_quantity"] += quantity
 
     logger.info(
         "AI analysis completed: doc=%s, items=%d, tokens=%d, duration=%dms",

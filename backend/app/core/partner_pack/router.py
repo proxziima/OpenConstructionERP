@@ -23,6 +23,11 @@ from app.core.partner_pack.discovery import (
     read_pack_file,
     reset_cache,
 )
+from app.core.partner_pack.full_install import (
+    FullInstallRequest,
+    FullInstallResponse,
+    full_install,
+)
 from app.dependencies import RequirePermission
 
 _IMAGE_MEDIA_TYPES = {
@@ -112,6 +117,27 @@ async def apply(body: ApplyRequest, request: Request) -> dict[str, Any]:
 
 
 @router.post(
+    "/full-install",
+    summary="One-click install an entire localized workspace for a pack (admin)",
+    dependencies=[Depends(RequirePermission("admin"))],
+    response_model=FullInstallResponse,
+)
+async def full_install_pack(body: FullInstallRequest, request: Request) -> FullInstallResponse:
+    """Install a complete localized workspace for a partner pack in one call.
+
+    Runs the five-step orchestration from ``docs/country-pack-oneclick/DESIGN.md``
+    §5: apply the pack (modules + branding), surface its locale, load the CWICR
+    relational cost DB and build the vector DB for the pack's region(s), and
+    install up to ``demo_count`` fully-worked country demo projects. Every step
+    is fail-soft — a failed step is reported in the response and never aborts the
+    rest, so this endpoint does not 404/500 for an unknown-region or
+    embedding-model gap (it reports them as skipped). An unknown pack slug yields
+    a single ``apply_pack`` step with ``status="error"``.
+    """
+    return await full_install(body, app=request.app)
+
+
+@router.post(
     "/unapply",
     summary="Remove the applied pack (admin)",
     dependencies=[Depends(RequirePermission("admin"))],
@@ -165,7 +191,12 @@ def partner_logo() -> Response:
     active = get_active_pack()
     if not active:
         raise HTTPException(status_code=404, detail="No active partner pack")
-    data = _read_pack_resource(active.branding.logo_path)
+    # Use the universal by-slug reader, not the pip-only _read_pack_resource.
+    # In-app one-click installs activate *source-checkout* packs under packs/,
+    # which have no importable entry-point module — _read_pack_resource would
+    # return None and the co-brand badge's <img> would 404 on every page.
+    # read_pack_file resolves both pip-installed and filesystem packs.
+    data = read_pack_file(active.slug, active.branding.logo_path)
     if data is None:
         raise HTTPException(
             status_code=404,
@@ -217,7 +248,7 @@ def partner_favicon() -> Response:
     active = get_active_pack()
     if not active or not active.branding.favicon_path:
         raise HTTPException(status_code=404, detail="No partner favicon")
-    data = _read_pack_resource(active.branding.favicon_path)
+    data = read_pack_file(active.slug, active.branding.favicon_path)
     if data is None:
         raise HTTPException(status_code=404, detail="Favicon file missing in pack")
     return Response(content=data, media_type="image/x-icon")
@@ -233,7 +264,7 @@ def partner_onboarding_script() -> Response:
     active = get_active_pack()
     if not active or not active.onboarding_script_path:
         raise HTTPException(status_code=404, detail="No partner onboarding script")
-    data = _read_pack_resource(active.onboarding_script_path)
+    data = read_pack_file(active.slug, active.onboarding_script_path)
     if data is None:
         raise HTTPException(
             status_code=404, detail="Onboarding script file missing in pack"
@@ -255,7 +286,7 @@ def partner_locale(code: str) -> Response:
             status_code=404,
             detail=f"Pack '{active.slug}' does not ship locale '{code}'",
         )
-    data = _read_pack_resource(path)
+    data = read_pack_file(active.slug, path)
     if data is None:
         raise HTTPException(status_code=404, detail="Locale file missing in pack")
     return Response(content=data, media_type="application/json")

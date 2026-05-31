@@ -25,6 +25,22 @@ class DwgDrawingCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class DwgDrawingFromDocument(BaseModel):
+    """Create a DWG drawing from an existing Document on demand.
+
+    Used by the Documents / File Manager "Open in DWG Takeoff" action so a
+    CAD file uploaded outside the takeoff module still opens directly in the
+    viewer. ``document_id`` must reference a ``.dwg`` / ``.dxf`` document the
+    caller can access; the endpoint is idempotent per document.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    document_id: UUID
+    name: str | None = Field(default=None, max_length=500)
+    discipline: str | None = Field(default=None, max_length=100)
+
+
 class DwgDrawingResponse(BaseModel):
     """‌⁠‍DWG drawing returned from the API."""
 

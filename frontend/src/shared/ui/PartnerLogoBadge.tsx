@@ -27,6 +27,7 @@ interface PartnerLogoBadgeProps {
 
 export function PartnerLogoBadge({ variant, className = '' }: PartnerLogoBadgeProps) {
   const packQ = usePartnerPack();
+  const [logoBroken, setLogoBroken] = useState(false);
   const [dismissed, setDismissed] = useState<boolean>(() => {
     try {
       return sessionStorage.getItem(SESSION_DISMISS_KEY) === '1';
@@ -50,6 +51,20 @@ export function PartnerLogoBadge({ variant, className = '' }: PartnerLogoBadgePr
   const m = packQ.data.manifest!;
   const url = m.partner_url ?? '#';
   const isExternal = m.partner_url && /^https?:\/\//.test(m.partner_url);
+  // Brand colour (pack's primary). Only an exact 6-digit hex can synthesize the
+  // alpha-tinted banner background; otherwise fall back to the app accent token
+  // (a CSS var can't carry an alpha suffix).
+  const brand = m.branding.primary_color || '';
+  const isHex = /^#[0-9a-f]{6}$/i.test(brand);
+  const accent = isHex ? brand : 'var(--accent)';
+  // Clearly-visible, brand-tinted background for the dashboard banner.
+  const dashBg = isHex
+    ? `linear-gradient(90deg, ${brand}26, ${brand}0d 55%, transparent)`
+    : undefined;
+  // Show the logo image only when the pack declares one AND it actually loads;
+  // a declared-but-unreadable logo falls back to the partner name text instead
+  // of a broken-image glyph.
+  const showLogo = m.branding.has_logo && !logoBroken;
 
   if (variant === 'nav') {
     return (
@@ -64,14 +79,15 @@ export function PartnerLogoBadge({ variant, className = '' }: PartnerLogoBadgePr
           className="inline-flex items-center gap-1.5 hover:text-content-primary"
           title={m.branding.powered_by_text}
         >
-          {m.branding.has_logo && (
+          {showLogo && (
             <img
-              src={partnerLogoUrl()}
+              src={partnerLogoUrl(m.slug)}
               alt={`${m.partner_name} logo`}
-              className="h-4 w-auto"
+              className="h-5 w-5 shrink-0 rounded-[5px] object-contain"
+              onError={() => setLogoBroken(true)}
             />
           )}
-          <span className="font-medium">{m.partner_name}</span>
+          <span className="max-w-[10rem] truncate font-medium">{m.partner_name}</span>
         </a>
         <button
           type="button"
@@ -88,28 +104,34 @@ export function PartnerLogoBadge({ variant, className = '' }: PartnerLogoBadgePr
   // variant === 'dashboard'
   return (
     <div
-      className={`flex items-center justify-between gap-3 rounded-lg border border-border bg-surface-secondary/50 px-4 py-2 text-sm ${className}`}
+      className={`flex items-center justify-between gap-3 rounded-lg border border-border border-l-[3px] bg-surface-secondary px-4 py-3 text-sm shadow-sm ${className}`}
+      style={{ borderLeftColor: accent, backgroundImage: dashBg }}
       data-testid="partner-logo-dashboard"
     >
       <a
         href={url}
         target={isExternal ? '_blank' : undefined}
         rel={isExternal ? 'noreferrer' : undefined}
-        className="flex items-center gap-3 hover:opacity-90"
+        className="flex min-w-0 items-center gap-3 hover:opacity-90"
       >
-        {m.branding.has_logo && (
+        {showLogo ? (
           <img
-            src={partnerLogoUrl()}
+            src={partnerLogoUrl(m.slug)}
             alt={`${m.partner_name} logo`}
-            className="h-8 w-auto"
+            className="h-9 w-9 shrink-0 rounded-md object-contain"
+            onError={() => setLogoBroken(true)}
           />
+        ) : (
+          <span className="shrink-0 text-base font-semibold" style={{ color: accent }}>
+            {m.partner_name}
+          </span>
         )}
-        <div className="leading-tight">
+        <div className="min-w-0 leading-tight">
           <div className="text-xs uppercase tracking-wide text-content-tertiary">
             {m.branding.powered_by_text}
           </div>
           {m.description && (
-            <div className="text-xs text-content-secondary mt-0.5 max-w-2xl">
+            <div className="mt-0.5 max-w-2xl truncate text-xs text-content-secondary">
               {m.description}
             </div>
           )}
@@ -119,7 +141,7 @@ export function PartnerLogoBadge({ variant, className = '' }: PartnerLogoBadgePr
         type="button"
         aria-label="Hide partner badge"
         onClick={() => setDismissed(true)}
-        className="rounded p-1 text-content-tertiary hover:text-content-primary hover:bg-surface-tertiary"
+        className="shrink-0 rounded p-1 text-content-tertiary hover:text-content-primary hover:bg-surface-tertiary"
       >
         <X size={14} />
       </button>

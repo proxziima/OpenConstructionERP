@@ -328,12 +328,25 @@ def _try_cad2data(ifc_path: Path, output_dir: Path, *, conversion_depth: str = "
     # so all paths must be absolute or the converter reports "File does not exist".
     try:
         from app.modules.boq.cad_import import (
+            ConverterUnavailableError,
             detect_converter_capabilities,
-            find_converter,
+            ensure_converter,
             parse_cad_excel,
         )
 
-        converter = find_converter(ext)
+        # Resolve the converter, auto-downloading it on first use when it is
+        # missing. ``ensure_converter`` is concurrency-safe (per-format
+        # install lock) and idempotent — a present binary is returned with
+        # no network IO. On an unsupported platform / failed download it
+        # raises ``ConverterUnavailableError``; we treat that exactly like
+        # the historical "converter not found" case (fall through to the
+        # cad2data-on-PATH method, then the text-IFC fallback) so geometry
+        # ingest degrades gracefully instead of crashing.
+        try:
+            converter = ensure_converter(ext)
+        except ConverterUnavailableError as exc:
+            logger.info("DDC converter for .%s unavailable: %s", ext, exc)
+            converter = None
         if converter:
             import subprocess
 
@@ -362,6 +375,17 @@ def _try_cad2data(ifc_path: Path, output_dir: Path, *, conversion_depth: str = "
             )
 
             cli_profile = caps.get("cli_profile", CLI_PROFILE_LEGACY)
+            # Whether this binary can produce geometry (a COLLADA/.dae pass)
+            # at all.  The v18 flag CLI only does so when it advertises the
+            # ``-d/--dae`` geometry group: the full RvtExporter / IfcExporter
+            # do, but the DwgExporter (XLSX/JSON/CSV-only) does NOT — running
+            # a DAE pass against it aborts with ``exit 15``.  v17 positional /
+            # legacy binaries always emit geometry via their positional output
+            # path, so they keep the DAE pass unconditionally.
+            if cli_profile == CLI_PROFILE_V18_FLAG:
+                geometry_supported = bool(caps.get("accepts_flag_dae"))
+            else:
+                geometry_supported = True
             # Track whether the conservative path was taken for any reason
             # (probe-driven OR exit-15 retry) so callers can surface a
             # "converter_outdated" diagnostic to the UI.  v18 is the
@@ -604,9 +628,14 @@ def _try_cad2data(ifc_path: Path, output_dir: Path, *, conversion_depth: str = "
             output_xlsx = (output_dir / (ifc_path.stem + ".xlsx")).resolve()
             real_dae = (output_dir / "geometry.dae").resolve()
 
+            # The DAE pass is only meaningful when the binary can produce
+            # geometry.  For a data-only converter (e.g. DwgExporter, which
+            # has no ``-d/--dae`` group) we SKIP it entirely instead of
+            # invoking it and logging a failure — "no geometry" is a normal
+            # outcome for that format, not an error.
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as _pool:
                 fut_xlsx = _pool.submit(_run_ddc, output_xlsx, "-no-collada")
-                fut_dae = _pool.submit(_run_ddc, real_dae)
+                fut_dae = _pool.submit(_run_ddc, real_dae) if geometry_supported else None
 
                 try:
                     rc, _stdout, stderr = fut_xlsx.result()
@@ -665,15 +694,29 @@ def _try_cad2data(ifc_path: Path, output_dir: Path, *, conversion_depth: str = "
                     ifc_path.name,
                 )
 
-                try:
-                    rc2, _stdout2, stderr2 = fut_dae.result()
-                except subprocess.TimeoutExpired:
-                    logger.warning("DDC COLLADA pass timed out — will fall back to box geometry")
-                    rc2 = -1
-                    stderr2 = b""
+                # Only wait on the COLLADA pass when we actually launched it.
+                rc2 = -1
+                stderr2 = b""
+                if fut_dae is not None:
+                    try:
+                        rc2, _stdout2, stderr2 = fut_dae.result()
+                    except subprocess.TimeoutExpired:
+                        logger.warning("DDC COLLADA pass timed out — will fall back to box geometry")
+                        rc2 = -1
+                        stderr2 = b""
 
             real_dae_path: Path | None = None
-            if rc2 == 0 and real_dae.exists() and real_dae.stat().st_size > 0:
+            if not geometry_supported:
+                # Data-only converter (no ``-d/--dae`` support) — geometry was
+                # never attempted.  Not a failure: the entity properties from
+                # the XLSX pass are the real, expected output for this format.
+                logger.info(
+                    "Converter for .%s is data-only (no geometry group) — "
+                    "skipping COLLADA pass; %d entity rows extracted",
+                    ext,
+                    len(raw_elements),
+                )
+            elif rc2 == 0 and real_dae.exists() and real_dae.stat().st_size > 0:
                 real_dae_path = real_dae
                 logger.info(
                     "DDC native COLLADA generated: %d bytes",
@@ -690,6 +733,7 @@ def _try_cad2data(ifc_path: Path, output_dir: Path, *, conversion_depth: str = "
                 raw_elements,
                 output_dir,
                 real_dae_path=real_dae_path,
+                geometry_supported=geometry_supported,
             )
             # Surface the converter version so the frontend can render a
             # "Processed with DDC v{X}" badge on the model card (Stream D
@@ -859,6 +903,7 @@ def _excel_elements_to_bim_result(
     output_dir: Path,
     *,
     real_dae_path: Path | None = None,
+    geometry_supported: bool = True,
 ) -> dict[str, Any]:
     """Convert parsed Excel elements (from DDC converter) into BIM result format.
 
@@ -875,6 +920,14 @@ def _excel_elements_to_bim_result(
     If ``real_dae_path`` is provided (output of a separate RvtExporter call to
     .dae), we use the real Revit COLLADA geometry instead of the placeholder
     box-grid generated from element bounding boxes.
+
+    ``geometry_supported`` distinguishes "the geometry pass ran but produced
+    nothing usable" from "this converter can't do geometry at all". When it
+    is ``False`` (e.g. the DwgExporter, which is XLSX/JSON/CSV-only) we do NOT
+    synthesise placeholder boxes and report ``geometry_quality="data_only"``
+    rather than ``"placeholder"`` — the elements are the genuine, complete
+    output for that format, so the UI must not nudge the user to install /
+    retry a converter that is already working as designed.
     """
     # Skip these categories — they're not building elements.
     # Expanded set covers views, sheets, materials, annotations, tags,
@@ -1043,6 +1096,26 @@ def _excel_elements_to_bim_result(
         category = lc_row.get("category")
         cat_lower = str(category or "").lower()
 
+        # ── DWG fallback classification ──────────────────────────────────
+        # DwgExporter rows have NO Revit ``category`` column. Instead each
+        # top-level entity carries a DWG ``classname`` (AcDbLine, AcDbHatch,
+        # AcDbBlockReference, …) and a drawing ``layer`` (wall / doors /
+        # furniture / …). When the Revit category is absent we derive the
+        # category from the classname so DWG entities become real elements
+        # rather than being dropped as "no category".  Sub-geometry rows
+        # (polyline segments / hatch loops) have a ``parentid`` and NO
+        # ``classname`` — those are skipped so we only keep top-level
+        # entities (1 element per drawing object, not per vertex).
+        dwg_classname = str(lc_row.get("classname") or "").strip()
+        if (not category or cat_lower in ("none", "null", "", "n/a")) and dwg_classname:
+            # Strip the ``AcDb`` / ``AcDb2d`` / ``AcDb3d`` ObjectARX prefix and
+            # CamelCase-split so "AcDbRotatedDimension" → "Rotated Dimension".
+            friendly = re.sub(r"^acdb(?:2d|3d)?", "", dwg_classname, flags=re.IGNORECASE)
+            friendly = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", friendly)
+            friendly = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", friendly).strip()
+            category = friendly or dwg_classname
+            cat_lower = str(category).lower()
+
         # Skip non-element rows: those with no category at all (likely orphan
         # parameter rows from the DDC converter), and known non-element categories.
         # DDC writes the literal string "None" for elements without a Revit
@@ -1077,7 +1150,9 @@ def _excel_elements_to_bim_result(
 
         # Storey: DDC writes the actual building level under "Level" for most
         # categories, but walls/columns sometimes only fill "Base Constraint"
-        # or "Reference Level". Fall back through all known synonyms.
+        # or "Reference Level". Fall back through all known synonyms.  For DWG
+        # entities (no Revit level) the drawing ``layer`` is the natural
+        # grouping — it is tried LAST so it never shadows a real Revit level.
         storey = (
             lc_row.get("level")
             or lc_row.get("storey")
@@ -1088,6 +1163,7 @@ def _excel_elements_to_bim_result(
             or lc_row.get("reference level")
             or lc_row.get("schedule level")
             or lc_row.get("associated level")
+            or (lc_row.get("layer") if dwg_classname else "")
             or ""
         )
         storey = str(storey).strip() if storey else ""
@@ -1315,7 +1391,7 @@ def _excel_elements_to_bim_result(
             real_dae_path.name,
             real_dae_path.stat().st_size // 1024,
         )
-    elif elements:
+    elif elements and geometry_supported:
         try:
             geometry_path, bounding_box = _generate_collada_boxes(elements, output_dir)
             logger.info("Generated placeholder box geometry (no real COLLADA available)")
@@ -1356,12 +1432,24 @@ def _excel_elements_to_bim_result(
     # be None even though ``real_dae_path`` originally existed, so we
     # treat that as placeholder for the purpose of the metadata flag.
     is_real = bool(real_dae_path and real_dae_path.exists() and geometry_path == real_dae_path)
-    if not is_real:
+    # ``data_only`` is a normal, non-degraded outcome: the converter genuinely
+    # can't produce geometry (e.g. DwgExporter), so no placeholder boxes were
+    # synthesised and the elements carry no ``is_placeholder`` flag. Only the
+    # geometry-capable path tags placeholders (real .dae missing → box-grid).
+    data_only = not geometry_supported
+    if not is_real and not data_only:
         # When DDC produced an Excel pass but no real .dae, we generated
         # placeholder boxes — tag the elements so downstream consumers can
         # warn the user.
         for elem in elements:
             elem["is_placeholder"] = True
+
+    if is_real:
+        geometry_quality = "real"
+    elif data_only:
+        geometry_quality = "data_only"
+    else:
+        geometry_quality = "placeholder"
 
     return {
         "elements": elements,
@@ -1372,8 +1460,8 @@ def _excel_elements_to_bim_result(
         "geometry_path": str(geometry_path) if geometry_path else None,
         "glb_path": str(glb_path) if glb_path else None,
         "bounding_box": bounding_box,
-        "geometry_type": "real" if is_real else "placeholder",
-        "geometry_quality": "real" if is_real else "placeholder",
+        "geometry_type": geometry_quality,
+        "geometry_quality": geometry_quality,
         # Full DDC dataframe (all 1000+ columns) for Parquet cold storage.
         # The hot table only keeps ~12 indexed fields; analytical queries
         # run against the Parquet via DuckDB.

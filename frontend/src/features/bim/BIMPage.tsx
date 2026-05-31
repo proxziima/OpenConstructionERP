@@ -911,6 +911,10 @@ function NonReadyOverlay({ model, onUploadConverted, onDelete, onRetry, onInstal
   const { t } = useTranslation();
   const [isRetrying, setIsRetrying] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
+  // Collapsed by default — the raw backend error (which can be a multi-line
+  // stderr excerpt) stays hidden behind an accessible toggle so the overlay
+  // leads with a calm, human one-liner instead of a wall of diagnostic text.
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
 
   // model is null while the models query is still hydrating after a fresh
   // upload / deep link — render a lightweight "loading" overlay so we don't
@@ -944,12 +948,59 @@ function NonReadyOverlay({ model, onUploadConverted, onDelete, onRetry, onInstal
   const converterId = typeof meta.converter_id === 'string' ? meta.converter_id : null;
   const backendMessage = (model.error_message || '').trim();
 
-  const configs = {
-    processing: { icon: <Loader2 size={32} className="text-blue-500 animate-spin" />, bg: 'bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800', title: t('bim.overlay_processing_title'), desc: t('bim.overlay_processing_desc', { format: fmt }) },
-    needs_converter: { icon: <AlertTriangle size={32} className="text-amber-500" />, bg: 'bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800', title: t('bim.overlay_needs_converter_title'), desc: t('bim.overlay_needs_converter_desc', { format: fmt }) },
-    error: { icon: <AlertCircle size={32} className="text-red-500" />, bg: 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800', title: t('bim.overlay_error_title'), desc: t('bim.overlay_error_desc') },
+  // Status → presentation map. Keyed by every status the backend
+  // bim_hub processor can emit (`processing` / `needs_converter` / `error`
+  // / `degraded`) plus defensive aliases for the broader conversion-status
+  // vocabulary used elsewhere in the pipeline (`failed`, `pending`,
+  // `queued`, `uploading`, `converting`, `no_geometry`, `converter_required`).
+  // Every entry carries a `bg` className — the lookup below NEVER reads
+  // `.bg` off an undefined value (see the belt-and-suspenders fallback),
+  // so an unknown status string can never crash the overlay again.
+  const processingConfig = {
+    icon: <Loader2 size={32} className="text-blue-500 animate-spin" />,
+    bg: 'bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800',
+    title: t('bim.overlay_processing_title'),
+    desc: t('bim.overlay_processing_desc', { format: fmt }),
   };
-  const c = configs[model.status as keyof typeof configs] ?? configs.error;
+  const needsConverterConfig = {
+    icon: <AlertTriangle size={32} className="text-amber-500" />,
+    bg: 'bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800',
+    title: t('bim.overlay_needs_converter_title'),
+    desc: t('bim.overlay_needs_converter_desc', { format: fmt }),
+  };
+  const errorConfig = {
+    icon: <AlertCircle size={32} className="text-red-500" />,
+    bg: 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800',
+    title: t('bim.overlay_error_title'),
+    desc: t('bim.overlay_error_desc'),
+  };
+  const configs: Record<string, typeof processingConfig> = {
+    processing: processingConfig,
+    pending: processingConfig,
+    queued: processingConfig,
+    uploading: processingConfig,
+    converting: processingConfig,
+    needs_converter: needsConverterConfig,
+    converter_required: needsConverterConfig,
+    no_geometry: needsConverterConfig,
+    degraded: needsConverterConfig,
+    error: errorConfig,
+    failed: errorConfig,
+  };
+  // Belt-and-suspenders: explicit entry → the generic `error` config →
+  // a hard-coded neutral fallback. The last clause guarantees `c` is
+  // always a defined object with a `bg` field even if `configs.error`
+  // were ever removed, so `c.bg` below can never read off `undefined`.
+  const c =
+    configs[model.status] ??
+    configs.error ?? {
+      icon: <AlertCircle size={32} className="text-content-tertiary" />,
+      bg: 'bg-surface-secondary border-border-light',
+      title: t('bim.overlay_error_title', { defaultValue: 'Could not load model' }),
+      desc: t('bim.overlay_error_desc', {
+        defaultValue: 'This model could not be opened. Try re-uploading the file.',
+      }),
+    };
 
   // Render the backend-supplied actionable message when present so users
   // see *why* their model didn't convert (DDC missing, RVT version
@@ -993,11 +1044,31 @@ function NonReadyOverlay({ model, onUploadConverted, onDelete, onRetry, onInstal
           format: fmt || 'BIM',
         })
       : null;
+
+  // We deliberately do NOT dump the raw backend error into the headline
+  // paragraph any more. A failed CAD conversion typically means the DDC
+  // cad2data converter is not installed in this environment (it is a
+  // separate, optional download and is legitimately absent on most local
+  // dev machines). We lead with that calm explanation and tuck the raw
+  // backend string — e.g. "CAD conversion failed for .rvt file. Ensure the
+  // converter is properly installed and the file is valid." — behind the
+  // collapsible "Show details" toggle below.
+  const calmFailureDescription =
+    !isProcessing && (errorCode === 'ddc_not_found' || !!backendMessage)
+      ? t('bim.overlay_converter_unavailable_calm', {
+          defaultValue:
+            "We couldn't convert this {{format}} file. The CAD converter (DDC cad2data) isn't available in this environment — it's an optional, separate install. Add it, then retry the conversion.",
+          format: fmt || 'CAD',
+        })
+      : null;
+
   const description =
-    cleanDescription
-    ?? (!isProcessing && backendMessage ? backendMessage : c.desc);
+    cleanDescription ?? calmFailureDescription ?? c.desc;
+  // The raw backend message is now ALWAYS surfaced through the collapsible
+  // disclosure (when present) rather than inline — both for the outdated
+  // case and the generic failure case.
   const technicalDetails =
-    cleanDescription && backendMessage ? backendMessage : null;
+    !isProcessing && backendMessage ? backendMessage : null;
 
   const showInstallButton =
     !isProcessing
@@ -1036,14 +1107,32 @@ function NonReadyOverlay({ model, onUploadConverted, onDelete, onRetry, onInstal
         <h2 className="text-lg font-bold text-content-primary mb-2">{headlineTitle}</h2>
         <p className="text-sm text-content-secondary mb-2 whitespace-pre-line">{description}</p>
         {technicalDetails && (
-          <details className="text-left mb-3 mx-auto max-w-sm">
-            <summary className="text-[11px] text-content-tertiary cursor-pointer hover:text-content-secondary">
-              {t('bim.overlay_technical_details', { defaultValue: 'Show technical details' })}
-            </summary>
-            <pre className="mt-2 p-2 text-[10px] bg-surface-secondary border border-border-light rounded-md text-content-tertiary whitespace-pre-wrap font-mono">
-              {technicalDetails}
-            </pre>
-          </details>
+          <div className="mb-3 mx-auto max-w-sm">
+            {/* Collapsed by default: a short "Conversion failed" affordance.
+                Click reveals the full raw backend error below. Real <button>
+                with aria-expanded so it is keyboard- and screen-reader
+                accessible (the previous inline dump showed the stderr to
+                everyone, every time). */}
+            <button
+              type="button"
+              onClick={() => setDetailsExpanded((v) => !v)}
+              aria-expanded={detailsExpanded}
+              data-testid="bim-overlay-error-details-toggle"
+              className="inline-flex items-center gap-1 text-[11px] text-content-tertiary hover:text-content-secondary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40 rounded"
+            >
+              {detailsExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              {detailsExpanded
+                ? t('bim.overlay_hide_details', { defaultValue: 'Hide details' })
+                : t('bim.overlay_show_error_details', {
+                    defaultValue: 'Conversion failed · show details',
+                  })}
+            </button>
+            {detailsExpanded && (
+              <pre className="mt-2 p-2 text-left text-[10px] bg-surface-secondary border border-border-light rounded-md text-content-tertiary whitespace-pre-wrap font-mono">
+                {technicalDetails}
+              </pre>
+            )}
+          </div>
         )}
         <p className="text-[11px] text-content-quaternary mb-6">{model.name}{model.file_size ? ` · ${formatFileSize(model.file_size)}` : ''}</p>
 

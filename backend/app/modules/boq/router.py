@@ -3183,6 +3183,9 @@ def _fmt_number(value: Any) -> str:
 )
 async def export_boq_csv(
     boq_id: uuid.UUID,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: BOQService = Depends(_get_service),
 ) -> StreamingResponse:
     """Export BOQ positions as a CSV file.
@@ -3194,6 +3197,9 @@ async def export_boq_csv(
     """
     import json as _json
 
+    # IDOR guard: every BOQ read endpoint scopes to project owner/member;
+    # exports must do the same before fetching any priced data.
+    await _verify_boq_owner(session, boq_id, _user_id, payload)
     # Use structured data to include markups in the grand total
     structured = await service.get_boq_structured(boq_id)
     # Issue #111 — freeze the project FX table into the exported artifact so
@@ -3417,6 +3423,9 @@ async def export_boq_csv(
 )
 async def export_boq_excel(
     boq_id: uuid.UUID,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
     service: BOQService = Depends(_get_service),
 ) -> StreamingResponse:
     """Export BOQ positions as an Excel (xlsx) file with formatting.
@@ -3433,6 +3442,9 @@ async def export_boq_excel(
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side, numbers
     from openpyxl.utils import get_column_letter
 
+    # IDOR guard: scope the export to the project owner/member, matching
+    # every other BOQ read endpoint.
+    await _verify_boq_owner(session, boq_id, _user_id, payload)
     boq_data = await service.get_boq_with_positions(boq_id)
     boq_obj = await service.get_boq(boq_id)
     structured_data = await service.get_boq_structured(boq_id)
@@ -3789,6 +3801,8 @@ async def export_boq_excel(
 )
 async def export_boq_pdf(
     boq_id: uuid.UUID,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
     session: SessionDep,
     service: BOQService = Depends(_get_service),
 ) -> StreamingResponse:
@@ -3811,6 +3825,9 @@ async def export_boq_pdf(
     from app.modules.projects.repository import ProjectRepository
     from app.modules.users.models import User
 
+    # IDOR guard: scope the export to the project owner/member, matching
+    # every other BOQ read endpoint.
+    await _verify_boq_owner(session, boq_id, _user_id, payload)
     boq_data = await service.get_boq_structured(boq_id)
 
     # Load project for cover page info
@@ -3897,6 +3914,8 @@ async def export_boq_pdf(
 )
 async def export_boq_gaeb(
     boq_id: uuid.UUID,
+    _user_id: CurrentUserId,
+    payload: CurrentUserPayload,
     session: SessionDep,
     service: BOQService = Depends(_get_service),
     # NB: query-string alias is still ``?format=x84`` for backward-compat with
@@ -3940,6 +3959,9 @@ async def export_boq_gaeb(
 
     from app.modules.projects.repository import ProjectRepository
 
+    # IDOR guard: scope the export to the project owner/member, matching
+    # every other BOQ read endpoint.
+    await _verify_boq_owner(session, boq_id, _user_id, payload)
     boq_data = await service.get_boq_structured(boq_id)
 
     # Load project for label text
@@ -4281,9 +4303,37 @@ async def export_boq_gaeb(
             ET.SubElement(rec_item, "RNoPart").text = ord_
             ET.SubElement(rec_item, "LblTx").text = desc_text
 
-    # ── Trailing BoQInfo with grand total ─────────────────────────────────
+    # ── Trailing BoQInfo with totals ──────────────────────────────────────
+    # GAEB consumers (RIB iTWO, Nevaris, California.pro, …) reconcile the
+    # document total against Σ(item IT). The body emits only per-position
+    # ``IT`` lines (which sum to the DIRECT cost) and no surcharge lines, so
+    # ``TotPr`` MUST equal the direct cost for the file to be internally
+    # consistent. Setting it to the markup-inclusive ``grand_total`` (as
+    # before) made TotPr > Σ(IT) for any BOQ carrying a markup and got the
+    # file flagged/rejected. We therefore set TotPr to the direct cost and
+    # enumerate each markup explicitly under a ``Totals`` block so the
+    # surcharges are not silently dropped and a reader can still derive the
+    # gross figure (NetTotal == Σ(IT) + Σ(markup amounts)).
     boq_info_total = ET.SubElement(boq_el, "BoQInfo")
-    ET.SubElement(boq_info_total, "TotPr").text = _fmt_price(boq_data.grand_total)
+    ET.SubElement(boq_info_total, "TotPr").text = _fmt_price(boq_data.direct_cost)
+
+    active_markups = [m for m in boq_data.markups if getattr(m, "is_active", True)]
+    if active_markups:
+        totals_el = ET.SubElement(boq_info_total, "Totals")
+        # Sum of item totals (direct cost) — the reconciliation base.
+        ET.SubElement(totals_el, "STotal").text = _fmt_price(boq_data.direct_cost)
+        for m in active_markups:
+            markup_el = ET.SubElement(totals_el, "Markup")
+            ET.SubElement(markup_el, "MarkupType").text = str(
+                getattr(m, "markup_type", "") or getattr(m, "category", "") or ""
+            )
+            ET.SubElement(markup_el, "AddText").text = str(getattr(m, "name", "") or "")
+            pct = getattr(m, "percentage", 0) or 0
+            if pct:
+                ET.SubElement(markup_el, "Per").text = _fmt_price(pct)
+            ET.SubElement(markup_el, "Total").text = _fmt_price(getattr(m, "amount", 0))
+        # Net total == direct cost + Σ(markup amounts) == grand_total.
+        ET.SubElement(totals_el, "GrandTotal").text = _fmt_price(boq_data.net_total)
 
     # ── Serialize to XML string ───────────────────────────────────────────
     # XML comments are discarded by every conformant XML parser (incl. our
@@ -5702,20 +5752,24 @@ async def _extract_from_cad(content: bytes, ext: str, filename: str) -> dict[str
         If no converter is installed, returns a helpful message with download link.
     """
     from app.modules.boq.cad_import import (
+        ConverterUnavailableError,
         convert_cad_to_excel,
-        find_converter,
+        ensure_converter_async,
         parse_cad_excel,
         summarize_cad_elements,
     )
 
-    converter = find_converter(ext)
-    if not converter:
+    # Resolve the converter, auto-downloading it on first use if missing.
+    # Only when it genuinely cannot be provisioned (unsupported platform /
+    # download failed) do we fall back to the help message + the
+    # ``cad_no_converter`` flag the AI summary path branches on.
+    try:
+        await ensure_converter_async(ext)
+    except ConverterUnavailableError as exc:
         return {
             "text": (
-                f"CAD file detected (.{ext}) but no DDC converter found.\n"
-                f"Download DDC converters from:\n"
-                f"https://github.com/datadrivenconstruction/ddc-community-toolkit/releases\n"
-                f"Place .exe files in one of these locations:\n"
+                f"CAD file detected (.{ext}) but no DDC converter is available.\n{exc}\n"
+                f"You can also place the converter .exe files in one of:\n"
                 f"  - converters/bin/ (project root)\n"
                 f"  - ~/.openestimator/converters/\n"
                 f"  - Set OPENESTIMATOR_CONVERTERS_DIR environment variable"

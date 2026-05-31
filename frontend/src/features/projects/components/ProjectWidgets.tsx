@@ -168,8 +168,8 @@ function WidgetShell({
   className,
 }: WidgetShellProps) {
   return (
-    <Card padding="md" className={className}>
-      <div className="mb-3 flex items-start justify-between gap-3">
+    <Card padding="sm" className={className}>
+      <div className="mb-2 flex items-start justify-between gap-3">
         <div className="flex items-start gap-2 min-w-0 flex-1">
           <span className="mt-0.5 shrink-0 text-content-tertiary">{icon}</span>
           <div className="min-w-0 flex-1">
@@ -211,7 +211,7 @@ function WidgetSkeleton({ rows = 3 }: { rows?: number }) {
 
 function WidgetEmpty({ message }: { message: string }) {
   return (
-    <p className="text-xs text-content-tertiary py-4 text-center">{message}</p>
+    <p className="text-2xs text-content-quaternary py-2 text-center">{message}</p>
   );
 }
 
@@ -381,7 +381,7 @@ export function ChangeOrdersPulseWidget({
           })}
         />
       ) : (
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-2">
           <div>
             <div className="text-2xs uppercase tracking-wider text-content-tertiary mb-1">
               {t('project.widget.change-orders.pending', { defaultValue: 'Pending' })}
@@ -585,7 +585,7 @@ export function HSEIncidentsWidget({ projectId }: { projectId: string }) {
           })}
         />
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           <div className="flex items-center gap-4">
             <span className="text-3xl font-bold tabular-nums text-content-primary leading-none">
               {severityCounts.total}
@@ -703,7 +703,7 @@ export function VariationsWidget({
           })}
         />
       ) : (
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-2">
           <div>
             <div className="text-2xs uppercase tracking-wider text-content-tertiary mb-1">
               {t('project.widget.variations.open', { defaultValue: 'Open' })}
@@ -1070,7 +1070,7 @@ export function QualityNCRWidget({ projectId }: { projectId: string }) {
           })}
         />
       ) : (
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-3 gap-2">
           <div>
             <div className="text-2xs uppercase tracking-wider text-content-tertiary mb-1">
               {t('project.widget.quality-ncr.open', { defaultValue: 'Open' })}
@@ -1198,7 +1198,7 @@ export function BudgetBurnWidget({
           })}
         />
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           <div className="flex items-baseline gap-3">
             <span className="text-xl font-semibold tabular-nums text-content-primary">
               {fmtMoney(data.actual_total, data.currency ?? currency)}
@@ -1302,7 +1302,7 @@ export function ComplianceSummaryWidget({ projectId }: { projectId: string }) {
           })}
         />
       ) : (
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-3 gap-2">
           <div>
             <div className="text-2xs uppercase tracking-wider text-content-tertiary mb-1">
               {t('project.widget.compliance-summary.active', { defaultValue: 'Active' })}
@@ -1383,7 +1383,7 @@ export function ScheduleStripWidget({ projectId }: { projectId: string }) {
           })}
         />
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           <div className="flex items-center gap-3">
             <span className="text-2xl font-bold tabular-nums text-content-primary leading-none">
               {Number.isFinite(pct) ? pct.toFixed(0) : 0}%

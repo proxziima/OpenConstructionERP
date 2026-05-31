@@ -1,40 +1,29 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Saudi Vision 2030 Pack — bilingual wordmark.
-  Arabic primary (RTL), English secondary. No mirroring needed: the
-  emblem (green palm-fronds-on-shield mark) sits on the right edge so
-  it sits visually next to the partner co-brand chip in both LTR
-  (Western tenants) and RTL (Arabic tenants) layouts. Text uses
-  direction="rtl" on the Arabic <text> so font shaping / kashida is
-  rendered correctly by the browser.
--->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 60" width="320" height="60" role="img" aria-label="Saudi Vision 2030 Pack — حزمة رؤية المملكة العربية السعودية 2030">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Saudi Vision 2030 Pack">
   <title>Saudi Vision 2030 Pack</title>
-  <desc>Bilingual wordmark in Saudi flag green (#006C35) — Arabic on top, English underneath, with an emblem mark on the right.</desc>
-
-  <!-- Arabic primary line (RTL) -->
-  <text x="270" y="26"
-        direction="rtl"
-        text-anchor="end"
-        font-family="'Noto Naskh Arabic', 'Geeza Pro', 'Arabic Typesetting', 'Segoe UI', Tahoma, sans-serif"
-        font-size="18"
-        font-weight="700"
-        fill="#006C35">حزمة رؤية 2030</text>
-
-  <!-- English secondary line -->
-  <text x="270" y="48"
-        text-anchor="end"
-        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
-        font-size="13"
-        font-weight="600"
-        letter-spacing="0.2"
-        fill="#006C35">Saudi Vision 2030 Pack</text>
-
-  <!-- Emblem: rounded square with stylised "30" notch (avoids any
-       text-based cue that would break under mirroring filters) -->
-  <g transform="translate(286, 14)">
-    <rect x="0" y="0" width="28" height="28" rx="6" fill="#006C35"/>
-    <path d="M6 18 L10 14 L14 18 L18 14 L22 18" stroke="#FFFFFF" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="14" cy="9" r="2.4" fill="#FFFFFF"/>
-  </g>
+  <defs>
+    <linearGradient id="g_saudi_vision2030" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#006c35"/>
+      <stop offset="1" stop-color="#99c4ae"/>
+    </linearGradient>
+    <linearGradient id="s_saudi_vision2030" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#g_saudi_vision2030)"/>
+  <rect x="2" y="2" width="60" height="30" rx="15" fill="url(#s_saudi_vision2030)"/>
+  <!-- skyline bars -->
+  <rect x="12" y="38" width="6" height="14" rx="1.6" fill="#fff" opacity=".80"/>
+  <rect x="21" y="30" width="6" height="22" rx="1.6" fill="#fff" opacity=".92"/>
+  <rect x="30" y="23" width="6" height="29" rx="1.6" fill="#fff" opacity=".80"/>
+  <!-- building block + windows -->
+  <rect x="39" y="20" width="17" height="32" rx="2.4" fill="#fff" opacity=".92"/>
+  <rect x="42.5" y="24.5" width="3.6" height="4" rx="1" fill="url(#g_saudi_vision2030)" opacity=".55"/>
+  <rect x="48.2" y="24.5" width="3.6" height="4" rx="1" fill="url(#g_saudi_vision2030)" opacity=".55"/>
+  <rect x="42.5" y="31.5" width="3.6" height="4" rx="1" fill="url(#g_saudi_vision2030)" opacity=".55"/>
+  <rect x="48.2" y="31.5" width="3.6" height="4" rx="1" fill="url(#g_saudi_vision2030)" opacity=".55"/>
+  <!-- door -->
+  <rect x="44.8" y="44" width="5.4" height="8" rx="1.2" fill="url(#g_saudi_vision2030)" opacity=".60"/>
+  <!-- ground line -->
+  <rect x="10" y="52" width="44" height="2.4" rx="1.2" fill="#fff" opacity=".55"/>
 </svg>

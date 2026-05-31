@@ -453,6 +453,64 @@ def recompute_measurement_value(
     return client_value
 
 
+def recompute_volume_value(
+    *,
+    measurement_type: str | None,
+    points: list[Any] | None,
+    scale_pixels_per_unit: float | None,
+    depth: float | None,
+    client_volume: float | None,
+) -> float | None:
+    """Recompute a ``volume`` measurement's ``volume`` column server-side.
+
+    Audit B8 closed the client-trust hole for ``measurement_value`` but
+    left it open for ``volume``: ``recompute_measurement_value`` only
+    returns the *base area* for the ``volume`` type (depth multiplication
+    is intentionally deferred to here), while ``_pick_takeoff_value`` reads
+    the dedicated ``volume`` column when pushing a quantity into a BOQ
+    position. Persisting the raw client ``volume`` therefore let a client
+    draw a tiny shape yet claim an arbitrary volume that flowed straight
+    into BOQ money math — the exact integrity gap B8 was meant to close.
+
+    We derive ``volume = base_area * depth`` from the same (points × scale)
+    geometry the area recompute uses, with a non-negative ``depth``. The
+    client value is only trusted as a fallback when the volume cannot be
+    reconstructed (non-volume type, missing/invalid scale, fewer than three
+    points, or a missing/invalid depth) so external annotation flows and
+    legacy rows are not broken. A negative client volume is clamped to
+    ``None`` rather than poisoning a BOQ total.
+
+    Args:
+        measurement_type: The measurement ``type`` (only ``volume`` is
+            recomputed; any other type echoes ``client_volume``).
+        points: Raw polygon vertices (``PointSchema`` or dicts).
+        scale_pixels_per_unit: Pixels per linear unit for this page.
+        depth: Extrusion depth in the same linear unit as the area.
+        client_volume: The volume the client sent (fallback only).
+
+    Returns:
+        Server-derived ``base_area * depth`` when computable, otherwise the
+        sanitised ``client_volume`` echo, or ``None`` when nothing usable.
+    """
+    if (measurement_type or "").strip().lower() != "volume":
+        return client_volume
+
+    xy = _points_to_xy(points or [])
+    scale = scale_pixels_per_unit or 0.0
+
+    # Need a valid scale, a closed polygon (>= 3 points), and a sane depth
+    # to reconstruct the volume; otherwise fall back to the client echo.
+    if scale > 0 and len(xy) >= 3 and depth is not None and depth >= 0:
+        base_area = _shoelace_area(xy) / (scale * scale)
+        return base_area * float(depth)
+
+    # Not recomputable — trust the client value but never let a negative
+    # volume through into a BOQ quantity.
+    if client_volume is not None and client_volume < 0:
+        return None
+    return client_volume
+
+
 def _pick_takeoff_value(measurement: Any) -> float | None:
     """Pick the scalar value to push into a BOQ position's ``quantity``.
 
@@ -974,6 +1032,16 @@ class TakeoffService:
             count_value=data.count_value,
             client_value=data.measurement_value,
         )
+        # B8 — derive the volume column server-side (area × depth) so the
+        # client-sent value can't bypass the geometry recompute when it is
+        # pushed into a BOQ quantity via ``_pick_takeoff_value``.
+        recomputed_volume = recompute_volume_value(
+            measurement_type=data.type,
+            points=data.points,
+            scale_pixels_per_unit=data.scale_pixels_per_unit,
+            depth=data.depth,
+            client_volume=data.volume,
+        )
         measurement = TakeoffMeasurement(
             project_id=data.project_id,
             document_id=data.document_id,
@@ -986,7 +1054,7 @@ class TakeoffService:
             measurement_value=recomputed,
             measurement_unit=data.measurement_unit,
             depth=data.depth,
-            volume=data.volume,
+            volume=recomputed_volume,
             perimeter=data.perimeter,
             count_value=data.count_value,
             scale_pixels_per_unit=data.scale_pixels_per_unit,
@@ -1094,6 +1162,28 @@ class TakeoffService:
             )
             fields["measurement_value"] = recomputed
 
+        # B8 — recompute the volume column (area × depth) server-side
+        # whenever any input that feeds it is touched, so a PATCH cannot be
+        # used to slip an arbitrary client volume into a BOQ quantity. This
+        # runs independently of the measurement_value block above because a
+        # ``depth``/``volume`` patch alone must still re-derive the volume.
+        volume_triggers = {"points", "scale_pixels_per_unit", "type", "depth", "volume"}
+        if volume_triggers & fields.keys():
+            effective_type = fields.get("type") if "type" in fields else item.type
+            effective_points = fields.get("points") if "points" in fields else (item.points or [])
+            effective_scale = (
+                fields.get("scale_pixels_per_unit") if "scale_pixels_per_unit" in fields else item.scale_pixels_per_unit
+            )
+            effective_depth = fields.get("depth") if "depth" in fields else item.depth
+            client_volume = fields.get("volume", item.volume)
+            fields["volume"] = recompute_volume_value(
+                measurement_type=effective_type,
+                points=effective_points,
+                scale_pixels_per_unit=effective_scale,
+                depth=effective_depth,
+                client_volume=client_volume,
+            )
+
         if not fields:
             return item
 
@@ -1150,7 +1240,15 @@ class TakeoffService:
                 ),
                 measurement_unit=data.measurement_unit,
                 depth=data.depth,
-                volume=data.volume,
+                # B8 — recompute the volume column server-side so the
+                # localStorage→server import can't bypass the geometry check.
+                volume=recompute_volume_value(
+                    measurement_type=data.type,
+                    points=data.points,
+                    scale_pixels_per_unit=data.scale_pixels_per_unit,
+                    depth=data.depth,
+                    client_volume=data.volume,
+                ),
                 perimeter=data.perimeter,
                 count_value=data.count_value,
                 scale_pixels_per_unit=data.scale_pixels_per_unit,

@@ -377,6 +377,16 @@ async def create_invoice_from_po(
     po = await service.get_po(po_id)
     await verify_project_access(po.project_id, str(user_id), session)
 
+    # A PO becomes a payable obligation only once it is issued (or further
+    # along). Draft/cancelled POs must not be invoiceable. The UI disables the
+    # button, but the endpoint enforces it too so the guard can't be bypassed
+    # via the API.
+    if po.status not in {"issued", "partially_received", "completed"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Purchase order must be issued before invoicing (current status: {po.status}).",
+        )
+
     # Lazy import finance module
     try:
         from app.modules.finance.models import Invoice, InvoiceLineItem

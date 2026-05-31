@@ -675,12 +675,19 @@ async def _seed_demo_account() -> None:
         # artifact is missing).
         if project_count == 0:
             showcase_done = False
-            showcase_disabled = os.environ.get("SEED_SHOWCASE", "true").lower() in (
-                "false",
-                "0",
-                "no",
+            # The flagship "Residential House" project (installed below) is now
+            # the single, deeply-worked reference showcase: real DDC-converted
+            # IFC/RVT/DWG models, geometry, and a CWICR-priced BIM-linked BOQ.
+            # The older multi-region localized snapshot (shallow auto-generated
+            # projects) and the 5 ORM demo projects are OPT-IN only now — set
+            # SEED_SHOWCASE=1 to restore them. A clean install therefore shows
+            # the flagship (plus a partner-pack project when a pack is active).
+            showcase_enabled = os.environ.get("SEED_SHOWCASE", "false").lower() in (
+                "1",
+                "true",
+                "yes",
             )
-            if not showcase_disabled:
+            if showcase_enabled:
                 db_path = _resolve_sqlite_db_path()
                 if db_path:
                     import asyncio
@@ -700,7 +707,7 @@ async def _seed_demo_account() -> None:
                     if result.get("status") in ("ok", "already") and result.get("projects"):
                         showcase_done = True
 
-            if not showcase_done:
+            if showcase_enabled and not showcase_done:
                 # Fresh-install fallback: cap strictly at 5 (DEFAULT_DEMO_IDS).
                 # Drift-prevention: if the constant ever exceeds five, we abort
                 # so a future PR can't silently re-introduce demo bloat.
@@ -774,6 +781,21 @@ async def _seed_demo_account() -> None:
                     logger.info("Showcase geometry seed: %s", geo_result)
                 except Exception:
                     logger.debug("Showcase geometry seed skipped", exc_info=True)
+
+        # Flagship "Residential House" reference project — a dialect-agnostic
+        # ORM installer (works on the embedded-Postgres default AND on SQLite)
+        # so the full CAD-to-BOQ showcase (real DDC-converted IFC/RVT geometry +
+        # a CWICR-priced, BIM-linked Bill of Quantities) is present out of the
+        # box. Idempotent, so it also backfills existing databases on the next
+        # startup. Runs regardless of project_count so an upgrade picks it up.
+        try:
+            from app.scripts.seed_flagship import install_flagship
+
+            async with async_session_factory() as fl_session:
+                fl_result = await install_flagship(fl_session, demo_user_id)
+                logger.info("Flagship seed: %s", fl_result)
+        except Exception:
+            logger.warning("Flagship seed skipped (non-fatal)", exc_info=True)
     except Exception:
         logger.exception("Failed to seed demo account (non-fatal)")
 

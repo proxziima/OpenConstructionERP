@@ -227,7 +227,7 @@ export default defineConfig({
             },
           },
           {
-            // API reads — NetworkFirst with 8 s timeout, cache only
+            // API reads — NetworkFirst with 30 s timeout, cache only
             // used as the offline fallback for idempotent GETs.  Other
             // verbs bypass the SW (no ``method`` match here means GET
             // by default).
@@ -238,7 +238,7 @@ export default defineConfig({
             handler: 'NetworkFirst',
             options: {
               cacheName: 'oce-api',
-              networkTimeoutSeconds: 8,
+              networkTimeoutSeconds: 30,
               expiration: {
                 maxEntries: 100,
                 maxAgeSeconds: 24 * 60 * 60, // 1 day

@@ -1595,12 +1595,14 @@ export function ProjectDetailPage() {
           ``useGracefulQuery`` — adding them to the rollup would require
           new backend endpoints. */}
       <ProjectWidgetsRollupProvider projectId={projectId!}>
-        {/* Responsive widget grid: 1 col mobile, 2 cols sm, 3 cols lg.
-            Wide widgets (schedule strip, budget burn, photo strip, activity
-            feed, AI insights, recent files) span 2 cells on lg+ because
+        {/* Responsive widget grid: 1 col mobile, 2 cols sm, 3 cols lg,
+            4 cols xl. ``auto-rows-max`` keeps empty/short cards from
+            stretching to match a tall neighbour, so the block stays dense.
+            Wide widgets (schedule strip, budget burn, photo strip) span 2
+            cells on lg+ and the activity feed spans the full row, because
             their content (timeline, history bars, photo carousel, log
             feed) reads poorly cramped into a single column. */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4 items-start">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 mb-4 items-start auto-rows-max">
           {!isWidgetHidden('rfi-inbox') && (
             <RFIInboxWidget projectId={projectId!} />
           )}
@@ -1623,12 +1625,12 @@ export function ProjectDetailPage() {
             <ComplianceSummaryWidget projectId={projectId!} />
           )}
           {!isWidgetHidden('schedule-strip') && (
-            <div className="lg:col-span-2">
+            <div className="lg:col-span-2 xl:col-span-2">
               <ScheduleStripWidget projectId={projectId!} />
             </div>
           )}
           {!isWidgetHidden('budget-burn') && (
-            <div className="lg:col-span-2">
+            <div className="lg:col-span-2 xl:col-span-2">
               <BudgetBurnWidget projectId={projectId!} currency={currency} />
             </div>
           )}
@@ -1636,7 +1638,7 @@ export function ProjectDetailPage() {
             <RecentFilesWidget projectId={projectId!} />
           )}
           {!isWidgetHidden('photo-strip') && (
-            <div className="lg:col-span-2">
+            <div className="lg:col-span-2 xl:col-span-2">
               <PhotoStripWidget projectId={projectId!} />
             </div>
           )}
@@ -1644,7 +1646,7 @@ export function ProjectDetailPage() {
             <AIInsightsWidget projectId={projectId!} />
           )}
           {!isWidgetHidden('activity-feed') && (
-            <div className="sm:col-span-2 lg:col-span-3">
+            <div className="sm:col-span-2 lg:col-span-3 xl:col-span-4">
               <ActivityFeedWidget projectId={projectId!} />
             </div>
           )}

@@ -100,9 +100,60 @@ def boot(data_dir: Path | str) -> bool:
     pgdata = Path(data_dir).expanduser() / "pgdata"
     try:
         pgdata.mkdir(parents=True, exist_ok=True)
-        srv = pgserver.get_server(str(pgdata))
-    except Exception as exc:  # noqa: BLE001
-        logger.error("embedded PostgreSQL failed to start at %s: %r", pgdata, exc)
+    except OSError as exc:
+        logger.error("embedded PostgreSQL data dir unavailable at %s: %r", pgdata, exc)
+        return False
+
+    # pixeltable-pgserver hard-codes a 10s ``pg_ctl start -w`` timeout
+    # (postgres_server.py). After an unclean shutdown (force-kill, crash, power
+    # loss) PostgreSQL replays its WAL on the next boot, and crash recovery
+    # routinely takes longer than 10s -- so the first get_server() raises even
+    # though it already launched the postmaster, which keeps recovering in the
+    # background. We retry: a later attempt finds the now-ready postmaster via
+    # postmaster.pid and simply attaches (no pg_ctl, no timeout), so embedded PG
+    # actually comes up instead of silently falling back to SQLite. The failed
+    # attempt registers a half-built handle in ``PostgresServer._instances``
+    # *before* ensure_postgres_running() runs, so we evict that stale cache entry
+    # between attempts -- otherwise get_server() keeps returning the broken
+    # handle (keyed by the resolved pgdata path).
+    import time as _time
+
+    try:
+        from pixeltable_pgserver.postgres_server import PostgresServer as _PS
+    except Exception:  # noqa: BLE001
+        _PS = None
+    resolved_pgdata = pgdata.expanduser().resolve()
+
+    srv = None
+    last_exc: Exception | None = None
+    attempts = 6
+    for attempt in range(1, attempts + 1):
+        try:
+            srv = pgserver.get_server(str(pgdata))
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            logger.warning(
+                "embedded PostgreSQL not ready (attempt %d/%d); crash recovery "
+                "may be replaying WAL -- retrying: %r",
+                attempt,
+                attempts,
+                exc,
+            )
+            if _PS is not None:
+                try:
+                    _PS._instances.pop(resolved_pgdata, None)
+                except Exception:  # noqa: BLE001
+                    pass
+            if attempt < attempts:
+                _time.sleep(4)
+    if srv is None:
+        logger.error(
+            "embedded PostgreSQL failed to start at %s after %d attempts: %r",
+            pgdata,
+            attempts,
+            last_exc,
+        )
         return False
 
     try:

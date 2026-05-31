@@ -2246,11 +2246,16 @@ async def update_milestone(
     from app.modules.projects.models import ProjectMilestone
     from app.modules.projects.schemas import _MILESTONE_TRANSITIONS
 
+    # Confirm the milestone belongs to this project on EVERY update path
+    # (not just status changes). Owning the project only proves access to
+    # ``project_id``; without this check a non-status update could fetch and
+    # return a foreign project's milestone in the response below.
+    current = await session.get(ProjectMilestone, milestone_id)
+    if current is None or current.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Milestone not found")
+
     # Validate status transition if status is being changed
     if data.status is not None:
-        current = await session.get(ProjectMilestone, milestone_id)
-        if current is None or current.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Milestone not found")
         current_status = current.status
         if data.status != current_status:
             allowed = _MILESTONE_TRANSITIONS.get(current_status, set())

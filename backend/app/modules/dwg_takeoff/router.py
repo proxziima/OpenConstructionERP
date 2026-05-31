@@ -42,6 +42,7 @@ from app.modules.dwg_takeoff.schemas import (
     DwgAnnotationCreate,
     DwgAnnotationResponse,
     DwgAnnotationUpdate,
+    DwgDrawingFromDocument,
     DwgDrawingResponse,
     DwgDrawingScaleUpdate,
     DwgDrawingVersionResponse,
@@ -250,6 +251,58 @@ async def upload_drawing(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to upload drawing — please try again",
+        )
+
+
+@router.post(
+    "/drawings/from-document/",
+    response_model=DwgDrawingResponse,
+    status_code=201,
+)
+async def import_drawing_from_document(
+    data: DwgDrawingFromDocument,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    session: SessionDep = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("dwg_takeoff.create")),
+    service: DwgTakeoffService = Depends(_get_service),
+) -> DwgDrawingResponse:
+    """Materialise a DWG/DXF drawing from an existing project Document.
+
+    Powers the Documents / File Manager "Open in DWG Takeoff" action for a
+    CAD file that lives only as a Document (uploaded via /files or another
+    module) and therefore has no drawing to render — the deep-link used to
+    land on a blank page. Idempotent per document: re-opening returns the
+    same drawing rather than creating a duplicate.
+
+    Access is gated on the *document's* owning project (resolved server-side
+    from the trusted document row), mirroring the IDOR policy on every other
+    write in this module — a 404 is returned for both a missing document and
+    one in a foreign tenant's project.
+    """
+    # Resolve the document first to learn its project, then gate. We import
+    # the documents service lazily to avoid a module-load-order dependency.
+    from app.modules.documents.service import DocumentService
+
+    doc_service = DocumentService(session)
+    document = await doc_service.get_document(data.document_id)
+    await verify_project_access(document.project_id, str(user_id or ""), session)
+
+    try:
+        drawing = await service.import_drawing_from_document(
+            data.document_id,
+            user_id,
+            name=data.name,
+            discipline=data.discipline,
+        )
+        version = await service.get_latest_version(drawing.id)
+        return _drawing_to_response(drawing, version)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Unable to import drawing from document")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to open this document in DWG Takeoff — please try again",
         )
 
 

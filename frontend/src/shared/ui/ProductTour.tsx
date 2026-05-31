@@ -281,10 +281,10 @@ export const BOQ_TOUR_STEPS: ProductTourStep[] = [
  * Walks a new operator through the Accommodation detail page + the
  * list-page CTAs that surround it:
  *   1. Header — name, kind badge, BIM link, Geo CTA.
- *   2. Tabs strip — Rooms / Bookings / Charges / Settings.
+ *   2. Tabs strip — Inventory / Occupancy / Billing / Settings blocks.
  *   3. Rooms grid — colour-coded by status (green/amber/grey/red).
  *   4. Bulk-add — Add rooms generator (prefix + start + count).
- *   5. Bookings — state machine (reserved → checked_in → checked_out).
+ *   5. Occupancy — bookings state machine (reserved → checked_in → checked_out).
  *   6. PropDev bootstrap — clone rooms from a PropDev block in Settings.
  *   7. HR autobook — wrap-up: list-page CTA suggests rooms to new hires.
  */
@@ -296,7 +296,12 @@ export const ACCOMMODATION_TOUR_STEPS: ProductTourStep[] = [
     preferredPosition: 'bottom',
   },
   {
-    selector: '[data-testid="accommodation-detail-tabs"]',
+    // The detail page renders its block strip via <TabBar idPrefix/
+    // testIdPrefix="accommodation-detail">, which emits a per-tab
+    // `accommodation-detail-tab-<id>` testid but no container testid.
+    // Anchor on the first (always-rendered) tab so the spotlight lands
+    // on the strip instead of degrading to a centred modal.
+    selector: '[data-testid="accommodation-detail-tab-inventory"]',
     titleKey: 'tour.accommodation.step.2.title',
     bodyKey: 'tour.accommodation.step.2.body',
     preferredPosition: 'bottom',
@@ -314,7 +319,10 @@ export const ACCOMMODATION_TOUR_STEPS: ProductTourStep[] = [
     preferredPosition: 'bottom',
   },
   {
-    selector: '[data-testid="accommodation-detail-tab-bookings"]',
+    // Bookings live under the Occupancy block (no standalone "bookings"
+    // block tab exists). Anchor on the Occupancy tab trigger, which is
+    // the entry point to the booking state machine.
+    selector: '[data-testid="accommodation-detail-tab-occupancy"]',
     titleKey: 'tour.accommodation.step.5.title',
     bodyKey: 'tour.accommodation.step.5.body',
     preferredPosition: 'bottom',

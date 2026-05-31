@@ -1064,6 +1064,16 @@ export function BIMViewer({
       // on-demand render loop) never fires. WalkMode pings us every
       // frame the camera moved or the cursor is pointer-locked.
       onChange: () => scene.requestRender(),
+      // Pointer-lock lost unexpectedly (alt-tab / browser Esc) while still
+      // in walk mode → gracefully fall back to orbit so the user is never
+      // stranded without a cursor AND without camera control. Mirrors the
+      // explicit toolbar/Esc teardown below.
+      onExitRequest: () => {
+        walkModeHelper.disable();
+        scene.controls.enabled = true;
+        setWalkActive(false);
+        scene.requestRender();
+      },
     });
     const measureToolHelper = new MeasureTool({
       scene: scene.scene,
@@ -3323,6 +3333,23 @@ export function BIMViewer({
                 'Mouse: look · WASD: move · Space/Q: up/down · Shift: sprint · Esc: exit',
             })}
           </span>
+        </div>
+      )}
+
+      {/* Walk-mode crosshair — a thin centred reticle so the user has a
+          fixed aim point while free-looking with the cursor hidden. Only
+          shown while pointer-lock is held; purely decorative (no pointer
+          events, hidden from the a11y tree). */}
+      {walkLocked && (
+        <div
+          className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center"
+          data-testid="bim-walk-crosshair"
+          aria-hidden="true"
+        >
+          <div className="relative h-4 w-4">
+            <span className="absolute left-1/2 top-0 h-4 w-px -translate-x-1/2 bg-white/80 shadow-[0_0_2px_rgba(0,0,0,0.6)]" />
+            <span className="absolute top-1/2 left-0 w-4 h-px -translate-y-1/2 bg-white/80 shadow-[0_0_2px_rgba(0,0,0,0.6)]" />
+          </div>
         </div>
       )}
 

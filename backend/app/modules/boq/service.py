@@ -3219,6 +3219,16 @@ class BOQService:
             if existing_resources != meta["resources"]:
                 triggered_by_resources = True
 
+        # ── FX context (resolved once, reused below for warning detection) ──
+        # Resolving the project FX table here lets the resource→unit_rate
+        # derivation convert each foreign-currency resource into the project
+        # BASE currency BEFORE summing, instead of blending currencies into a
+        # single base-denominated figure. Best-effort: a lookup failure
+        # returns ("", {}) so the derivation degrades to a raw sum rather
+        # than a 500 (mirrors the read/rollup path's tolerance).
+        _fx_base_ccy: str | None = None
+        _fx_map: dict[str, str] | None = None
+
         if (
             triggered_by_resources
             and meta
@@ -3227,16 +3237,15 @@ class BOQService:
             and meta["resources"]
         ):
             resources = meta["resources"]
-            # Sum of per-unit subtotals == position unit_rate (NO division by qty).
-            new_unit_rate = str(
-                round(
-                    sum(
-                        float(r.get("quantity", 0)) * float(r.get("unit_rate", 0))
-                        for r in resources
-                        if isinstance(r, dict)
-                    ),
-                    4,
-                )
+            _fx_base_ccy, _fx_map = await self._resolve_project_fx(position.boq_id)
+            # Sum of per-unit subtotals == position unit_rate (NO division by
+            # qty). Each resource is converted from its own ``currency`` to the
+            # project base via the FX table before summing — never blend
+            # currencies into the stored rate (Issue #88 / #157). Mirrors the
+            # read-side ``_resource_total_in_base`` so the persisted value and
+            # the FX-aware rollup agree.
+            new_unit_rate = _quantize_money_str(
+                _resource_total_in_base(resources, _fx_map, _fx_base_ccy or "")
             )
             fields["unit_rate"] = new_unit_rate
 
@@ -3962,7 +3971,12 @@ class BOQService:
         try:
             meta_now = position.metadata_ if isinstance(position.metadata_, dict) else {}
             resources_now = meta_now.get("resources") if isinstance(meta_now, dict) else None
-            base_ccy, fx_map = await self._resolve_project_fx(position.boq_id)
+            # Reuse the FX table already resolved for the unit_rate derivation
+            # when available, so a single update issues at most one FX lookup.
+            if _fx_map is not None and _fx_base_ccy is not None:
+                base_ccy, fx_map = _fx_base_ccy, _fx_map
+            else:
+                base_ccy, fx_map = await self._resolve_project_fx(position.boq_id)
             fx_warnings = _detect_resource_fx_warnings(
                 resources_now if isinstance(resources_now, list) else None,
                 fx_map,

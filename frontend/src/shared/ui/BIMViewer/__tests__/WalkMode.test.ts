@@ -185,6 +185,30 @@ describe('WalkMode', () => {
     releaseKey('PageDown');
   });
 
+  it('onExitRequest fires when pointer-lock is lost unexpectedly while still enabled', () => {
+    const onExitRequest = vi.fn();
+    const wm2 = new WalkMode({ camera, renderer, domElement: dom, onExitRequest });
+    wm2.enable(); // enable() -> controls.lock() -> 'lock' event => _locked = true
+    expect(wm2.isLocked()).toBe(true);
+    // Simulate the browser dropping the lock (alt-tab) WITHOUT calling
+    // disable(): dispatch the controls' own 'unlock' event.
+    const controls = (wm2 as unknown as { controls: { unlock: () => void } })
+      .controls;
+    controls.unlock();
+    expect(onExitRequest).toHaveBeenCalledTimes(1);
+    expect(wm2.isLocked()).toBe(false);
+    wm2.dispose();
+  });
+
+  it('does NOT fire onExitRequest during an intentional disable()', () => {
+    const onExitRequest = vi.fn();
+    const wm2 = new WalkMode({ camera, renderer, domElement: dom, onExitRequest });
+    wm2.enable();
+    wm2.disable(); // intentional teardown — must not trigger the auto-exit
+    expect(onExitRequest).not.toHaveBeenCalled();
+    wm2.dispose();
+  });
+
   it('Shift acts as a sprint modifier (3× speed) instead of moving down', () => {
     wm.enable();
     wm.setFlightSpeed(2);

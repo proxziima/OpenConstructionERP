@@ -157,24 +157,33 @@ class PurchaseOrderRepository:
     async def next_po_number(self, project_id: uuid.UUID) -> str:
         """Generate the next PO number for a project.
 
-        Uses MAX of existing PO numbers to avoid race conditions where
-        COUNT-based generation would produce duplicates under concurrency.
+        Uses the NUMERIC MAX of the existing PO suffixes (not a lexicographic
+        string MAX) to avoid race conditions where COUNT-based generation would
+        produce duplicates under concurrency, and to keep ordering correct past
+        PO-999 (a string MAX ranks 'PO-999' above 'PO-1000'). The suffix after
+        the ``PO-`` prefix (4th char onward) is cast to an integer before MAX,
+        which is dialect-safe on both embedded PostgreSQL and SQLite.
         """
-        stmt = (
-            select(func.max(PurchaseOrder.po_number))
-            .where(PurchaseOrder.project_id == project_id)
-            .where(PurchaseOrder.po_number.like("PO-%"))
+        from sqlalchemy import Integer as SAInteger
+        from sqlalchemy import cast
+        from sqlalchemy.sql import func as sqlfunc
+
+        stmt = select(
+            sqlfunc.coalesce(
+                sqlfunc.max(
+                    cast(
+                        func.substr(PurchaseOrder.po_number, 4),
+                        SAInteger,
+                    )
+                ),
+                0,
+            )
+        ).where(
+            PurchaseOrder.project_id == project_id,
+            PurchaseOrder.po_number.like("PO-%"),
         )
-        max_number = (await self.session.execute(stmt)).scalar_one_or_none()
-
-        if max_number:
-            try:
-                suffix = int(max_number.rsplit("-", 1)[-1])
-            except (ValueError, IndexError):
-                suffix = 0
-            return f"PO-{suffix + 1:03d}"
-
-        return "PO-001"
+        max_suffix = (await self.session.execute(stmt)).scalar_one()
+        return f"PO-{max_suffix + 1:03d}"
 
 
 class POItemRepository:

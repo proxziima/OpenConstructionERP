@@ -39,6 +39,14 @@ export interface WalkModeArgs {
    *  user sees no motion because OrbitControls (the only other source of
    *  render invalidation) is disabled in walk mode. */
   onChange?: () => void;
+  /** Optional callback fired when pointer-lock is lost UNEXPECTEDLY while
+   *  walk mode is still active (e.g. the user alt-tabbed away and the
+   *  browser released the cursor without the user toggling the tool off).
+   *  The host wires this to its own teardown (disable walk + re-enable
+   *  OrbitControls + clear the toolbar pressed state) so the user is never
+   *  stranded controller-less. NOT fired during an intentional `disable()`
+   *  or `dispose()`. */
+  onExitRequest?: () => void;
 }
 
 const DEFAULT_SPEED = 2; // m/s
@@ -53,10 +61,20 @@ export class WalkMode {
   private domElement: HTMLElement;
   private orbitControls?: { enabled: boolean };
   private onChange?: () => void;
+  private onExitRequest?: () => void;
 
   private controls: PointerLockControls | null = null;
   private _enabled = false;
   private _locked = false;
+  /** True only while `disable()` is tearing the tool down. Used so the
+   *  pointer-lock-loss handler can tell an intentional teardown apart from
+   *  the browser dropping the lock (alt-tab / Esc) while we stay enabled. */
+  private _disabling = false;
+  /** True once the user has actually acquired the lock at least once. We
+   *  only auto-exit on a LOSS that follows a successful lock — never on the
+   *  initial gap between `enable()` and the first lock acquisition (which
+   *  may be deferred to a click when there's no user gesture). */
+  private _everLocked = false;
   private flightSpeed = DEFAULT_SPEED;
   /** Listeners notified when the pointer-lock state changes. Used by the
    *  React shell to render an on-screen "Mouse: look · WASD: move" hint
@@ -82,17 +100,32 @@ export class WalkMode {
   private onKeyUp = (e: KeyboardEvent): void => this.handleKey(e, false);
   private onLock = (): void => {
     this._locked = true;
+    this._everLocked = true;
     for (const l of this.lockListeners) l(true);
   };
   private onUnlock = (): void => {
+    const wasLocked = this._locked;
     this._locked = false;
     for (const l of this.lockListeners) l(false);
+    // Unexpected loss: the lock dropped (alt-tab / browser Esc) while walk
+    // mode is still enabled and we are NOT in the middle of an intentional
+    // teardown. Rather than strand the user with no cursor and no orbit,
+    // ask the host to gracefully exit walk mode. Guarded on `wasLocked` /
+    // `_everLocked` so the initial pre-lock gap never triggers an exit.
+    if (this._enabled && !this._disabling && wasLocked && this._everLocked) {
+      this.onExitRequest?.();
+    }
   };
-  /** Re-acquire pointer lock on a user click after the browser dropped it
-   *  (e.g. user hit Esc but stayed in walk mode, or the initial lock()
-   *  call rejected because it lacked a user gesture). */
+  /** Acquire pointer lock on a user click, but ONLY before the first
+   *  successful lock — i.e. when `enable()`'s immediate `lock()` was
+   *  rejected for lacking a user gesture. After the user has been locked
+   *  once, an unexpected loss auto-exits walk mode (see `onUnlock`), so we
+   *  must NOT silently grab the lock back here — that would fight the exit
+   *  and re-hide the cursor the user just got back. */
   private onClickReacquire = (): void => {
-    if (!this._enabled || this._locked || !this.controls) return;
+    if (!this._enabled || this._locked || this._everLocked || !this.controls) {
+      return;
+    }
     try {
       this.controls.lock();
     } catch {
@@ -106,6 +139,7 @@ export class WalkMode {
     this.domElement = args.domElement;
     this.orbitControls = args.orbitControls;
     this.onChange = args.onChange;
+    this.onExitRequest = args.onExitRequest;
     void this._renderer;
   }
 
@@ -146,6 +180,8 @@ export class WalkMode {
     }
     this.controls = new PointerLockControls(this.camera, this.domElement);
     this._enabled = true;
+    this._everLocked = false;
+    this._disabling = false;
 
     // `capture: true` ensures we intercept arrow/space/etc BEFORE they
     // bubble to any panel/sidebar that listens for them (which used to
@@ -177,6 +213,9 @@ export class WalkMode {
   disable(): void {
     if (!this._enabled) return;
     this._enabled = false;
+    // Mark teardown so the `unlock` event our own `controls.unlock()` below
+    // dispatches is treated as intentional (no auto-exit re-entrancy).
+    this._disabling = true;
     this.stopLoop();
 
     window.removeEventListener('keydown', this.onKeyDown, { capture: true });
@@ -203,6 +242,8 @@ export class WalkMode {
     // Reset key state so a leftover key-up arriving after disable()
     // does not poison the next enable().
     for (const k of Object.keys(this.keys)) this.keys[k] = false;
+    this._disabling = false;
+    this._everLocked = false;
   }
 
   dispose(): void {

@@ -138,7 +138,9 @@ export async function fetchMarkups(
   if (filters?.assignee_id) params.set('assignee_id', filters.assignee_id);
   if (filters?.unassigned) params.set('unassigned', 'true');
   if (filters?.document_id) params.set('document_id', filters.document_id);
-  if (filters?.page) params.set('page', String(filters.page));
+  // Explicit nullish check so page 0 (a valid 0-indexed page) is honoured
+  // rather than dropped by a falsy check, which would over-fetch all pages.
+  if (filters?.page != null) params.set('page', String(filters.page));
   return apiGet<Markup[]>(`/v1/markups/?${params.toString()}`);
 }
 

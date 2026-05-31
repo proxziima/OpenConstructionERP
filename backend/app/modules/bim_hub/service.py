@@ -772,8 +772,8 @@ class BIMHubService:
                 Position.total,
             ).where(Position.id.in_(pos_ids))
             pos_result = await self.session.execute(pos_stmt)
-            for pid, ordinal, desc, qty, unit, urate, total in pos_result.all():
-                pos_info[pid] = (ordinal, desc, qty, unit, urate, total)
+            for pid, ordinal, desc, qty, unit, urate, pos_total in pos_result.all():
+                pos_info[pid] = (ordinal, desc, qty, unit, urate, pos_total)
 
         # ── Step 3: build BOQ brief dicts per element ───────────────────
         boq_links_by_element_id: dict[uuid.UUID, list[dict[str, Any]]] = {}
@@ -783,13 +783,18 @@ class BIMHubService:
                 info = pos_info.get(lnk.boq_position_id)
                 ordinal = info[0] if info else None
                 desc = info[1] if info else None
-                qty = float(info[2]) if info and info[2] is not None else None
+                qty = None
+                if info and info[2] is not None:
+                    try:
+                        qty = float(info[2])
+                    except (TypeError, ValueError):
+                        qty = None  # non-numeric quantity must not 500 the list
                 unit = info[3] if info else None
                 # v3 §10 — money goes through Pydantic as the raw 4dp string
                 # from Position so Decimal() doesn't round-trip through float
                 # and re-introduce binary precision drift.
                 urate = str(info[4]) if info and info[4] is not None and str(info[4]).strip() else None
-                total = str(info[5]) if info and info[5] is not None and str(info[5]).strip() else None
+                brief_total = str(info[5]) if info and info[5] is not None and str(info[5]).strip() else None
                 briefs.append(
                     {
                         "id": lnk.id,
@@ -799,7 +804,7 @@ class BIMHubService:
                         "boq_position_quantity": qty,
                         "boq_position_unit": unit,
                         "boq_position_unit_rate": urate,
-                        "boq_position_total": total,
+                        "boq_position_total": brief_total,
                         "link_type": lnk.link_type,
                         "confidence": lnk.confidence,
                     }

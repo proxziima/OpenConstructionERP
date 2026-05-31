@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.dependencies import CurrentUserId, SessionDep, verify_project_access
+from app.core.permissions import Role, permission_registry
+from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
 from app.modules.formwork.models import (
     FormworkAssignment,
     FormworkScheduleLine,
@@ -39,6 +40,24 @@ from app.modules.formwork.schemas import (
 from app.modules.formwork.service import FormworkService
 
 router = APIRouter(tags=["formwork"])
+
+
+# Register the catalogue-management permission at import time. The module
+# loader imports this router during ``load_all`` (after
+# ``register_core_permissions``), and the registry is never cleared
+# afterwards, so this is the formwork equivalent of the
+# ``register_*_permissions`` hook every other module ships. The catalogue is
+# tenant-wide/shared and mutating a system re-prices every project's
+# formwork assignments (FormworkService.create_assignment / update_assignment
+# recompute ``computed_total`` from ``system.unit_rate``), so writes are
+# gated at MANAGER level rather than left open to every authenticated viewer.
+permission_registry.register_module_permissions(
+    "formwork",
+    {
+        "formwork.read": Role.VIEWER,
+        "formwork.manage_catalogue": Role.MANAGER,
+    },
+)
 
 
 def _system_to_response(item: FormworkSystem) -> FormworkSystemResponse:
@@ -124,6 +143,7 @@ async def list_systems(
     "/systems/",
     response_model=FormworkSystemResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequirePermission("formwork.manage_catalogue"))],
 )
 async def create_system(
     data: FormworkSystemCreate,
@@ -145,7 +165,11 @@ async def get_system(
     return _system_to_response(obj)
 
 
-@router.patch("/systems/{system_id}", response_model=FormworkSystemResponse)
+@router.patch(
+    "/systems/{system_id}",
+    response_model=FormworkSystemResponse,
+    dependencies=[Depends(RequirePermission("formwork.manage_catalogue"))],
+)
 async def update_system(
     system_id: uuid.UUID,
     data: FormworkSystemUpdate,
@@ -162,6 +186,7 @@ async def update_system(
 @router.delete(
     "/systems/{system_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(RequirePermission("formwork.manage_catalogue"))],
 )
 async def delete_system(
     system_id: uuid.UUID,
@@ -179,6 +204,7 @@ async def delete_system(
     "/systems/seed-defaults",
     response_model=FormworkSystemSeedResult,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequirePermission("formwork.manage_catalogue"))],
 )
 async def seed_default_systems(
     session: SessionDep,

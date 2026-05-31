@@ -176,23 +176,20 @@ const UserManagementPage = lazy(() =>
 const AuditLogPage = lazy(() =>
   import('@/features/admin/AuditLogPage').then((m) => ({ default: m.AuditLogPage }))
 );
-// Admin: read-only permissions matrix — roles × modules × permissions
-// (gated server-side by `audit.view`).
-const PermissionsMatrixPage = lazy(() =>
-  import('@/features/admin/PermissionsMatrixPage').then((m) => ({
-    default: m.PermissionsMatrixPage,
-  })),
-);
+// (PermissionsMatrixPage now mounts inside GovernancePage — see below.)
 // Admin: Epic B / B11 — outbound notification webhook targets.
 const WebhookTargetsPage = lazy(() =>
   import('@/features/admin/WebhookTargetsPage').then((m) => ({
     default: m.WebhookTargetsPage,
   })),
 );
-// Admin: Wave-2 Epic A — approval route templates + running instances.
-const ApprovalRoutesPage = lazy(() =>
-  import('@/features/approval-routes').then((m) => ({
-    default: m.ApprovalRoutesPage,
+// (ApprovalRoutesPage now mounts inside GovernancePage — see below.)
+// Governance — one module merging Permissions + Approval Routes +
+// Validation Rules behind /governance with /modules-style top tabs.
+// The three old standalone routes redirect here, preserving the tab.
+const GovernancePage = lazy(() =>
+  import('@/features/governance').then((m) => ({
+    default: m.GovernancePage,
   })),
 );
 const ArchitectureMapPage = lazy(() =>
@@ -297,11 +294,7 @@ const PropertyDevHouseTypeSettingsPage = lazy(() =>
     default: m.HouseTypeSettingsPage,
   }))
 );
-const ValidationRulesSettingsPage = lazy(() =>
-  import('@/features/property-dev').then((m) => ({
-    default: m.ValidationRulesSettingsPage,
-  })),
-);
+// (ValidationRulesSettingsPage now mounts inside GovernancePage — see below.)
 const PropertyDevDocumentTemplatesSettingsPage = lazy(() =>
   import('@/features/property-dev').then((m) => ({
     default: m.DocumentTemplatesSettingsPage,
@@ -860,12 +853,19 @@ export default function App() {
 
         <Route path="/users" element={<P title="User Management"><UserManagementPage /></P>} />
         <Route path="/admin/audit-log" element={<P title="Audit Log"><AuditLogPage /></P>} />
-        <Route path="/admin/permissions" element={<P title="Permissions Matrix"><PermissionsMatrixPage /></P>} />
+        {/* Governance — merged home for Permissions, Approval Routes and
+            Validation Rules (three /modules-style top tabs). The active
+            tab is driven by ?tab=permissions|approvals|validation. */}
+        <Route path="/governance" element={<P title="Governance"><GovernancePage /></P>} />
+        {/* The three standalone pages now live as Governance tabs (mounted
+            inside GovernancePage). Redirect old links — and any internal
+            navigations — to the matching tab so nothing breaks. */}
+        <Route path="/admin/permissions" element={<Navigate to="/governance?tab=permissions" replace />} />
         <Route path="/admin/webhook-targets" element={<P title="Webhook Targets"><WebhookTargetsPage /></P>} />
-        <Route path="/admin/validation-rules" element={<P title="Validation Rules"><ValidationRulesSettingsPage /></P>} />
-        <Route path="/approval-routes" element={<P title="Approval Routes"><ApprovalRoutesPage /></P>} />
-        {/* Legacy redirect — moved 2026-05-23 from PropDev settings to platform-wide admin. */}
-        <Route path="/property-dev/settings/validation-rules" element={<Navigate to="/admin/validation-rules" replace />} />
+        <Route path="/admin/validation-rules" element={<Navigate to="/governance?tab=validation" replace />} />
+        <Route path="/approval-routes" element={<Navigate to="/governance?tab=approvals" replace />} />
+        {/* Legacy redirect — moved 2026-05-23 from PropDev settings; now to Governance. */}
+        <Route path="/property-dev/settings/validation-rules" element={<Navigate to="/governance?tab=validation" replace />} />
         <Route path="/modules" element={<P title="Modules"><ModulesPage /></P>} />
         <Route path="/modules/developer-guide" element={<P title="Module Developer Guide"><ModuleDeveloperGuide /></P>} />
 

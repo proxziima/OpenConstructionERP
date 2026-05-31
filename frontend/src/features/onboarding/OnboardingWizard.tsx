@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, Link } from 'react-router-dom';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import i18n from 'i18next';
 import clsx from 'clsx';
 import {
@@ -29,6 +29,9 @@ import {
   Languages,
   Layers,
   ChevronDown,
+  XCircle,
+  MinusCircle,
+  AlertTriangle,
   type LucideIcon,
 } from 'lucide-react';
 import { Logo, Button, CountryFlag, Badge } from '@/shared/ui';
@@ -52,6 +55,19 @@ import {
   getCountryPack,
   type CountryPack,
 } from './countryPacks';
+import {
+  fetchInstalledPacks,
+  fullInstallPack,
+  packInitials,
+  packCountryCode,
+  packCountryName,
+  partnerPackLogoUrl,
+  FULL_INSTALL_STEPS,
+  type InstalledPartnerPack,
+  type FullInstallStep,
+  type FullInstallStepName,
+  type FullInstallStepStatus,
+} from './partnerPacksApi';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1057,6 +1073,485 @@ function PackStatusGlyph({ state }: { state: PackComponentState }) {
   );
 }
 
+// ── Partner-pack one-click installer (primary "Set up by country") ──────────
+
+/** Lucide icon to render for each ``full-install`` step in the checklist. */
+const FULL_INSTALL_STEP_ICONS: Record<FullInstallStepName, LucideIcon> = {
+  apply_pack: Package,
+  locale: Languages,
+  cost_db: Database,
+  vector_db: Boxes,
+  demos: FolderOpen,
+};
+
+/** Per-step UI state while/after the orchestrated install runs. */
+type ChecklistState = 'pending' | 'running' | FullInstallStepStatus;
+
+/**
+ * A small square logo tile for a partner pack in the picker grid.
+ *
+ * The packs ship *wide wordmark* logos (≈5:1, e.g. 240×50) sized for the
+ * co-brand strip; jammed into this ~40px square they render as an
+ * illegible sliver (the "logos not visible / badly thought out" report).
+ * For a compact square slot the right, always-legible treatment is a
+ * monogram badge: a rounded square (radius lg = 10px) filled with the
+ * pack's own brand colour and the pack's initials in medium-weight white.
+ *
+ * This deliberately replaces the previous ``<img src=/logo/{slug}>`` — the
+ * wordmark endpoint returns 200, but a 5:1 mark in a 40px square is an
+ * unreadable sliver, and on the slow first paint it briefly showed raw alt
+ * text ("…Construction Pack logo"). The monogram is brand-correct, legible,
+ * and can never 404 or flash a broken image. The wide wordmark is still used
+ * where it has room (the co-brand strip + the /modules Partner Packs grid).
+ */
+function PackLogo({ pack }: { pack: InstalledPartnerPack }) {
+  const [imgError, setImgError] = useState(false);
+  // Each pack now ships a real designed emblem (square app-icon: brand-colour
+  // gradient + skyline/building motif), which reads well at this 40px tile.
+  // Fall back to a brand-coloured monogram only if the image can't load.
+  if (pack.branding?.has_logo && !imgError) {
+    return (
+      <img
+        src={partnerPackLogoUrl(pack.slug)}
+        alt={`${pack.partner_name} logo`}
+        className="h-10 w-10 shrink-0 rounded-lg object-contain shadow-sm ring-1 ring-black/5 dark:ring-white/10"
+        onError={() => setImgError(true)}
+      />
+    );
+  }
+  // Brand gradient from the pack's own colours; falls back to the app blue
+  // when a pack omits them. Two-stop gradient gives the flat badge depth.
+  const initials = packInitials(pack);
+  const from = pack.branding?.primary_color || '#2563eb';
+  const to = pack.branding?.accent_color || from;
+  return (
+    <span
+      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10 select-none"
+      style={{ backgroundImage: `linear-gradient(135deg, ${from}, ${to})` }}
+      aria-hidden
+    >
+      <span className="text-sm font-semibold tracking-tight leading-none">{initials}</span>
+    </span>
+  );
+}
+
+/**
+ * Frosted-glass card showing the selected pack's description, clamped to a
+ * few lines with a keyboard-accessible Show more / Show less toggle.
+ *
+ * Matches the app's glass treatment (semi-transparent elevated surface +
+ * ``backdrop-blur`` + hairline border, radius lg). Collapses to 3 lines via
+ * ``line-clamp-3``; the toggle only renders when the text is actually long
+ * enough to be clipped, so short descriptions never grow a dead button.
+ */
+function PackDescriptionCard({ description }: { description: string }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+
+  const text = description?.trim();
+  if (!text) return null;
+
+  // Heuristic: only offer expand/collapse when the copy is long enough to be
+  // clipped by line-clamp-3 (≈ 150+ chars at this width). Avoids a useless
+  // "Show more" on a one-liner.
+  const isLong = text.length > 150;
+
+  return (
+    <div className="mb-4 rounded-lg border border-border-light/70 dark:border-white/10 bg-surface-elevated/70 dark:bg-white/[0.04] backdrop-blur-md p-3 shadow-sm shadow-black/[0.03]">
+      <p
+        className={clsx(
+          'text-xs leading-relaxed text-content-secondary',
+          !expanded && isLong && 'line-clamp-3',
+        )}
+      >
+        {text}
+      </p>
+      {isLong && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="mt-1.5 inline-flex items-center gap-1 text-2xs font-semibold text-oe-blue hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40 rounded"
+        >
+          {expanded
+            ? t('onboarding.pp_show_less', { defaultValue: 'Show less' })
+            : t('onboarding.pp_show_more', { defaultValue: 'Show more' })}
+          <ChevronDown
+            size={12}
+            className={clsx('transition-transform duration-200', expanded && 'rotate-180')}
+            aria-hidden
+          />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Status glyph for one row of the orchestrated-install checklist. */
+function ChecklistGlyph({ state }: { state: ChecklistState }) {
+  if (state === 'running') {
+    return <Loader2 size={16} className="animate-spin text-oe-blue shrink-0" aria-hidden />;
+  }
+  if (state === 'ok') {
+    return <CheckCircle2 size={16} className="text-semantic-success shrink-0" aria-hidden />;
+  }
+  if (state === 'skipped') {
+    return <MinusCircle size={16} className="text-content-quaternary shrink-0" aria-hidden />;
+  }
+  if (state === 'error') {
+    return <XCircle size={16} className="text-semantic-error shrink-0" aria-hidden />;
+  }
+  // pending
+  return (
+    <span className="h-2.5 w-2.5 rounded-full bg-border-light dark:bg-white/15 shrink-0" aria-hidden />
+  );
+}
+
+function PartnerPackInstaller({
+  onActivateLocale,
+}: {
+  /** Activate the pack's locale client-side (shared with the wizard). */
+  onActivateLocale: (locale: string) => void;
+}) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const addToast = useToastStore((s) => s.addToast);
+
+  const {
+    data,
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ['partner-pack', 'installed'],
+    queryFn: fetchInstalledPacks,
+    staleTime: 60_000,
+  });
+
+  const packs: InstalledPartnerPack[] = data?.installed ?? [];
+
+  const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
+  const [installing, setInstalling] = useState(false);
+  // Per-step checklist state, keyed by the five §5 step names.
+  const [stepStates, setStepStates] = useState<Record<FullInstallStepName, ChecklistState>>(
+    () => ({ apply_pack: 'pending', locale: 'pending', cost_db: 'pending', vector_db: 'pending', demos: 'pending' }),
+  );
+  const [installedSlug, setInstalledSlug] = useState<string | null>(null);
+  const [installFailed, setInstallFailed] = useState(false);
+
+  // Default-select the first pack once they load.
+  useEffect(() => {
+    if (!selectedSlug && packs.length > 0) {
+      setSelectedSlug(packs[0]?.slug ?? null);
+    }
+  }, [packs, selectedSlug]);
+
+  const selectedPack = packs.find((p) => p.slug === selectedSlug) ?? null;
+
+  const resetChecklist = useCallback(() => {
+    setStepStates({
+      apply_pack: 'pending',
+      locale: 'pending',
+      cost_db: 'pending',
+      vector_db: 'pending',
+      demos: 'pending',
+    });
+    setInstalledSlug(null);
+    setInstallFailed(false);
+  }, []);
+
+  const handleSelect = useCallback(
+    (slug: string) => {
+      if (installing) return;
+      setSelectedSlug(slug);
+      resetChecklist();
+    },
+    [installing, resetChecklist],
+  );
+
+  const handleInstall = useCallback(
+    async (pack: InstalledPartnerPack) => {
+      if (installing) return;
+      setInstalling(true);
+      setInstallFailed(false);
+      setInstalledSlug(null);
+      // Mark every step "running" up front so the spinner reflects the
+      // single long-running call (the endpoint runs them server-side and
+      // returns the per-step outcome in one response).
+      setStepStates({
+        apply_pack: 'running',
+        locale: 'running',
+        cost_db: 'running',
+        vector_db: 'running',
+        demos: 'running',
+      });
+
+      try {
+        const res = await fullInstallPack(pack.slug, 2);
+        // Map the response steps onto the checklist; any step the server
+        // didn't report (shouldn't happen) stays "skipped" rather than
+        // spinning forever.
+        const next: Record<FullInstallStepName, ChecklistState> = {
+          apply_pack: 'skipped',
+          locale: 'skipped',
+          cost_db: 'skipped',
+          vector_db: 'skipped',
+          demos: 'skipped',
+        };
+        for (const s of res.steps as FullInstallStep[]) {
+          next[s.step] = s.status;
+        }
+        setStepStates(next);
+
+        if (res.ok) {
+          setInstalledSlug(pack.slug);
+          // Activate the pack's locale client-side, then send the user to
+          // their freshly installed country projects.
+          onActivateLocale(pack.default_locale);
+          addToast({
+            type: 'success',
+            title: t('onboarding.pp_install_success', {
+              defaultValue: '{{country}} workspace installed',
+              country: packCountryName(pack),
+            }),
+          });
+          // Brief pause so the green checklist is visible before routing.
+          window.setTimeout(() => {
+            markOnboardingCompleted();
+            navigate('/projects');
+          }, 900);
+        } else {
+          setInstallFailed(true);
+          addToast({
+            type: 'error',
+            title: t('onboarding.pp_install_partial', {
+              defaultValue: 'Some setup steps did not complete',
+            }),
+            message: t('onboarding.pp_install_partial_desc', {
+              defaultValue: 'Review the checklist below. Completed steps are kept.',
+            }),
+          });
+        }
+      } catch (err) {
+        // A thrown error (timeout / network) marks every still-running step
+        // as failed so nothing spins forever.
+        setStepStates((prev) => {
+          const next = { ...prev };
+          for (const k of FULL_INSTALL_STEPS) {
+            if (next[k] === 'running') next[k] = 'error';
+          }
+          return next;
+        });
+        setInstallFailed(true);
+        addToast({
+          type: 'error',
+          title: t('onboarding.pp_install_error', {
+            defaultValue: 'Failed to install the country workspace',
+          }),
+          message: err instanceof Error ? err.message : undefined,
+        });
+      } finally {
+        setInstalling(false);
+      }
+    },
+    [installing, onActivateLocale, addToast, t, navigate],
+  );
+
+  const stepLabel = useCallback(
+    (step: FullInstallStepName): string => {
+      switch (step) {
+        case 'apply_pack':
+          return t('onboarding.pp_step_apply', { defaultValue: 'Apply pack' });
+        case 'locale':
+          return t('onboarding.pp_step_locale', { defaultValue: 'Language' });
+        case 'cost_db':
+          return t('onboarding.pp_step_cost_db', { defaultValue: 'Cost database' });
+        case 'vector_db':
+          return t('onboarding.pp_step_vector_db', { defaultValue: 'Vector database' });
+        case 'demos':
+          return t('onboarding.pp_step_demos', { defaultValue: 'Example projects' });
+      }
+    },
+    [t],
+  );
+
+  const showChecklist = installing || installedSlug !== null || installFailed;
+
+  return (
+    <div className="rounded-2xl bg-surface-elevated shadow-sm shadow-black/[0.04] p-6">
+      <div className="mb-4 flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-oe-blue-subtle text-oe-blue-text">
+          <Globe size={20} />
+        </div>
+        <div className="min-w-0">
+          <h3 className="text-base font-bold text-content-primary">
+            {t('onboarding.country_pack_title', { defaultValue: 'Set up by country' })}
+          </h3>
+          <p className="text-xs text-content-tertiary">
+            {t('onboarding.pp_subtitle', {
+              defaultValue: 'Install a complete localized workspace — language, both cost databases, and example projects — in one click',
+            })}
+          </p>
+        </div>
+      </div>
+
+      {isLoading && (
+        <div className="flex items-center justify-center gap-2 py-8 text-sm text-content-tertiary">
+          <Loader2 size={16} className="animate-spin text-oe-blue" />
+          {t('onboarding.pp_loading', { defaultValue: 'Loading available country packs…' })}
+        </div>
+      )}
+
+      {!isLoading && isError && (
+        <div className="flex items-center gap-2 rounded-xl bg-amber-50 dark:bg-amber-950/20 px-3 py-3 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle size={15} className="shrink-0" />
+          {t('onboarding.pp_load_error', {
+            defaultValue: 'Could not load country packs. You can still pick a country below.',
+          })}
+        </div>
+      )}
+
+      {!isLoading && !isError && packs.length === 0 && (
+        <div className="rounded-xl bg-surface-secondary/50 px-3 py-4 text-center text-xs text-content-tertiary">
+          {t('onboarding.pp_none_installed', {
+            defaultValue: 'No partner packs are installed yet. Pick a country below to set up language and classification.',
+          })}
+        </div>
+      )}
+
+      {/* Pack grid */}
+      {!isLoading && packs.length > 0 && (
+        <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {packs.map((pack) => {
+            const isSelected = selectedSlug === pack.slug;
+            const country = packCountryName(pack);
+            const flag = packCountryCode(pack);
+            return (
+              <button
+                key={pack.slug}
+                type="button"
+                onClick={() => handleSelect(pack.slug)}
+                disabled={installing}
+                aria-pressed={isSelected}
+                className={clsx(
+                  'flex items-start gap-3 rounded-xl p-3 text-left transition-all duration-200',
+                  isSelected
+                    ? 'bg-oe-blue-subtle/50 ring-2 ring-oe-blue/40 shadow-sm'
+                    : 'bg-surface-secondary/70 hover:bg-surface-secondary hover:shadow-sm',
+                  installing && 'opacity-60 cursor-not-allowed',
+                )}
+              >
+                <PackLogo pack={pack} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    {flag && <CountryFlag code={flag} size={16} className="shrink-0" />}
+                    <span className="truncate text-sm font-semibold text-content-primary">
+                      {country}
+                    </span>
+                    {isSelected && <Check size={14} className="ms-auto shrink-0 text-oe-blue" />}
+                  </div>
+                  <div className="truncate text-2xs text-content-tertiary">
+                    {pack.partner_name}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-2xs text-content-quaternary">
+                    <span className="inline-flex items-center gap-1">
+                      <Languages size={11} />
+                      {pack.default_locale.toUpperCase()}
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <Database size={11} />
+                      {pack.default_currency}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Selected pack description — frosted-glass, expandable */}
+      {!isLoading && selectedPack && (
+        <PackDescriptionCard description={selectedPack.description} />
+      )}
+
+      {/* Progress checklist — the five orchestrated steps */}
+      {showChecklist && selectedPack && (
+        <div className="mb-4 rounded-xl bg-surface-secondary/50 p-3">
+          <div className="mb-2 text-xs font-semibold text-content-secondary">
+            {installedSlug
+              ? t('onboarding.pp_checklist_done', { defaultValue: 'Workspace ready' })
+              : installFailed
+                ? t('onboarding.pp_checklist_partial', { defaultValue: 'Setup finished with issues' })
+                : t('onboarding.pp_checklist_running', {
+                    defaultValue: 'Setting up {{country}}…',
+                    country: packCountryName(selectedPack),
+                  })}
+          </div>
+          <ul className="space-y-1.5">
+            {FULL_INSTALL_STEPS.map((step) => {
+              const StepIcon = FULL_INSTALL_STEP_ICONS[step];
+              const state = stepStates[step];
+              return (
+                <li key={step} className="flex items-center gap-2.5 text-xs">
+                  <ChecklistGlyph state={state} />
+                  <StepIcon size={13} className="shrink-0 text-content-quaternary" />
+                  <span
+                    className={clsx(
+                      'flex-1',
+                      state === 'ok'
+                        ? 'text-content-primary'
+                        : state === 'error'
+                          ? 'text-semantic-error'
+                          : 'text-content-secondary',
+                    )}
+                  >
+                    {stepLabel(step)}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
+      {/* Primary one-click install */}
+      {!isLoading && packs.length > 0 && selectedPack && (
+        <Button
+          variant="primary"
+          onClick={() => handleInstall(selectedPack)}
+          loading={installing}
+          disabled={installing || installedSlug === selectedPack.slug}
+          icon={installedSlug === selectedPack.slug ? <CheckCircle2 size={16} /> : <Rocket size={16} />}
+          className="w-full"
+        >
+          {installedSlug === selectedPack.slug
+            ? t('onboarding.pp_installed', {
+                defaultValue: '{{country}} workspace installed',
+                country: packCountryName(selectedPack),
+              })
+            : installing
+              ? t('onboarding.pp_installing', {
+                  defaultValue: 'Installing {{country}} workspace…',
+                  country: packCountryName(selectedPack),
+                })
+              : t('onboarding.pp_install', {
+                  defaultValue: 'Install {{country}} workspace',
+                  country: packCountryName(selectedPack),
+                })}
+        </Button>
+      )}
+
+      {installedSlug && (
+        <p className="mt-2 text-center text-2xs text-content-tertiary">
+          {t('onboarding.pp_redirecting', {
+            defaultValue: 'Opening your example projects…',
+          })}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** A single à-la-carte component row inside the customize panel. */
 function PackComponentRow({
   icon,
@@ -1114,6 +1609,11 @@ function PackComponentRow({
   );
 }
 
+// Secondary "Other countries" picker — for markets without a dedicated
+// partner pack. Generic presets cover language + classification (+ an optional
+// relational cost DB); they intentionally install NO demo projects (the
+// partner-pack installer above owns the fully-worked country demos). See
+// docs/country-pack-oneclick/DESIGN.md §7.
 function CountryPackCard({
   packs,
   selectedPack,
@@ -1121,11 +1621,9 @@ function CountryPackCard({
   onInstallPack,
   onPackLocale,
   onPackDb,
-  onPackDemo,
   installing,
   localeState,
   dbState,
-  demoState,
   customizeOpen,
   onToggleCustomize,
   recordedClassification,
@@ -1136,11 +1634,9 @@ function CountryPackCard({
   onInstallPack: (pack: CountryPack) => void;
   onPackLocale: (pack: CountryPack) => void;
   onPackDb: (pack: CountryPack) => void;
-  onPackDemo: (pack: CountryPack) => void;
   installing: boolean;
   localeState: PackComponentState;
   dbState: PackComponentState;
-  demoState: PackComponentState;
   customizeOpen: boolean;
   onToggleCustomize: () => void;
   recordedClassification: string | null;
@@ -1162,24 +1658,21 @@ function CountryPackCard({
   })();
 
   const packLabel = t(selectedPack.labelKey, { defaultValue: selectedPack.labelDefault });
-  const allDone =
-    localeState === 'done' &&
-    (dbState === 'done') &&
-    (demoState === 'done' || demoState === 'skipped');
+  const allDone = localeState === 'done' && dbState === 'done';
 
   return (
     <div className="rounded-2xl bg-surface-elevated shadow-sm shadow-black/[0.04] p-6">
       <div className="mb-4 flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-oe-blue-subtle text-oe-blue-text">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-surface-secondary text-content-secondary">
           <Globe size={20} />
         </div>
         <div className="min-w-0">
           <h3 className="text-base font-bold text-content-primary">
-            {t('onboarding.country_pack_title', { defaultValue: 'Set up by country' })}
+            {t('onboarding.other_countries_title', { defaultValue: 'Other countries' })}
           </h3>
           <p className="text-xs text-content-tertiary">
-            {t('onboarding.country_pack_subtitle', {
-              defaultValue: 'Install a ready localized workspace in one click',
+            {t('onboarding.other_countries_subtitle', {
+              defaultValue: 'No partner pack yet? Set the language and classification for your market',
             })}
           </p>
         </div>
@@ -1258,13 +1751,6 @@ function CountryPackCard({
             <PackStatusGlyph state={dbState} />
             <Database size={12} className="text-content-quaternary" />
             {t('onboarding.country_pack_db', { defaultValue: 'Cost database' })}
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <PackStatusGlyph state={demoState} />
-            <FolderOpen size={12} className="text-content-quaternary" />
-            {selectedPack.demoId
-              ? t('onboarding.country_pack_demo', { defaultValue: 'Demo project' })
-              : t('onboarding.country_pack_no_demo', { defaultValue: 'No demo' })}
           </span>
           <span className="inline-flex items-center gap-1.5">
             <Layers size={12} className="text-content-quaternary" />
@@ -1347,20 +1833,6 @@ function CountryPackCard({
             onAction={() => onPackDb(selectedPack)}
             disabled={installing}
           />
-          <PackComponentRow
-            icon={<FolderOpen size={15} />}
-            label={t('onboarding.country_pack_demo', { defaultValue: 'Demo project' })}
-            detail={
-              selectedPack.demoId ??
-              t('onboarding.country_pack_no_demo', { defaultValue: 'No demo' })
-            }
-            state={demoState}
-            actionLabel={t('onboarding.install_demo', { defaultValue: 'Install Demo Project' })}
-            doneLabel={t('onboarding.demo_installed', { defaultValue: 'Installed' })}
-            skippedLabel={t('onboarding.country_pack_no_demo', { defaultValue: 'No demo' })}
-            onAction={() => onPackDemo(selectedPack)}
-            disabled={installing || !selectedPack.demoId}
-          />
         </div>
       )}
     </div>
@@ -1412,10 +1884,10 @@ function StepDataSetup({
     const byRegion = COUNTRY_PACKS.find((p) => p.region === suggestedRegion);
     return (byLocale ?? byRegion ?? DEFAULT_COUNTRY_PACK).id;
   });
-  // Per-component status for the active pack.
+  // Per-component status for the active generic preset (locale + cost DB only;
+  // demos are handled exclusively by the partner-pack installer).
   const [packLocaleState, setPackLocaleState] = useState<PackComponentState>('idle');
   const [packDbState, setPackDbState] = useState<PackComponentState>('idle');
-  const [packDemoState, setPackDemoState] = useState<PackComponentState>('idle');
   const [packInstalling, setPackInstalling] = useState(false);
   // À la carte: expandable "Customize / install separately" panel.
   const [packCustomizeOpen, setPackCustomizeOpen] = useState(false);
@@ -1630,24 +2102,10 @@ function StepDataSetup({
     [loadCostDb],
   );
 
-  // À la carte: install just the pack's demo project (if it has one).
-  const handlePackDemo = useCallback(
-    async (pack: CountryPack) => {
-      if (!pack.demoId) {
-        setPackDemoState('skipped');
-        return;
-      }
-      setPackDemoState('running');
-      const ok = await installDemoProject(pack.demoId);
-      setPackDemoState(ok ? 'done' : 'error');
-    },
-    [installDemoProject],
-  );
-
-  // One-click: install the whole pack — locale + cost DB + demo together,
-  // with live per-component progress. Endpoints called:
+  // One-click (generic preset): apply language + classification and load the
+  // relational cost DB. No demo — fully-worked demos are installed only via the
+  // partner-pack installer (DESIGN §7). Endpoint called:
   //   - POST /api/v1/costs/load-cwicr/{region}
-  //   - POST /api/demo/install/{demoId}   (built-in demos only)
   // Locale + classification are applied client-side.
   const handleInstallPack = useCallback(
     async (pack: CountryPack) => {
@@ -1665,28 +2123,18 @@ function StepDataSetup({
       const dbOk = await loadCostDb(pack.region);
       setPackDbState(dbOk ? 'done' : 'error');
 
-      // 3) Demo project (omitted when the pack has none).
-      if (pack.demoId) {
-        setPackDemoState('running');
-        const demoOk = await installDemoProject(pack.demoId);
-        setPackDemoState(demoOk ? 'done' : 'error');
-      } else {
-        setPackDemoState('skipped');
-      }
-
       setPackInstalling(false);
     },
-    [packInstalling, applyLocale, recordClassification, loadCostDb, installDemoProject],
+    [packInstalling, applyLocale, recordClassification, loadCostDb],
   );
 
-  // When the user switches the active pack, reset its per-component status and
-  // align the manual region grid with the pack's region for consistency.
+  // When the user switches the active preset, reset its per-component status and
+  // align the manual region grid with the preset's region for consistency.
   const handleSelectPack = useCallback((pack: CountryPack) => {
     setSelectedPackId(pack.id);
     setSelectedRegion(pack.region);
     setPackLocaleState('idle');
     setPackDbState('idle');
-    setPackDemoState(pack.demoId ? 'idle' : 'skipped');
   }, []);
 
   const testMutation = useMutation({
@@ -1738,16 +2186,16 @@ function StepDataSetup({
   });
 
   const handleContinue = useCallback(async () => {
-    // If the user neither installed the Country Pack nor loaded a DB manually,
-    // fall back to background-loading the active pack's region so a fresh
-    // workspace still gets a sensible cost database. The pack flow already
+    // If the user neither picked a generic preset nor loaded a DB manually,
+    // fall back to background-loading the active preset's region so a fresh
+    // workspace still gets a sensible cost database. The preset flow already
     // owns its own progress, so only kick this off when nothing is in flight.
     const dbUntouched =
       packDbState === 'idle' && packLocaleState === 'idle' && !loadedDb && !loadingDb;
     if (backgroundLoad && dbUntouched && selectedRegion) {
       // Fire and forget — don't await, just start in background.
       handleLoadDb();
-      // Apply the active pack's locale + classification too, so a one-tap
+      // Apply the active preset's locale + classification too, so a one-tap
       // "Continue" still localizes the workspace.
       applyLocale(selectedPack.locale);
       recordClassification(selectedPack.classification);
@@ -1758,12 +2206,8 @@ function StepDataSetup({
           defaultValue: 'You can continue working. We\'ll notify you when it\'s ready.',
         }),
       });
-      // Install the pack's demo in the background as well (built-in demos only).
-      if (selectedPack.demoId) {
-        void installDemoProject(selectedPack.demoId);
-      }
-    } else if (installDemo && !demoInstalled && !installingDemo && packDemoState === 'idle') {
-      // Manual path: install the toggled demo if the pack flow didn't.
+    } else if (installDemo && !demoInstalled && !installingDemo) {
+      // Advanced manual path: install the toggled built-in demo project.
       handleInstallDemo();
     }
     // Save AI key if provided
@@ -1779,11 +2223,9 @@ function StepDataSetup({
     handleLoadDb,
     packDbState,
     packLocaleState,
-    packDemoState,
     selectedPack,
     applyLocale,
     recordClassification,
-    installDemoProject,
     installDemo,
     demoInstalled,
     installingDemo,
@@ -1826,7 +2268,10 @@ function StepDataSetup({
       </p>
 
       <div className="mt-6 w-full max-w-2xl space-y-4">
-        {/* ── Country Pack: the lead, one-click experience ──────────────── */}
+        {/* ── Partner packs: the lead, one-click full-workspace install ──── */}
+        <PartnerPackInstaller onActivateLocale={applyLocale} />
+
+        {/* ── Other countries: generic presets (language + classification) ── */}
         <CountryPackCard
           packs={COUNTRY_PACKS}
           selectedPack={selectedPack}
@@ -1834,11 +2279,9 @@ function StepDataSetup({
           onInstallPack={handleInstallPack}
           onPackLocale={handlePackLocale}
           onPackDb={handlePackDb}
-          onPackDemo={handlePackDemo}
           installing={packInstalling}
           localeState={packLocaleState}
           dbState={packDbState}
-          demoState={packDemoState}
           customizeOpen={packCustomizeOpen}
           onToggleCustomize={() => setPackCustomizeOpen((v) => !v)}
           recordedClassification={recordedClassification}

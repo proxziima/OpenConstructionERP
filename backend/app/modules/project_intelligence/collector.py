@@ -406,7 +406,7 @@ async def _collect_takeoff(
     try:
         doc_rows = (
             await session.execute(
-                text("SELECT file_type, status FROM oe_takeoff_document WHERE project_id = :pid"),
+                text("SELECT content_type, status FROM oe_takeoff_document WHERE project_id = :pid"),
                 {"pid": project_id},
             )
         ).fetchall()

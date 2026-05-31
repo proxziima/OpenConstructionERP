@@ -288,6 +288,18 @@ export const KIND_MODULES: Record<FileKind, ModuleTarget[]> = {
   ],
 };
 
+// DWG/DXF target for a file of the *document* kind. A `document`-kind
+// FileRow carries the **Document** id (file_manager_service maps
+// ``id=str(Document.id)``), NOT a DwgDrawing id — so the bare
+// ``dwg_drawing`` target (which passes the id as ``?drawingId=``) would
+// hand DwgTakeoffPage a document id it can never resolve, leaving the
+// viewer blank. This passes ``?docId=`` instead, which the page imports a
+// drawing from on demand (idempotent backend) and opens immediately.
+const DOC_DWG_TAKEOFF: ModuleTarget = {
+  ...KIND_MODULES.dwg_drawing[0]!,
+  route: (_p, f) => withParam('/dwg-takeoff', 'docId', f),
+};
+
 // Per-extension override for `document` since a PDF, IFC, RVT, DXF and
 // XLSX all live under the `document` kind but route to different
 // modules. Returns the *primary* target — the secondary list still
@@ -299,9 +311,16 @@ const EXT_PRIMARY_OVERRIDE: Record<string, ModuleTarget> = {
   dgn: KIND_MODULES.bim_model[0]!,
   glb: KIND_MODULES.bim_model[0]!,
   gltf: KIND_MODULES.bim_model[0]!,
-  dwg: KIND_MODULES.dwg_drawing[0]!,
-  dxf: KIND_MODULES.dwg_drawing[0]!,
+  dwg: DOC_DWG_TAKEOFF,
+  dxf: DOC_DWG_TAKEOFF,
 };
+
+// Module list for a `document`-kind DWG/DXF file. Only the DWG Takeoff
+// target is offered: it passes ``?docId=`` (the Document id), which the
+// page resolves by importing a drawing on demand. (The raw dwg_drawing
+// Data Explorer target reads neither docId nor drawingId, so it is not
+// surfaced for documents.)
+const DOC_DWG_MODULES: ModuleTarget[] = [DOC_DWG_TAKEOFF];
 
 export function primaryModule(kind: FileKind, extension?: string | null): ModuleTarget {
   if (extension) {
@@ -311,6 +330,13 @@ export function primaryModule(kind: FileKind, extension?: string | null): Module
   return KIND_MODULES[kind][0]!;
 }
 
-export function modulesForKind(kind: FileKind): ModuleTarget[] {
+export function modulesForKind(kind: FileKind, extension?: string | null): ModuleTarget[] {
+  // A `document`-kind DWG/DXF carries the Document id, so its module list
+  // must use the docId-passing variants (see DOC_DWG_MODULES) instead of the
+  // raw drawingId-based dwg_drawing targets that would blank the viewer.
+  if (kind === 'document' && extension) {
+    const ext = extension.toLowerCase().replace(/^\./, '');
+    if (ext === 'dwg' || ext === 'dxf') return DOC_DWG_MODULES;
+  }
   return KIND_MODULES[kind] ?? [];
 }

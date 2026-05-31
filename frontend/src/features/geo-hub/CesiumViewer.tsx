@@ -330,6 +330,22 @@ type CesiumViewerInstance = {
     globe?: {
       pick?: (ray: unknown, scene: unknown) => CesiumCartesian3Like | undefined;
       ellipsoid?: unknown;
+      /**
+       * Sun-driven day/night shading. MUST stay ``false`` for the Geo Hub:
+       * with it on (or with ``viewer.shadows``), the hemisphere facing away
+       * from the sun renders almost black, which reads to users as "the map
+       * is broken / showing only space". A flat, fully-lit base map is the
+       * correct look for a project locator.
+       */
+      enableLighting?: boolean;
+      /**
+       * Fill colour shown on the globe before/while imagery tiles stream in.
+       * A light ocean-blue avoids the jarring black flash on first paint and
+       * a permanently black globe if the imagery provider is ever blocked.
+       */
+      baseColor?: unknown;
+      /** Atmosphere halo around the limb — kept on for a polished look. */
+      showGroundAtmosphere?: boolean;
     };
     /** Current scene projection — one of the ``SceneMode`` enum values. */
     mode?: number;
@@ -442,6 +458,26 @@ async function loadCesium(): Promise<CesiumLike | null> {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[geo_hub] cesium dynamic import failed', err);
+    return null;
+  }
+}
+
+/**
+ * Read ``viewer.scene`` without ever throwing.
+ *
+ * Cesium's ``Viewer.scene`` is a getter that returns ``this._cesiumWidget.scene``.
+ * ``Viewer.destroy()`` sets ``_cesiumWidget = undefined`` synchronously, so any
+ * access AFTER teardown throws "Cannot read properties of undefined (reading
+ * 'scene')" rather than returning undefined — which blows past optional-chain
+ * guards (``v.scene?.x`` still evaluates ``v.scene`` first). A deferred Cesium
+ * event, a rAF, or an effect that runs during the post-navigation teardown
+ * race can all hit a half-destroyed viewer. Route every scene access through
+ * this so the React ErrorBoundary never sees the throw.
+ */
+function safeScene(viewer: CesiumViewerInstance | null | undefined): CesiumViewerInstance['scene'] | null {
+  try {
+    return viewer?.scene ?? null;
+  } catch {
     return null;
   }
 }
@@ -625,8 +661,17 @@ export function CesiumViewer({
             }),
           ),
           baseLayerPicker: false,
-          timeline: mode === 'project' || mode === 'development',
-          animation: mode === 'project' || mode === 'development',
+          // Timeline + animation widgets are disabled in EVERY mode. They
+          // depend on Cesium's ``widgets.css`` (intentionally not bundled —
+          // see the scoped <style> block + the v5.4.1 canvas fix) and add
+          // no value here: ``shouldAnimate`` is false and nothing is clock-
+          // driven. Previously project/development mode switched them on,
+          // which is the one viewer-construction divergence from the proven
+          // global hub; unstyled widget containers also disturbed the flex
+          // layout the canvas relies on. Keeping all modes identical means
+          // the project map boots exactly like the working /geo hub.
+          timeline: false,
+          animation: false,
           shouldAnimate: false,
           fullscreenButton: false,
           geocoder: false,
@@ -649,7 +694,36 @@ export function CesiumViewer({
         viewer = v;
         viewerRef.current = v;
         cesiumRef.current = cesium;
-        v.shadows = true;
+        // ── Base-map appearance ─────────────────────────────────────────
+        //
+        // ROOT CAUSE of the "shows only space" report: with shadows +
+        // sun-driven globe lighting enabled, the hemisphere facing away
+        // from the sun renders almost black, so the OSM imagery is there
+        // but invisible — the user just sees a dark sphere with floating
+        // labels. A project locator wants a flat, evenly-lit map, so we
+        // force lighting + shadows OFF and give the globe a light base
+        // colour that shows immediately while OSM tiles stream in (and
+        // prevents a permanently black globe if imagery is ever blocked).
+        //
+        // We only re-enable shadows in project / development modes where a
+        // real 3D building tileset is on the globe and self-shadowing adds
+        // value; the global hub never has tilesets.
+        try {
+          const globe = safeScene(v)?.globe;
+          if (globe) {
+            globe.enableLighting = false;
+            globe.showGroundAtmosphere = true;
+            if (cesium.Color.fromCssColorString) {
+              // Light ocean blue — matches the OSM water palette so the
+              // un-tiled gaps blend in rather than flashing black.
+              globe.baseColor = cesium.Color.fromCssColorString('#aadaff');
+            }
+          }
+        } catch (lightErr) {
+          // eslint-disable-next-line no-console
+          console.warn('[geo_hub] globe lighting setup failed', lightErr);
+        }
+        v.shadows = mode !== 'global';
         // Surface the runtime to overlay children (raster overlays draw
         // imagery layers directly into the viewer). Best-effort try-catch
         // because a misbehaving callback must never block viewer boot.
@@ -745,11 +819,12 @@ export function CesiumViewer({
                 return;
               }
               // Cesium nulls ``viewer.scene`` synchronously inside
-              // ``viewer.destroy()``. A rAF can still fire after the
-              // viewer was torn down by navigation; without the optional
-              // chain we'd throw "Cannot read properties of undefined
-              // (reading 'pickPosition')" and surface the ErrorBoundary.
-              const picked = viewer.scene?.pickPosition?.(pos);
+              // ``viewer.destroy()`` — and the getter THROWS afterwards
+              // rather than returning undefined, so optional chaining on
+              // ``viewer.scene?.x`` is not enough (it evaluates ``.scene``
+              // first). A rAF can still fire after navigation tore the
+              // viewer down; ``safeScene`` swallows the getter throw.
+              const picked = safeScene(viewer)?.pickPosition?.(pos);
               if (!picked) {
                 if (!lastMouseEmitWasNull) {
                   lastMouseEmitWasNull = true;
@@ -816,7 +891,7 @@ export function CesiumViewer({
                   const onMapClickCb = onMapClickRef.current;
                   if (!onMapClickCb) return;
                   try {
-                    const ellipsoid = viewer.scene?.globe?.ellipsoid;
+                    const ellipsoid = safeScene(viewer)?.globe?.ellipsoid;
                     const cart = viewer.camera?.pickEllipsoid?.(pos, ellipsoid);
                     if (!cart) return;
                     const carto = cesium.Cartographic.fromCartesian(cart);
@@ -834,7 +909,10 @@ export function CesiumViewer({
                 const onPinSelectCb = onPinSelectRef.current;
                 if (!onPinSelectCb) return;
                 try {
-                  const scene = viewer.scene;
+                  // ``viewer.scene`` throws on a destroyed viewer — a click
+                  // can land in the same tick navigation tears it down.
+                  const scene = safeScene(viewer);
+                  if (!scene) return;
                   let picks: CesiumPickedFeatureLike[] = [];
                   if (typeof scene?.drillPick === 'function') {
                     picks = scene.drillPick(pos, 8) ?? [];
@@ -1331,16 +1409,21 @@ export function CesiumViewer({
     const target = sceneMode ?? '3d';
     const targetEnum = _sceneModeEnum(cesium, target);
     try {
-      if (v.scene?.mode === targetEnum) return;
-      if (target === '2d' && typeof v.scene.morphTo2D === 'function') {
-        v.scene.morphTo2D(1.5);
+      // ``v.scene`` is a getter that THROWS on a destroyed viewer, so read
+      // it once through ``safeScene`` rather than dereferencing it five
+      // times below (each of which would throw during a teardown race).
+      const scene = safeScene(v);
+      if (!scene) return;
+      if (scene.mode === targetEnum) return;
+      if (target === '2d' && typeof scene.morphTo2D === 'function') {
+        scene.morphTo2D(1.5);
       } else if (
         target === 'columbus' &&
-        typeof v.scene.morphToColumbusView === 'function'
+        typeof scene.morphToColumbusView === 'function'
       ) {
-        v.scene.morphToColumbusView(1.5);
-      } else if (typeof v.scene.morphTo3D === 'function') {
-        v.scene.morphTo3D(1.5);
+        scene.morphToColumbusView(1.5);
+      } else if (typeof scene.morphTo3D === 'function') {
+        scene.morphTo3D(1.5);
       }
     } catch (err) {
       // eslint-disable-next-line no-console

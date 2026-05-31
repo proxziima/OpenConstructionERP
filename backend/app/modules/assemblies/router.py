@@ -935,7 +935,54 @@ async def apply_template(
     components_out: list[AppliedComponent] = []
     unresolved: list[str] = []
     grand_total = 0.0
-    currency = getattr(project, "currency", "") or ""
+    # Target currency for the rolled-up ``grand_total``. The project currency is
+    # authoritative; when the project has none we lock the target to the first
+    # matched component's currency (below). Money rule: NEVER blend currencies —
+    # each component is converted into the target via the project's ``fx_rates``
+    # before it is summed; a foreign component with no configured FX rate is
+    # kept in its own currency and flagged (non-blocking), mirroring
+    # ``apply_to_boq``'s ``currency_mismatch`` behaviour rather than silently
+    # adding mismatched numbers (the previous behaviour).
+    from app.modules.boq.service import _project_fx_map
+
+    currency = (getattr(project, "currency", "") or "").strip().upper()
+    fx_map = _project_fx_map(project)
+    fx_warnings: set[str] = set()
+
+    def _convert_component(amount: float, src_currency: str) -> float:
+        """Convert ``amount`` from ``src_currency`` into the locked target.
+
+        Foreign→target is multiplication by ``fx_rates[src]`` (units of target
+        per 1 unit of source — the same convention the BOQ rollup uses). When no
+        rate is configured the amount is returned unchanged and a warning is
+        recorded so the un-converted value is visible, never silently blended.
+        """
+        nonlocal currency
+        src = (src_currency or "").strip().upper()
+        if not src:
+            # Match carried no currency — treat as already in the target.
+            return amount
+        if not currency:
+            # Project had no currency: lock the target to this first currency.
+            currency = src
+            return amount
+        if src == currency:
+            return amount
+        raw_rate = fx_map.get(src)
+        if raw_rate:
+            try:
+                rate = float(raw_rate)
+            except (TypeError, ValueError):
+                rate = 0.0
+            if rate > 0.0 and rate == rate and rate not in (float("inf"), float("-inf")):
+                return amount * rate
+        # No usable FX rate — keep the native value and flag the mismatch.
+        fx_warnings.add(
+            f"Component priced in {src} could not be converted to {currency} "
+            f"(no FX rate configured); its value was kept in {src}. "
+            f"Add an FX rate in Project Settings to convert it."
+        )
+        return amount
 
     for raw in template.components or []:
         query = str(raw.get("cost_match_query", "")).strip()
@@ -1002,13 +1049,16 @@ async def apply_template(
                 except (TypeError, ValueError):
                     matched_id = None
             m_currency = getattr(top, "currency", "") or ""
-            if not currency and m_currency:
-                currency = m_currency
         else:
+            m_currency = ""
             unresolved.append(query or description)
 
+        # Native total (in the matched item's currency) — what the component row
+        # displays. The rolled-up ``grand_total`` instead accumulates each
+        # component CONVERTED into the target currency so currencies are never
+        # blended (``_convert_component`` also locks the target on first match).
         total = _component_total(factor, float(data.quantity), unit_rate)
-        grand_total += total
+        grand_total += _convert_component(total, m_currency)
 
         components_out.append(
             AppliedComponent(
@@ -1031,6 +1081,10 @@ async def apply_template(
     warnings: list[str] = []
     if unresolved:
         warnings.append(f"{len(unresolved)} component(s) could not be matched against the project's cost catalogue.")
+    # Surface any currency mismatches the conversion could not resolve, so the
+    # un-converted (kept-native) components are visible rather than silently
+    # blended into the target-currency grand total.
+    warnings.extend(sorted(fx_warnings))
 
     # ``total_rate`` is the per-unit rate (assembly subtotal at quantity=1);
     # ``grand_total`` is the rolled-up total for the requested quantity.

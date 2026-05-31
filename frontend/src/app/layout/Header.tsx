@@ -107,7 +107,7 @@ export function Header({ title, onMenuClick }: HeaderProps) {
           extend into the right action zone, which on a busy header
           eats most of the space from ~830px onward. */}
       <div
-        className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 hidden xl:flex justify-center"
+        className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 hidden lg:flex justify-center"
         aria-hidden={false}
       >
         <div className="pointer-events-auto max-w-[14rem] overflow-hidden">
@@ -658,10 +658,13 @@ function HelpMenu() {
           role="menu"
           className="absolute right-0 top-full mt-1.5 w-60 rounded-xl border border-border-light bg-surface-elevated shadow-lg animate-scale-in py-1 z-40"
         >
-          {/* External resources */}
+          {/* External resources. Documentation points at the repository's
+              docs/ folder on GitHub (the marketing-site docs.html 404s), a
+              real browsable destination on the same repo the GitHub item
+              below links to. */}
           <a
             role="menuitem"
-            href="https://openconstructionerp.com/docs.html"
+            href="https://github.com/datadrivenconstruction/OpenConstructionERP/tree/main/docs"
             target="_blank"
             rel="noopener noreferrer"
             onClick={() => setOpen(false)}
