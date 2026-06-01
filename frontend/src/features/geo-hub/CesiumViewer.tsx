@@ -622,11 +622,14 @@ export function CesiumViewer({
         // token via the Terrain admin page; we surface it through
         // the map-config bundle for them.
         //
-        // Base imagery: OpenStreetMap via UrlTemplateImageryProvider.
-        // Cesium >= 1.107 falls back to Ion-backed Bing Maps when
-        // ``imageryProvider`` is unset, which silently 401s without an
-        // ion token. Explicit OSM keeps /geo-hub working out of the box
-        // with no third-party key per the architecture guide "no vendor lock-in".
+        // Base imagery: keyless CARTO Voyager raster (rendered from OSM
+        // data) via UrlTemplateImageryProvider. Cesium >= 1.107 falls back
+        // to Ion-backed Bing Maps when ``imageryProvider`` is unset, which
+        // silently 401s without an ion token. The raw OpenStreetMap tile
+        // servers are not an option either: their usage policy forbids app
+        // and bulk use and returns an "Access blocked" tile. CARTO is
+        // keyless and already used by the 2D maps, so /geo-hub matches them
+        // out of the box with no vendor lock-in.
         //
         // ``homeButton`` and ``navigationHelpButton`` are disabled here
         // because we don't ship Cesium's ``widgets.css`` in the bundle,
@@ -653,11 +656,17 @@ export function CesiumViewer({
         const initialSceneMode = _sceneModeEnum(cesium, sceneModeRef.current);
         const v = new cesium.Viewer(container, {
           terrainProvider: new cesium.EllipsoidTerrainProvider(),
+          // Tiles are fetched through our own same-origin backend proxy, not
+          // straight from a public CDN. A direct CARTO/OSM URL is routinely
+          // blocked by browser ad/privacy blockers (shows up as a blank blue
+          // globe), and the raw OSM servers refuse app use outright. The proxy
+          // pulls CARTO server-side with a proper User-Agent and caches, so the
+          // map renders in any browser.
           baseLayer: new cesium.ImageryLayer(
             new cesium.UrlTemplateImageryProvider({
-              url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              credit: '© OpenStreetMap contributors',
-              maximumLevel: 19,
+              url: '/api/v1/geo-hub/tiles/{z}/{x}/{y}.png',
+              credit: '© OpenStreetMap contributors © CARTO',
+              maximumLevel: 20,
             }),
           ),
           baseLayerPicker: false,
@@ -1923,7 +1932,7 @@ export function CesiumViewer({
               >
                 Cesium
               </a>{' '}
-              <span className="text-slate-400">— Apache 2.0 · 3D globe runtime</span>
+              <span className="text-slate-400">Apache 2.0 · 3D globe runtime</span>
             </li>
             <li>
               <a
@@ -1934,7 +1943,18 @@ export function CesiumViewer({
               >
                 OpenStreetMap
               </a>{' '}
-              <span className="text-slate-400">— ODbL · base imagery + map data</span>
+              <span className="text-slate-400">ODbL · map data and geocoding</span>
+            </li>
+            <li>
+              <a
+                href="https://carto.com/basemaps/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sky-300 hover:text-sky-200"
+              >
+                CARTO Basemaps
+              </a>{' '}
+              <span className="text-slate-400">CC BY 3.0 · keyless base imagery tiles</span>
             </li>
             <li>
               <a
@@ -1945,7 +1965,7 @@ export function CesiumViewer({
               >
                 Nominatim
               </a>{' '}
-              <span className="text-slate-400">— ODbL · structured geocoding</span>
+              <span className="text-slate-400">ODbL · structured geocoding</span>
             </li>
             <li>
               <a
@@ -1956,7 +1976,7 @@ export function CesiumViewer({
               >
                 Photon
               </a>{' '}
-              <span className="text-slate-400">— Apache 2.0 · autocomplete geocoder</span>
+              <span className="text-slate-400">Apache 2.0 · autocomplete geocoder</span>
             </li>
           </ul>
           <div className="mt-2 text-[10px] text-slate-400">
