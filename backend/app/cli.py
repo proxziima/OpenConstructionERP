@@ -1,21 +1,22 @@
 """‌⁠‍OpenConstructionERP CLI — run the platform from the command line.
 
-Usage:
-    openestimate serve   [--host HOST] [--port PORT] [--data-dir DIR] [--open]
-    openestimate init-db [--data-dir DIR]
-    openestimate doctor  [--host HOST] [--port PORT] [--data-dir DIR]
-    openestimate seed    [--demo] [--data-dir DIR]
-    openestimate version
-
-The happy path for a new user is just three commands:
+The happy path for a new user is two commands:
 
     pip install openconstructionerp
-    openestimate init-db
-    openestimate serve
+    openconstructionerp
 
-`openestimate doctor` runs a set of pre-flight checks and prints OK /
-WARNING / ERROR per check so you can diagnose install problems before
-opening a GitHub issue.
+The bare ``openconstructionerp`` command creates the local database,
+loads the demo data, starts the server and opens the browser. The
+explicit subcommands are still there for advanced use:
+
+    openconstructionerp serve   [--host HOST] [--port PORT] [--data-dir DIR] [--open]
+    openconstructionerp init-db [--data-dir DIR]
+    openconstructionerp doctor  [--host HOST] [--port PORT] [--data-dir DIR]
+    openconstructionerp seed    [--demo] [--data-dir DIR]
+    openconstructionerp version
+
+``openconstructionerp doctor`` runs pre-flight checks and prints OK /
+WARNING / ERROR per check so you can diagnose install problems.
 """
 
 from __future__ import annotations
@@ -121,6 +122,11 @@ def _bold(text: str) -> str:
     return _c(text, "1")
 
 
+def _bar() -> str:
+    """Left accent rule for the info panels (amber bar, ASCII pipe fallback)."""
+    return _amber(_u("┃", "|"))
+
+
 # ── Banner ────────────────────────────────────────────────────────────────
 # "OpenConstructionERP" rendered in the figlet "small" font (82 cols × 5
 # rows). The previous "Standard" font wrapped the 19-character name onto
@@ -149,25 +155,27 @@ def print_startup_banner(
     to open, how to log in, where the data lives, how to stop.
     """
     url = f"http://{host}:{port}"
+    bar = _bar()
+    check = _green(_u("✔", "OK"))
     print()
     print(_amber(_BANNER_ART))
     print()
-    print(f"  {_bold('OpenConstructionERP')} {_dim('v' + version)}")
-    print(f"  {_dim('Open-source construction cost estimation platform')}")
-    print()
-    print(f"  {_bold('Open in your browser:')}  {_amber(url)}")
+    print(f"  {bar}  {check} {_bold('OpenConstructionERP is running')}  {_dim('v' + version)}")
+    print(f"  {bar}")
+    print(f"  {bar}  {_bold('Open in your browser')}")
+    print(f"  {bar}     {_amber(url)}")
     if serve_frontend:
-        print(f"  {_dim('API docs:')}              {url}/api/docs")
+        print(f"  {bar}     {_dim(url + '/api/docs   (API reference)')}")
     else:
-        print(f"  {_dim('API only (frontend not bundled). Docs:')} {url}/api/docs")
-    print()
-    print(f"  {_bold('Demo login')} {_dim('(auto-created on first run)')}")
-    print(f"    {_dim('Email:')}    demo@openconstructionerp.com")
-    print(f"    {_dim('Password:')} DemoPass1234!")
-    print()
-    print(f"  {_dim('Data directory:')} {data_dir}")
-    print(f"  {_dim('Stop the server:')} Ctrl+C")
-    print(f"  {_dim('Need help:')} {DOCS_URL}")
+        print(f"  {bar}     {_dim('frontend not bundled, API only at ' + url + '/api/docs')}")
+    print(f"  {bar}")
+    print(f"  {bar}  {_bold('Log in with the demo account')}")
+    print(f"  {bar}     demo@openconstructionerp.com  {_dim('/')}  DemoPass1234!")
+    print(f"  {bar}")
+    print(f"  {bar}  {_dim('Stop'.ljust(11))} Ctrl+C")
+    print(f"  {bar}  {_dim('Start again'.ljust(11))} {_amber('openconstructionerp')}")
+    print(f"  {bar}  {_dim('Data folder'.ljust(11))} {data_dir}")
+    print(f"  {bar}  {_dim('Need help'.ljust(11))} {DOCS_URL}")
     print()
 
 
@@ -570,7 +578,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
         for c in fatal_checks:
             c.print()
         print()
-        print(_dim("Run 'openestimate doctor' for full diagnostics."))
+        print(_dim("Run 'openconstructionerp doctor' for full diagnostics."))
         print(_dim(f"Troubleshooting: {TROUBLESHOOTING_URL}"))
         sys.exit(1)
 
@@ -636,7 +644,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
         print(_red(_bold("Server failed to start:")) + f" {exc}")
         arrow = _u("\u2192", "->")
         if "address already in use" in str(exc).lower() or "10048" in str(exc):
-            print(_dim(f"  {arrow} Port {args.port} is already in use. Try: openestimate serve --port {args.port + 1}"))
+            print(_dim(f"  {arrow} Port {args.port} is already in use. Try: openconstructionerp serve --port {args.port + 1}"))
         else:
             print(_dim(f"  {arrow} See: {TROUBLESHOOTING_URL}"))
         sys.exit(1)
@@ -644,7 +652,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
         arrow = _u("\u2192", "->")
         print()
         print(_red(_bold("Unexpected startup error:")) + f" {type(exc).__name__}: {exc}")
-        print(_dim(f"  {arrow} Run 'openestimate doctor' to diagnose."))
+        print(_dim(f"  {arrow} Run 'openconstructionerp doctor' to diagnose."))
         print(_dim(f"  {arrow} Report this at: {ISSUES_URL}"))
         sys.exit(1)
 
@@ -776,7 +784,7 @@ def cmd_init_db(args: argparse.Namespace) -> None:
         asyncio.run(_create())
     except Exception as exc:
         print(_red(f"Database initialisation failed: {exc}"))
-        print(_dim(f"  {_u('\u2192', '->')} Run 'openestimate doctor' for diagnostics."))
+        print(_dim(f"  {_u('\u2192', '->')} Run 'openconstructionerp doctor' for diagnostics."))
         sys.exit(1)
 
     total = len(_module_names)
@@ -791,7 +799,7 @@ def cmd_init_db(args: argparse.Namespace) -> None:
         print()
         print(_red("Schema may be incomplete. Reinstall the package or check the error above."))
         print(_dim(f"  {_u('\u2192', '->')} pip install --upgrade --force-reinstall openconstructionerp"))
-        print(_dim(f"  {_u('\u2192', '->')} Then run 'openestimate doctor' to verify."))
+        print(_dim(f"  {_u('\u2192', '->')} Then run 'openconstructionerp doctor' to verify."))
         sys.exit(1)
 
     print()
@@ -800,7 +808,7 @@ def cmd_init_db(args: argparse.Namespace) -> None:
     print(f"  {_dim('Vectors:')}  {data_dir / 'vectors'}")
     print(f"  {_dim('Uploads:')}  {data_dir / 'uploads'}")
     print()
-    print(f"Next: {_amber('openestimate serve')}")
+    print(f"Next: {_amber('openconstructionerp serve')}")
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -823,7 +831,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     if errors:
         print(_red(_bold(f"  {len(errors)} error(s)")) + _dim(f", {len(warns)} warning(s)"))
         print()
-        print(_dim("Fix the errors above, then run 'openestimate serve'."))
+        print(_dim("Fix the errors above, then run 'openconstructionerp serve'."))
         print(_dim(f"Docs: {TROUBLESHOOTING_URL}"))
         sys.exit(1)
     elif warns:
@@ -832,11 +840,11 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             + _dim(_u(" \u2014 non-fatal, server will run", " - non-fatal, server will run"))
         )
         print()
-        print(f"Run: {_amber('openestimate serve')}")
+        print(f"Run: {_amber('openconstructionerp serve')}")
     else:
         print(_green(_bold("  All checks passed.")))
         print()
-        print(f"Run: {_amber('openestimate serve')}")
+        print(f"Run: {_amber('openconstructionerp serve')}")
 
 
 def cmd_version(_args: argparse.Namespace) -> None:
@@ -921,34 +929,46 @@ def _resolve_version() -> str:
 def print_welcome(*, next_command_hint: bool = True) -> None:
     """Fast, zero-network welcome screen.
 
-    Shown on the first bare ``openestimate`` invocation and when the
-    user runs ``openestimate welcome`` explicitly. Tells them what the
-    package does, the three commands that matter, and where to ask
-    questions when something goes wrong.
+    Shown on the first bare ``openconstructionerp`` invocation and when
+    the user runs ``openconstructionerp welcome`` explicitly. Tells them
+    the single command that starts everything, the demo login, and where
+    to ask questions when something goes wrong.
+
+    ``next_command_hint`` distinguishes the two contexts. When True the
+    user typed ``welcome`` and no server is starting, so we tell them the
+    command that does. When False this is the first-run bare command and
+    the server is about to auto-start, so we say so instead.
     """
     version = _resolve_version()
+    bar = _bar()
+    url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
     print()
     print(_amber(_BANNER_ART))
     print()
     print(f"  {_bold('OpenConstructionERP')} {_dim('v' + version)}")
     print(f"  {_dim('Open-source construction cost estimation platform')}")
     print()
-    print(f"  {_bold('Three commands get you running:')}")
-    print(f"    {_amber('openestimate init-db')}   {_dim('# one-time, creates ~/.openestimate/')}")
-    print(f"    {_amber('openestimate serve')}     {_dim('# start the server (Ctrl+C to stop)')}")
-    print(f"    {_amber('openestimate doctor')}    {_dim('# health check if something looks wrong')}")
+    if next_command_hint:
+        print(f"  {bar}  {_bold('To start, run one command')}")
+        print(f"  {bar}     {_amber('openconstructionerp')}")
+        print(f"  {bar}  {_dim('It sets up the database, loads the demo and opens your browser.')}")
+    else:
+        print(f"  {bar}  {_bold('Setting things up for you')}")
+        print(f"  {bar}  {_dim('Creating the database and loading the demo. The server starts in a moment.')}")
+    print(f"  {bar}")
+    print(f"  {bar}  {_bold('Then log in')}")
+    print(f"  {bar}     {_amber(url)}")
+    print(f"  {bar}     demo@openconstructionerp.com  {_dim('/')}  DemoPass1234!")
     print()
-    print(f"  {_bold('After serve, open:')} {_amber('http://127.0.0.1:8080')}")
-    print(f"  {_dim('Demo login:')} demo@openconstructionerp.com / DemoPass1234!")
+    print(f"  {_dim('Advanced:')}  openconstructionerp serve {_dim('|')} init-db {_dim('|')} doctor {_dim('|')} --help")
     print()
-    print(f"  {_bold('Get help or ask questions')}")
-    print(f"    {_dim('Docs:')}      {DOCS_URL}")
-    print(f"    {_dim('GitHub:')}    {GITHUB_URL}")
-    print(f"    {_dim('Issues:')}    {ISSUES_URL}")
-    print(f"    {_dim('Community:')} {COMMUNITY_URL} {_dim('(Telegram)')}")
+    print(f"  {_bold('Help and community')}")
+    print(f"    {_dim('Docs'.ljust(10))} {DOCS_URL}")
+    print(f"    {_dim('GitHub'.ljust(10))} {GITHUB_URL}")
+    print(f"    {_dim('Community'.ljust(10))} {COMMUNITY_URL} {_dim('(Telegram)')}")
     print()
     if next_command_hint:
-        print(f"  {_dim('Tip:')} run {_amber('openestimate')} again and it will start the server for you.")
+        print(f"  {_dim('Tip: run')} {_amber('openconstructionerp')} {_dim('again any time to start the server.')}")
         print()
 
 
@@ -1046,14 +1066,13 @@ def _add_common_server_args(p: argparse.ArgumentParser) -> None:
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
-        prog="openestimate",
+        prog="openconstructionerp",
         description=(
-            "OpenConstructionERP — open-source construction cost estimation platform.\n\n"
-            "Quick start:\n"
-            "    openestimate init-db\n"
-            "    openestimate serve\n"
-            "\n"
-            "Then open http://localhost:8080 — log in with demo@openconstructionerp.com / DemoPass1234!"
+            "OpenConstructionERP, open-source construction cost estimation platform.\n\n"
+            "Quick start, one command does everything:\n"
+            "    openconstructionerp\n\n"
+            "It creates the local database, loads the demo data, starts the server\n"
+            "and opens http://127.0.0.1:8080 (demo@openconstructionerp.com / DemoPass1234!)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1157,12 +1176,12 @@ def main() -> None:
     elif args.command in ("welcome", "hello"):
         cmd_welcome(args)
     elif args.command is None:
-        # Default behaviour for bare ``openestimate`` / ``openconstructionerp``:
-        # * First run (no data dir yet) — show the welcome screen and an
+        # Default behaviour for bare ``openconstructionerp``:
+        # * First run (no data dir yet) - show the welcome screen and an
         #   interactive "open in browser?" prompt so the user sees the URL,
-        #   community link, and three-command quick start BEFORE uvicorn
-        #   eats the terminal for 30 s of startup.
-        # * Subsequent runs — jump straight to serve (they already know).
+        #   demo login and community links BEFORE uvicorn eats the
+        #   terminal for the startup wait.
+        # * Subsequent runs - jump straight to serve (they already know).
         data_dir = Path(DEFAULT_DATA_DIR)
         first_run = not data_dir.exists() or not (data_dir / "openestimate.db").exists()
         args.host = DEFAULT_HOST
