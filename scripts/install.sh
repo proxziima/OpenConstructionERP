@@ -153,7 +153,7 @@ install_pip() {
 
     ok "OpenConstructionERP installed in $OE_INSTALL_DIR/venv"
 
-    # Create convenience script
+    # Convenience launcher.
     cat > "$OE_INSTALL_DIR/start.sh" << 'SCRIPT'
 #!/bin/bash
 source "$(dirname "$0")/venv/bin/activate"
@@ -161,9 +161,30 @@ openconstructionerp serve "$@"
 SCRIPT
     chmod +x "$OE_INSTALL_DIR/start.sh"
 
+    # Put the command on PATH via ~/.local/bin, which is on PATH for most
+    # shells. This makes a bare `openconstructionerp` work in a new terminal.
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$OE_INSTALL_DIR/venv/bin/openconstructionerp" "$HOME/.local/bin/openconstructionerp"
+
     echo ""
-    echo "Run: $OE_INSTALL_DIR/start.sh --port $OE_PORT"
-    echo " Or: source $OE_INSTALL_DIR/venv/bin/activate && openconstructionerp serve"
+    echo "  +-------------------------------------------------+"
+    echo "  |  OpenConstructionERP is installed               |"
+    echo "  +-------------------------------------------------+"
+    echo ""
+    if echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin"; then
+        echo "  Open a new terminal and run:"
+        echo "     openconstructionerp"
+    else
+        echo "  Add ~/.local/bin to your PATH once:"
+        echo "     echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc && source ~/.bashrc"
+        echo "  then run:"
+        echo "     openconstructionerp"
+    fi
+    echo ""
+    echo "  That starts the server and serves http://localhost:$OE_PORT"
+    echo "  Sign in with:  demo@openconstructionerp.com  /  DemoPass1234!"
+    echo ""
+    echo "  Or start it right now:  $OE_INSTALL_DIR/start.sh --open"
 }
 
 create_systemd_service() {

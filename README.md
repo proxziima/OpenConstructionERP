@@ -802,7 +802,7 @@ That's it. The single wheel ships the backend plus the pre-built React frontend.
 
 If something looks off, run `openconstructionerp doctor` (or `python -m app.cli doctor`) for a per-check OK/WARN/ERROR report.
 
-### Alternative 1: One-line installer (auto-detects Docker / uv / pip)
+### Alternative 1: One-line installer (handles PATH for you)
 
 ```bash
 # Linux / macOS
@@ -812,7 +812,7 @@ curl -fsSL https://raw.githubusercontent.com/datadrivenconstruction/OpenConstruc
 irm https://raw.githubusercontent.com/datadrivenconstruction/OpenConstructionERP/main/scripts/install.ps1 | iex
 ```
 
-Picks Docker if installed, otherwise uv, otherwise pip. Runs at **http://localhost:8080**.
+If you would rather not think about PATH at all, use this. It picks Docker if installed, otherwise uv, otherwise a dedicated Python virtual environment, installs OpenConstructionERP there, puts the `openconstructionerp` command on your PATH automatically, and finishes with a short panel showing the URL, the demo login and how to start. It also offers to launch right away. Open a new terminal afterwards and `openconstructionerp` just works. Runs at **http://localhost:8080**.
 
 ### Alternative 2: Docker compose
 
