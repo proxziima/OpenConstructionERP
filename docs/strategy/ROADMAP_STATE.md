@@ -2,6 +2,24 @@
 
 > Single resumable control file. Any agent or fresh session resuming this work reads THIS file first, then `IMPLEMENTATION_PLAN.md`. It records what we are building, the locked decisions, the hard constraints, the alembic chain, the dev environment, and exactly where we are. Keep the Status board and Progress log current as work proceeds.
 
+## CURRENT STATE 2026-06-02 (v6.4.1 checkpoint published; resume here)
+
+Founder directive 2026-06-02: "do everything and run it. First lock in all the latest changes - make commits, publish versions, and write all progress and tasks so an agent can resume after a reboot." Then continue all remaining work autonomously.
+
+PUBLISHED NOW:
+- v6.4.0 = the product release (cost spine, CLI module install, geo auto-framing). GitHub tag v6.4.0 (deref ^{commit}=a810f2f36), PyPI 6.4.0, GitHub Release, VPS live 6.4.0 (alembic v3151). Details in the v6.4.0 block below.
+- v6.4.1 = lint/CI-hygiene checkpoint (THIS commit). GitHub main 37f4d5ef8 / tag v6.4.1 (annotated; deref ^{commit}=37f4d5ef8). Tag pushed so PyPI + GitHub Release CI is running - verify PyPI shows 6.4.1. Contents: backend lint/format only (143a65998 ruff check fix, edcd7a751 ruff format + pin ruff==0.15.14, 37f4d5ef8 version bump). Runtime-identical to 6.4.0, so the VPS does NOT need a redeploy.
+
+WHAT I JUST DID + CONFIRMED: cleared the backend lint job's two ruff gates (red on ruff since before v6.3.0). Proof it works in CI: the Backend CI run on edcd7a751 now exits code 3, which is pytest's internal-error code, so the job got PAST both ruff steps. The demo_pack BOQ data tables are format-excluded (`[tool.ruff.format] exclude=["app/core/demo_packs/*-*.py"]`) so the formatter does not explode their readable one-row-per-line layout. Formatting is AST-preserving (verified), no behaviour change.
+
+OPEN WORK THE FOUNDER AUTHORIZED (do it all now):
+1. Backend CI pytest exit-3 (task #49). PRE-EXISTING, was masked while the job died at the ruff step. LEADING HYPOTHESIS: the full backend `pytest` is memory-heavy - a local non-PG run reached 12 GB RSS at only ~4% after ~62 min; the ~7 GB ubuntu-latest runner OOM-kills it, which surfaces as pytest internal error (exit 3). No xdist in pyproject, so it is single-process accumulation (fixtures likely not disposing: app create_all over 117 modules + per-test engines/embedded-PG). NEXT: `gh auth login`, read run 26792937661 / job 78983162574 (look for OOM / exit 137) to confirm, then fix fixture/memory teardown + any genuinely failing tests, maybe split the job or run lanes separately. Local repro is OS-confounded (Windows vs CI Linux) and the whole-suite local run also shows many F/E - treat as a real signal the suite is not green when run as one process.
+2. Frontend CI "Run tests" (task #49): dependabot bumped vitest 2.1.9 -> 4.1.0 (major) in 5b3ce6fb, unreconciled. Real migration.
+3. Desktop Release (task #27) + Release Please: chronic, separate.
+4. Product: #48 geo b3dm vertical-georeferencing data fix; #45 roadmap features 06/07/08; optional broad user-facing em-dash sweep.
+
+HARD GOTCHAS (still apply): push by explicit SHA refspec `git push origin $(git rev-parse HEAD):refs/heads/main` then verify with `git ls-remote` (a plain push can silently no-op); tags are annotated, compare `vX.Y.Z^{commit}` not the tag-object SHA; `gh` is NOT authenticated; NO em-dashes and NO Claude/AI attribution in any GitHub text; the VPS app runs from a git checkout at a detached release SHA on port 9090 behind Caddy (deploy = checkout the SHA + pip-install any new deps + ship a fresh _frontend_dist by tar-over-ssh + alembic upgrade head + restart openconstructionerp), disk is 98% so do NOT build the frontend on the VPS; money is converted within a project via fx_rates and grouped by ISO currency across projects, never blended, Decimal-as-string; embedded PG has quirks (recovery timeout, kill the supervising bash before the python); do NOT `git reset --hard` / `git stash` / `git clean` (scratch `_*` files and diagnostics live in the tree).
+
 ## LIVE RUN STATUS (2026-06-01, autonomous long run)
 
 Founder directive: work continuously, implement everything so all modules work together on the PostgreSQL foundation, run full E2E (real clicks, screenshots, logic verification) at the end, then publish ONCE as a new version (target v6.4.0). Do not publish intermediate versions.
