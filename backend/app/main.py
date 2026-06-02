@@ -2741,6 +2741,15 @@ def create_app() -> FastAPI:
         except Exception:
             logger.debug("embedding pool shutdown failed", exc_info=True)
 
+        # Close the Geo Hub basemap tile proxy's shared httpx connection
+        # pool so a reload / Ctrl-C doesn't leave kept-alive sockets open.
+        try:
+            from app.modules.geo_hub.router import close_tile_client
+
+            await close_tile_client()
+        except Exception:
+            logger.debug("geo tile client shutdown failed", exc_info=True)
+
         await engine.dispose()
 
         # Stop the embedded PostgreSQL cluster last (after the engine pool is
