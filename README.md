@@ -489,8 +489,6 @@ Anchor every project on a real spherical earth - Cesium 3D Tiles 1.1 with live H
 
 ### <picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme-icons/organization-dark.svg"><img src="docs/readme-icons/organization-light.svg" width="14" align="center" alt=""></picture> Property Development
 
-<img src="docs/screenshots/03-projects.png" alt="Property development projects across regions" width="800" />
-
 End-to-end real-estate developer workflow - from first lead to handover snags to warranty close-out:
 
 ```
@@ -560,7 +558,7 @@ One module for three lodging kinds - worker camps for site crews, rentals for st
 
 ### <picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme-icons/comment-discussion-dark.svg"><img src="docs/readme-icons/comment-discussion-light.svg" width="14" align="center" alt=""></picture> Floating Chat with the ERP Database
 
-<img src="docs/screenshots/07-ai-estimate.png" alt="AI assistant generating a scoped estimate from the ERP data" width="800" />
+<img src="docs/screenshots/feature-erp-chat.jpg" alt="Floating chat answering questions about projects, BOQ and schedule from live ERP data" width="800" />
 
 Bottom-right floating chat on every page - talks to the entire ERP database through 17 typed tools (projects, BOQ items, schedule, validation, risks, CWICR search, BIM elements, full semantic search):
 
@@ -580,7 +578,7 @@ Bottom-right floating chat on every page - talks to the entire ERP database thro
 
 ### <picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme-icons/heart-dark.svg"><img src="docs/readme-icons/heart-light.svg" width="14" align="center" alt=""></picture> Coordination Hub & Clash AI
 
-<img src="docs/screenshots/02-dashboard.png" alt="Coordination dashboard fusing clashes, RFIs and action items" width="800" />
+<img src="docs/screenshots/gallery/clash-detection.jpg" alt="Clash detection across federated BIM models with a clash matrix and BCF export" width="800" />
 
 Multi-disciplinary BIM coordination with AI-assisted issue triage:
 
@@ -611,7 +609,7 @@ Multi-disciplinary BIM coordination with AI-assisted issue triage:
 
 ### <picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme-icons/calendar-dark.svg"><img src="docs/readme-icons/calendar-light.svg" width="14" align="center" alt=""></picture> 4D Scheduling & 5D Cost Model
 
-<img src="docs/screenshots/06-schedule.png" alt="4D schedule Gantt chart with cost tracking" width="800" />
+<img src="docs/screenshots/06-schedule.png" alt="4D Schedule module listing projects with planned durations and linked cost models" width="800" />
 
 Plan your project timeline and track costs over time:
 
