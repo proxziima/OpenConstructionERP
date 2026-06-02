@@ -152,9 +152,7 @@ _REGION_CURRENCY_LEGACY: dict[str, str] = {
 
 def _build_region_currency_map() -> dict[str, str]:
     """Derive ``{region: ISO currency}`` from the v3 catalogue + legacy aliases."""
-    out: dict[str, str] = {
-        cat.region: cat.currency for cat in CWICR_V3_CATALOGUES if cat.currency
-    }
+    out: dict[str, str] = {cat.region: cat.currency for cat in CWICR_V3_CATALOGUES if cat.currency}
     # Legacy/alias keys only fill gaps — never override a canonical v3 entry.
     for region, currency in _REGION_CURRENCY_LEGACY.items():
         out.setdefault(region, currency)

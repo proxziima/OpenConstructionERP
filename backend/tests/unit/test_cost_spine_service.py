@@ -393,10 +393,24 @@ async def test_generate_one_cost_line_per_costed_position(monkeypatch: pytest.Mo
     project_id = uuid.uuid4()
     boq_id = uuid.uuid4()
     positions = [
-        _position(ordinal="01", unit="m3", quantity="10", unit_rate="100", total="1000",
-                  classification={"din276": "330"}, boq_id=boq_id),
-        _position(ordinal="02", unit="m2", quantity="5", unit_rate="40", total="200",
-                  classification={"din276": "330"}, boq_id=boq_id),
+        _position(
+            ordinal="01",
+            unit="m3",
+            quantity="10",
+            unit_rate="100",
+            total="1000",
+            classification={"din276": "330"},
+            boq_id=boq_id,
+        ),
+        _position(
+            ordinal="02",
+            unit="m2",
+            quantity="5",
+            unit_rate="40",
+            total="200",
+            classification={"din276": "330"},
+            boq_id=boq_id,
+        ),
     ]
     service = _make_service(currency="EUR")
     service._cost_service.pick_default_boq = _async_return(boq_id)  # type: ignore[attr-defined]
@@ -425,8 +439,14 @@ async def test_generate_skips_section_headers(monkeypatch: pytest.MonkeyPatch) -
     project_id = uuid.uuid4()
     boq_id = uuid.uuid4()
     positions = [
-        _position(ordinal="01", unit="", total="0", description="SECTION: Earthworks",
-                  classification={"din276": "300"}, boq_id=boq_id),
+        _position(
+            ordinal="01",
+            unit="",
+            total="0",
+            description="SECTION: Earthworks",
+            classification={"din276": "300"},
+            boq_id=boq_id,
+        ),
         _position(ordinal="01.01", unit="m3", total="1000", classification={"din276": "330"}, boq_id=boq_id),
     ]
     service = _make_service(currency="EUR")
@@ -477,10 +497,22 @@ async def test_generate_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     project_id = uuid.uuid4()
     boq_id = uuid.uuid4()
     positions = [
-        _position(ordinal="01", unit="m3", total="1000", classification={"din276": "330"},
-                  reference_code="P-330-1", boq_id=boq_id),
-        _position(ordinal="02", unit="m2", total="500", classification={"din276": "340"},
-                  reference_code="P-340-1", boq_id=boq_id),
+        _position(
+            ordinal="01",
+            unit="m3",
+            total="1000",
+            classification={"din276": "330"},
+            reference_code="P-330-1",
+            boq_id=boq_id,
+        ),
+        _position(
+            ordinal="02",
+            unit="m2",
+            total="500",
+            classification={"din276": "340"},
+            reference_code="P-340-1",
+            boq_id=boq_id,
+        ),
     ]
     service = _make_service(currency="EUR")
     service._cost_service.pick_default_boq = _async_return(boq_id)  # type: ignore[attr-defined]
@@ -522,10 +554,24 @@ async def test_generate_is_idempotent_without_reference_code(monkeypatch: pytest
     project_id = uuid.uuid4()
     boq_id = uuid.uuid4()
     positions = [
-        _position(ordinal="01", unit="m3", quantity="10", unit_rate="100", total="1000",
-                  classification={"din276": "330"}, boq_id=boq_id),  # no reference_code
-        _position(ordinal="02", unit="m2", quantity="5", unit_rate="40", total="200",
-                  classification={"din276": "340"}, boq_id=boq_id),  # no reference_code
+        _position(
+            ordinal="01",
+            unit="m3",
+            quantity="10",
+            unit_rate="100",
+            total="1000",
+            classification={"din276": "330"},
+            boq_id=boq_id,
+        ),  # no reference_code
+        _position(
+            ordinal="02",
+            unit="m2",
+            quantity="5",
+            unit_rate="40",
+            total="200",
+            classification={"din276": "340"},
+            boq_id=boq_id,
+        ),  # no reference_code
     ]
     assert all(p.reference_code is None for p in positions)
     service = _make_service(currency="EUR")

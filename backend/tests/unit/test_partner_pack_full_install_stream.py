@@ -90,9 +90,7 @@ def _fake_loader_factory(session_factory: async_sessionmaker[AsyncSession]):
     async def _fake_load_cwicr_region(db_id: str, _session: AsyncSession) -> dict[str, Any]:
         async with session_factory() as s:
             existing = (
-                await s.execute(
-                    select(func.count()).select_from(CostItem).where(CostItem.region == db_id)
-                )
+                await s.execute(select(func.count()).select_from(CostItem).where(CostItem.region == db_id))
             ).scalar_one()
             if existing > 0:
                 return {
@@ -104,8 +102,15 @@ def _fake_loader_factory(session_factory: async_sessionmaker[AsyncSession]):
                     "status": "already_loaded",
                 }
             components = [
-                {"name": f"res-{j}", "code": f"R{j}", "unit": "h", "quantity": 1.0,
-                 "unit_rate": 10.0, "cost": 10.0, "type": "labor"}
+                {
+                    "name": f"res-{j}",
+                    "code": f"R{j}",
+                    "unit": "h",
+                    "quantity": 1.0,
+                    "unit_rate": 10.0,
+                    "cost": 10.0,
+                    "type": "labor",
+                }
                 for j in range(_RESOURCES_PER_ITEM)
             ]
             for i in range(_FAKE_ITEMS):
@@ -148,6 +153,7 @@ def _patch_orchestrator(
         "app.core.partner_pack.discovery.get_pack_by_slug",
         lambda slug: _make_manifest() if slug == _PACK_SLUG else None,
     )
+
     # Step 1 (apply_pack) -> succeed without touching modules/branding/state.
     async def _fake_apply(*_a: Any, **_k: Any) -> fi.StepResult:
         return fi.StepResult(step="apply_pack", status="ok", detail={"modules_enabled": 0})
@@ -159,6 +165,7 @@ def _patch_orchestrator(
         _fake_loader_factory(session_factory),
     )
     monkeypatch.setattr("app.database.async_session_factory", session_factory)
+
     # Step 4 (vector_db) -> graceful "vector backend unavailable" (skipped).
     async def _fake_vectorize(*_a: Any, **_k: Any):
         from fastapi.responses import JSONResponse
@@ -166,6 +173,7 @@ def _patch_orchestrator(
         return JSONResponse(content={"message": "vector backend unavailable"}, status_code=503)
 
     monkeypatch.setattr("app.modules.costs.router.vectorize_region", _fake_vectorize)
+
     # Step 5 (demos) -> install the requested ids without real templates.
     async def _fake_install_demo(_session: AsyncSession, demo_id: str) -> dict[str, Any]:
         return {"project_id": str(uuid.uuid4()), "project_name": demo_id, "already_installed": False}
@@ -182,9 +190,9 @@ def _parse_events(frames: list[str]) -> list[tuple[str, dict[str, Any]]]:
         data = ""
         for line in frame.splitlines():
             if line.startswith("event:"):
-                event = line[len("event:"):].strip()
+                event = line[len("event:") :].strip()
             elif line.startswith("data:"):
-                data = line[len("data:"):].strip()
+                data = line[len("data:") :].strip()
         if event:
             out.append((event, json.loads(data) if data else {}))
     return out
@@ -242,9 +250,7 @@ async def test_stream_installs_catalog_and_resources(
     # The rows are actually in the relational store.
     async with session_factory() as s:
         item_count = (
-            await s.execute(
-                select(func.count()).select_from(CostItem).where(CostItem.region == _RESOLVED_DB_ID)
-            )
+            await s.execute(select(func.count()).select_from(CostItem).where(CostItem.region == _RESOLVED_DB_ID))
         ).scalar_one()
         rows = (await s.execute(select(CostItem).where(CostItem.region == _RESOLVED_DB_ID))).scalars().all()
     assert item_count == _FAKE_ITEMS
@@ -263,9 +269,7 @@ async def test_stream_is_idempotent_on_second_activation(
 ) -> None:
     """A second activation imports no new rows (no duplicates) and still completes."""
     _patch_orchestrator(monkeypatch, session_factory, demos_installed=["demo-de-1"])
-    req = FullInstallRequest(
-        slug=_PACK_SLUG, set_locale=True, install_cost_db=True, vectorize=True, demo_count=1
-    )
+    req = FullInstallRequest(slug=_PACK_SLUG, set_locale=True, install_cost_db=True, vectorize=True, demo_count=1)
 
     first = await _run_stream(req)
     second = await _run_stream(req)
@@ -273,9 +277,7 @@ async def test_stream_is_idempotent_on_second_activation(
     async def _count() -> int:
         async with session_factory() as s:
             return (
-                await s.execute(
-                    select(func.count()).select_from(CostItem).where(CostItem.region == _RESOLVED_DB_ID)
-                )
+                await s.execute(select(func.count()).select_from(CostItem).where(CostItem.region == _RESOLVED_DB_ID))
             ).scalar_one()
 
     # Exactly one population's worth of rows after running twice.

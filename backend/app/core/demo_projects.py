@@ -2182,14 +2182,8 @@ def _catalog_entry_from_template(template: DemoTemplate) -> dict:
     # project_metadata (unlike the hand-authored built-in rows), so derive the
     # real headline figure from the priced section items. Honour an explicit
     # metadata override if a pack ever supplies one; otherwise compute it.
-    meta_budget = (
-        str(template.project_metadata.get("budget", "")).strip()
-        if template.project_metadata
-        else ""
-    )
-    budget = meta_budget or _compact_budget_label(
-        _template_total(template), template.currency
-    )
+    meta_budget = str(template.project_metadata.get("budget", "")).strip() if template.project_metadata else ""
+    budget = meta_budget or _compact_budget_label(_template_total(template), template.currency)
     return {
         "demo_id": template.demo_id,
         "name": template.project_name,

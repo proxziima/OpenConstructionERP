@@ -90,7 +90,6 @@ class BOQRepository:
 
         from decimal import Decimal
 
-
         # Step 1: sum direct cost (position totals) per BOQ
         pos_stmt = (
             select(
@@ -276,11 +275,7 @@ class PositionRepository:
             boq_id: Owning BOQ — positions not in this BOQ are not affected.
         """
         for index, pid in enumerate(position_ids):
-            stmt = (
-                update(Position)
-                .where(Position.id == pid, Position.boq_id == boq_id)
-                .values(sort_order=index)
-            )
+            stmt = update(Position).where(Position.id == pid, Position.boq_id == boq_id).values(sort_order=index)
             await self.session.execute(stmt)
 
     async def get_max_sort_order(self, boq_id: uuid.UUID) -> int:

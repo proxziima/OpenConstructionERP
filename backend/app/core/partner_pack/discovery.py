@@ -51,10 +51,7 @@ def _coerce_manifest(value: object) -> PartnerPackManifest:
         return value
     if isinstance(value, dict):
         return PartnerPackManifest(**value)
-    raise TypeError(
-        f"Partner pack entry-point must point at a PartnerPackManifest or dict, "
-        f"got {type(value).__name__}"
-    )
+    raise TypeError(f"Partner pack entry-point must point at a PartnerPackManifest or dict, got {type(value).__name__}")
 
 
 def _load_one(ep: EntryPoint) -> PartnerPackManifest | None:
@@ -287,9 +284,7 @@ def _fs_package_dir_for_slug(slug: str) -> Path | None:
         if not src_dir.is_dir():
             return []
         return [
-            d
-            for d in sorted(src_dir.glob("openconstructionerp_*"))
-            if d.is_dir() and not d.name.endswith(".egg-info")
+            d for d in sorted(src_dir.glob("openconstructionerp_*")) if d.is_dir() and not d.name.endswith(".egg-info")
         ]
 
     # Fast path: the pack directory name matches the slug (repo convention).

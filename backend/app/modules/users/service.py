@@ -433,9 +433,7 @@ class UserService:
             # PostgreSQL it was a stray connection that could outlive the
             # request. In-session it is one indexed primary-key UPDATE, so login
             # latency is unaffected on either backend.
-            await self.session.execute(
-                update(User).where(User.id == user_id).values(last_login_at=now)
-            )
+            await self.session.execute(update(User).where(User.id == user_id).values(last_login_at=now))
 
         access_token = create_access_token(user, self.settings)
         refresh_token = create_refresh_token(user, self.settings)
@@ -506,9 +504,7 @@ class UserService:
         # connection that raced the caller's next request and locked SQLite;
         # in-session it commits with the login and never contends.
         if not skip_write:
-            await self.session.execute(
-                update(User).where(User.id == user_id).values(last_login_at=now)
-            )
+            await self.session.execute(update(User).where(User.id == user_id).values(last_login_at=now))
 
         access_token = create_access_token(user, self.settings)
         refresh_token = create_refresh_token(user, self.settings)

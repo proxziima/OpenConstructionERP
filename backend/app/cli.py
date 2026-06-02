@@ -644,7 +644,11 @@ def cmd_serve(args: argparse.Namespace) -> None:
         print(_red(_bold("Server failed to start:")) + f" {exc}")
         arrow = _u("\u2192", "->")
         if "address already in use" in str(exc).lower() or "10048" in str(exc):
-            print(_dim(f"  {arrow} Port {args.port} is already in use. Try: openconstructionerp serve --port {args.port + 1}"))
+            print(
+                _dim(
+                    f"  {arrow} Port {args.port} is already in use. Try: openconstructionerp serve --port {args.port + 1}"
+                )
+            )
         else:
             print(_dim(f"  {arrow} See: {TROUBLESHOOTING_URL}"))
         sys.exit(1)
@@ -1092,13 +1096,7 @@ def _read_manifest_name(source: str) -> str | None:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        callee = (
-            func.id
-            if isinstance(func, ast.Name)
-            else func.attr
-            if isinstance(func, ast.Attribute)
-            else None
-        )
+        callee = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
         if callee != "ModuleManifest":
             continue
         for kw in node.keywords:
@@ -1200,8 +1198,7 @@ def cmd_module_install(args: argparse.Namespace) -> None:
         if manifest_arcname not in names:
             print(
                 _red(
-                    f"No manifest found at {manifest_arcname!r}. "
-                    "A module package must contain a top-level manifest.py."
+                    f"No manifest found at {manifest_arcname!r}. A module package must contain a top-level manifest.py."
                 )
             )
             sys.exit(1)
@@ -1216,10 +1213,7 @@ def cmd_module_install(args: argparse.Namespace) -> None:
         module_name = _read_manifest_name(manifest_src)
         if not module_name:
             print(
-                _red(
-                    "Could not determine the module name from manifest.py "
-                    "(expected ModuleManifest(name=\"...\", ...))."
-                )
+                _red('Could not determine the module name from manifest.py (expected ModuleManifest(name="...", ...)).')
             )
             sys.exit(1)
 
@@ -1231,8 +1225,7 @@ def cmd_module_install(args: argparse.Namespace) -> None:
         if target.exists():
             if not args.force:
                 print(
-                    _red(f"Module '{module_name}' already installed at {target}.")
-                    + _dim(" Use --force to overwrite.")
+                    _red(f"Module '{module_name}' already installed at {target}.") + _dim(" Use --force to overwrite.")
                 )
                 sys.exit(1)
             import shutil

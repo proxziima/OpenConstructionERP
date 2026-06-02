@@ -523,10 +523,7 @@ async def full_install_stream(
         {
             "slug": slug,
             "total": total,
-            "steps": [
-                {"step": s, "label_key": labels[s][0], "label": labels[s][1]}
-                for s in active_steps
-            ],
+            "steps": [{"step": s, "label_key": labels[s][0], "label": labels[s][1]} for s in active_steps],
         },
     )
 

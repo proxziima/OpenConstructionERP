@@ -423,6 +423,4 @@ async def test_circuit_open_skips_delivery_for_high_failure_count(session) -> No
             await _on_dispatch_webhook(event)
 
     # Circuit is open: no HTTP call should have been made to the dead endpoint.
-    assert posted_to == [], (
-        f"Expected no delivery for circuit-open target but got posts to: {posted_to}"
-    )
+    assert posted_to == [], f"Expected no delivery for circuit-open target but got posts to: {posted_to}"

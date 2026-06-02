@@ -33,8 +33,25 @@ from app.core.demo_projects import (
 # Brazil "vb" (verba / lump sum), "un" (unidade), "mes" (month); India "MT"
 # (metric tonne), "rm" (running metre); Canada "suite".
 _ALLOWED_UNITS = {
-    "m2", "m3", "m", "t", "kg", "pcs", "lsum", "hour", "day", "month", "each", "ha", "l",
-    "MT", "rm", "un", "vb", "mes", "suite",
+    "m2",
+    "m3",
+    "m",
+    "t",
+    "kg",
+    "pcs",
+    "lsum",
+    "hour",
+    "day",
+    "month",
+    "each",
+    "ha",
+    "l",
+    "MT",
+    "rm",
+    "un",
+    "vb",
+    "mes",
+    "suite",
 }
 
 _CATALOG_BY_ID = {c["demo_id"]: c for c in DEMO_CATALOG}

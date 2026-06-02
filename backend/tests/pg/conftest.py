@@ -22,6 +22,7 @@ Design notes
   (so the app's own ``commit()`` calls become savepoint releases) and rolls the
   whole thing back afterwards. Fast, and the shared schema is never mutated.
 """
+
 from __future__ import annotations
 
 import importlib

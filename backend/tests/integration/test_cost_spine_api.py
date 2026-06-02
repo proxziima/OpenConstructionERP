@@ -196,14 +196,26 @@ async def scenario(http_client):
 
     # Two priced positions + one section header (empty unit, skipped).
     pos_a = await _add_position(
-        http_client, a_headers, boq_id,
-        ordinal="01.001", description="RC wall C30/37", unit="m3",
-        quantity=10.0, unit_rate=100.0, classification={"din276": "330"},
+        http_client,
+        a_headers,
+        boq_id,
+        ordinal="01.001",
+        description="RC wall C30/37",
+        unit="m3",
+        quantity=10.0,
+        unit_rate=100.0,
+        classification={"din276": "330"},
     )
     pos_b = await _add_position(
-        http_client, a_headers, boq_id,
-        ordinal="01.002", description="Formwork", unit="m2",
-        quantity=5.0, unit_rate=40.0, classification={"din276": "330"},
+        http_client,
+        a_headers,
+        boq_id,
+        ordinal="01.002",
+        description="Formwork",
+        unit="m2",
+        quantity=5.0,
+        unit_rate=40.0,
+        classification={"din276": "330"},
     )
 
     return {
@@ -257,18 +269,14 @@ async def test_generate_budget_then_spine_links_everything(http_client, scenario
     assert result["budget_lines_linked"] == 2, result
 
     # ── 3. Accounts endpoint returns the one control account ──
-    accounts_resp = await client.get(
-        f"{API}/costmodel/projects/{project_id}/spine/accounts/", headers=headers
-    )
+    accounts_resp = await client.get(f"{API}/costmodel/projects/{project_id}/spine/accounts/", headers=headers)
     assert accounts_resp.status_code == 200, accounts_resp.text
     accounts = accounts_resp.json()
     assert len(accounts) == 1
     assert accounts[0]["code"] == "330"
 
     # ── 4. Cost lines endpoint returns the two lines ──
-    lines_resp = await client.get(
-        f"{API}/costmodel/projects/{project_id}/spine/lines/", headers=headers
-    )
+    lines_resp = await client.get(f"{API}/costmodel/projects/{project_id}/spine/lines/", headers=headers)
     assert lines_resp.status_code == 200, lines_resp.text
     lines = lines_resp.json()
     assert len(lines) == 2
@@ -286,8 +294,8 @@ async def test_generate_budget_then_spine_links_everything(http_client, scenario
         from sqlalchemy import select
 
         rows = (
-            await s.execute(select(BudgetLine).where(BudgetLine.project_id == uuid.UUID(project_id)))
-        ).scalars().all()
+            (await s.execute(select(BudgetLine).where(BudgetLine.project_id == uuid.UUID(project_id)))).scalars().all()
+        )
         assert len(rows) == 2
         assert all(bl.cost_line_id is not None for bl in rows), "budget lines not linked to cost lines"
         assert all(bl.control_account_id is not None for bl in rows), "budget lines missing control account"

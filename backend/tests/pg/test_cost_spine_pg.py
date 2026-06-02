@@ -253,12 +253,20 @@ async def test_contract_value_by_cost_line_fx_converted(pg_session) -> None:
     await pg_session.flush()
 
     c_eur = Contract(
-        code=f"C-E-{uuid.uuid4().hex[:5]}", title="EUR", project_id=project_id,
-        total_value=Decimal("0"), currency="EUR", status="active",
+        code=f"C-E-{uuid.uuid4().hex[:5]}",
+        title="EUR",
+        project_id=project_id,
+        total_value=Decimal("0"),
+        currency="EUR",
+        status="active",
     )
     c_usd = Contract(
-        code=f"C-U-{uuid.uuid4().hex[:5]}", title="USD", project_id=project_id,
-        total_value=Decimal("0"), currency="USD", status="active",
+        code=f"C-U-{uuid.uuid4().hex[:5]}",
+        title="USD",
+        project_id=project_id,
+        total_value=Decimal("0"),
+        currency="USD",
+        status="active",
     )
     pg_session.add_all([c_eur, c_usd])
     await pg_session.flush()
@@ -266,13 +274,23 @@ async def test_contract_value_by_cost_line_fx_converted(pg_session) -> None:
     pg_session.add_all(
         [
             ContractLine(
-                contract_id=c_eur.id, code="L1", description="x", unit="m3",
-                quantity=Decimal("1"), unit_rate=Decimal("500"), total_value=Decimal("500"),
+                contract_id=c_eur.id,
+                code="L1",
+                description="x",
+                unit="m3",
+                quantity=Decimal("1"),
+                unit_rate=Decimal("500"),
+                total_value=Decimal("500"),
                 cost_line_id=line.id,
             ),
             ContractLine(
-                contract_id=c_usd.id, code="L2", description="y", unit="m3",
-                quantity=Decimal("1"), unit_rate=Decimal("1000"), total_value=Decimal("1000"),  # ->900 EUR
+                contract_id=c_usd.id,
+                code="L2",
+                description="y",
+                unit="m3",
+                quantity=Decimal("1"),
+                unit_rate=Decimal("1000"),
+                total_value=Decimal("1000"),  # ->900 EUR
                 cost_line_id=line.id,
             ),
         ]
@@ -307,25 +325,40 @@ async def test_claimed_to_date_by_cost_line_takes_latest_cumulative(pg_session) 
     await pg_session.flush()
 
     contract = Contract(
-        code=f"C-CLAIM-{uuid.uuid4().hex[:5]}", title="claims", project_id=project_id,
-        total_value=Decimal("0"), currency="USD", status="active",
+        code=f"C-CLAIM-{uuid.uuid4().hex[:5]}",
+        title="claims",
+        project_id=project_id,
+        total_value=Decimal("0"),
+        currency="USD",
+        status="active",
     )
     pg_session.add(contract)
     await pg_session.flush()
 
     cl = ContractLine(
-        contract_id=contract.id, code="L1", description="x", unit="m3",
-        quantity=Decimal("1"), unit_rate=Decimal("2000"), total_value=Decimal("2000"),
+        contract_id=contract.id,
+        code="L1",
+        description="x",
+        unit="m3",
+        quantity=Decimal("1"),
+        unit_rate=Decimal("2000"),
+        total_value=Decimal("2000"),
         cost_line_id=line.id,
     )
     pg_session.add(cl)
     await pg_session.flush()
 
     claim1 = ProgressClaim(
-        contract_id=contract.id, claim_number="1", status="approved", currency="USD",
+        contract_id=contract.id,
+        claim_number="1",
+        status="approved",
+        currency="USD",
     )
     claim2 = ProgressClaim(
-        contract_id=contract.id, claim_number="2", status="approved", currency="USD",
+        contract_id=contract.id,
+        claim_number="2",
+        status="approved",
+        currency="USD",
     )
     pg_session.add_all([claim1, claim2])
     await pg_session.flush()
@@ -333,12 +366,14 @@ async def test_claimed_to_date_by_cost_line_takes_latest_cumulative(pg_session) 
     pg_session.add_all(
         [
             ProgressClaimLine(
-                progress_claim_id=claim1.id, contract_line_id=cl.id,
+                progress_claim_id=claim1.id,
+                contract_line_id=cl.id,
                 period_completed_value=Decimal("500"),
                 cumulative_completed_value=Decimal("500"),  # interim
             ),
             ProgressClaimLine(
-                progress_claim_id=claim2.id, contract_line_id=cl.id,
+                progress_claim_id=claim2.id,
+                contract_line_id=cl.id,
                 period_completed_value=Decimal("500"),
                 cumulative_completed_value=Decimal("1000"),  # running total = 1000 USD
             ),
@@ -486,14 +521,26 @@ async def test_generate_from_boq_idempotent_referenced_positions_pg(pg_session) 
     pg_session.add_all(
         [
             Position(
-                boq_id=boq.id, ordinal="01", description="RC wall", unit="m3",
-                quantity="10", unit_rate="100", total="1000",
-                classification={"din276": "330"}, reference_code="P-330-1",
+                boq_id=boq.id,
+                ordinal="01",
+                description="RC wall",
+                unit="m3",
+                quantity="10",
+                unit_rate="100",
+                total="1000",
+                classification={"din276": "330"},
+                reference_code="P-330-1",
             ),
             Position(
-                boq_id=boq.id, ordinal="02", description="Rebar", unit="kg",
-                quantity="200", unit_rate="1.5", total="300",
-                classification={"din276": "340"}, reference_code="P-340-1",
+                boq_id=boq.id,
+                ordinal="02",
+                description="Rebar",
+                unit="kg",
+                quantity="200",
+                unit_rate="1.5",
+                total="300",
+                classification={"din276": "340"},
+                reference_code="P-340-1",
             ),
         ]
     )

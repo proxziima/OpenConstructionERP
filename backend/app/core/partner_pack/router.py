@@ -306,9 +306,7 @@ def partner_onboarding_script() -> Response:
         raise HTTPException(status_code=404, detail="No partner onboarding script")
     data = read_pack_file(active.slug, active.onboarding_script_path)
     if data is None:
-        raise HTTPException(
-            status_code=404, detail="Onboarding script file missing in pack"
-        )
+        raise HTTPException(status_code=404, detail="Onboarding script file missing in pack")
     ext = active.onboarding_script_path.rsplit(".", 1)[-1].lower()
     media_type = "application/json" if ext == "json" else "text/yaml"
     return Response(content=data, media_type=media_type)
@@ -332,9 +330,7 @@ def partner_locale(code: str) -> Response:
     return Response(content=data, media_type="application/json")
 
 
-@router.get(
-    "/by-slug/{slug}", summary="Inspect a non-active pack (admin / pre-install preview)"
-)
+@router.get("/by-slug/{slug}", summary="Inspect a non-active pack (admin / pre-install preview)")
 def inspect_pack(slug: str) -> dict[str, Any]:
     """Return the public manifest of any installed pack by slug."""
     m = get_pack_by_slug(slug)

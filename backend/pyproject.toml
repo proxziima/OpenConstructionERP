@@ -162,7 +162,11 @@ dev = [
     "pytest-xdist>=3.5.0",
     "httpx>=0.28.0",
     "factory-boy>=3.3.0",
-    "ruff>=0.8.0",
+    # Pinned exactly: the CI "ruff format --check" gate compares against the
+    # formatter's output, which can shift between ruff releases. A floating
+    # spec let CI pick a newer ruff than contributors ran locally, so formatted
+    # code still failed the check. Bump this deliberately when adopting a new ruff.
+    "ruff==0.15.14",
     "mypy>=1.13.0",
     "pre-commit>=4.0.0",
     "pyinstaller>=6.0.0",
@@ -223,6 +227,14 @@ only-include = ["app", "openconstructionerp"]
 target-version = "py312"
 line-length = 120
 src = ["app", "tests"]
+
+[tool.ruff.format]
+# The demo pack templates are hand-authored BOQ data tables, one position per
+# line, laid out as readable columns. The formatter would wrap each long row
+# into eight or more lines, exploding the files and destroying their tabular
+# readability for no behaviour gain, so they are skipped by the formatter.
+# They are still linted (with N999 ignored below, and E501 is off globally).
+exclude = ["app/core/demo_packs/*-*.py"]
 
 [tool.ruff.lint]
 # Pragmatic ruleset: catch real bugs (E/F/W/B), enforce import order (I)

@@ -526,17 +526,19 @@ async def export_invoice_br_pdf(
     # additional headers (CRLF injection).  Strip every character that is not
     # ASCII printable, remove double-quotes (which terminate the quoted-string
     # token) and forward-slashes (already done historically), and cap length.
-    _raw_num = (invoice.invoice_number or "invoice")
+    _raw_num = invoice.invoice_number or "invoice"
     _safe_num = (
-        _raw_num
-        .encode("ascii", errors="replace")  # non-ASCII → b'?'
-        .decode("ascii")
-        .replace("\r", "")
-        .replace("\n", "")
-        .replace('"', "'")
-        .replace("/", "-")
-        .strip()
-    )[:80] or "invoice"
+        (
+            _raw_num.encode("ascii", errors="replace")  # non-ASCII → b'?'
+            .decode("ascii")
+            .replace("\r", "")
+            .replace("\n", "")
+            .replace('"', "'")
+            .replace("/", "-")
+            .strip()
+        )[:80]
+        or "invoice"
+    )
     filename = f"RPS_{_safe_num}.pdf"
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
@@ -592,9 +594,7 @@ async def list_payments(
     numbers: dict[uuid.UUID, str] = {}
     if invoice_ids:
         rows = (
-            await session.execute(
-                select(Invoice.id, Invoice.invoice_number).where(Invoice.id.in_(invoice_ids))
-            )
+            await session.execute(select(Invoice.id, Invoice.invoice_number).where(Invoice.id.in_(invoice_ids)))
         ).all()
         numbers = {row[0]: row[1] for row in rows}
 

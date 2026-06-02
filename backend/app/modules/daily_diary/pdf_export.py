@@ -433,7 +433,9 @@ def _build_entries(
             description = getattr(entry, "description", "") or ""
             detail = title
             if description:
-                detail = f"<b>{html.escape(title)}</b><br/>{html.escape(description)}" if title else html.escape(description)
+                detail = (
+                    f"<b>{html.escape(title)}</b><br/>{html.escape(description)}" if title else html.escape(description)
+                )
             else:
                 detail = html.escape(title) if title else "-"
             rows.append(

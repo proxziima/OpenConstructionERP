@@ -1202,9 +1202,7 @@ class AssemblyService:
                 )
                 ranked = sorted(usage.items(), key=lambda kv: kv[1], reverse=True)
                 most_used = [
-                    {"name": scoped_ids.get(aid, ""), "usage_count": cnt}
-                    for aid, cnt in ranked[:5]
-                    if cnt > 0
+                    {"name": scoped_ids.get(aid, ""), "usage_count": cnt} for aid, cnt in ranked[:5] if cnt > 0
                 ]
         except Exception:
             # BOQ module may not exist or table not yet created

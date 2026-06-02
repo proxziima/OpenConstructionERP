@@ -2284,8 +2284,7 @@ class CostSpineService:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
-                    "Invalid target_type. Expected one of: boq_position, budget_line, "
-                    "po_item, contract_line, rfq."
+                    "Invalid target_type. Expected one of: boq_position, budget_line, po_item, contract_line, rfq."
                 ),
             )
 
