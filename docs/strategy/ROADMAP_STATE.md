@@ -6,6 +6,16 @@
 
 Founder directive 2026-06-02: "do everything and run it. First lock in all the latest changes - make commits, publish versions, and write all progress and tasks so an agent can resume after a reboot." Then continue all remaining work autonomously.
 
+=== v6.4.2 RELEASE IN PROGRESS 2026-06-02 (resume here) ===
+Eight parallel agent lanes done this session, all verified. PUSHED to main (remote = dcc7975cd):
+- bc1c18435: backend pytest collection now CLEAN under CI's .[dev]-only install (a faithful import-blocking shim proved exit 0 / 10508 collected). Guarded itsdangerous (smart_views) + simpleeval (eac) across 11 test files.
+- 14ae5b6ce fix(deps): python-multipart>=0.0.27 + pyarrow>=23.0.1 (advisories), exceljs>uuid 11.1.1 override, AND declared itsdangerous>=2.1.0 + simpleeval>=0.9.13 as BASE deps (real runtime imports a clean install was missing; smart_views/eac would fail to import otherwise).
+- 11c6570f5 fix(desktop): externalBin flat-path + fail-fast:false (partial #27; full installers still need onefile sidecar + embedded-PG bundling, ~2-3d of macOS CI iteration, full plan in the Lane E agent result).
+- dcc7975cd docs: CHANGELOG [6.4.2] + docs/release/RELEASE_NOTES_v6.4.2.md + partner-pack authoring docs.
+VERIFIED: partner-pack create->drop->activate E2E ALL PASS, zero code changes (#52 done, robust); Frontend CI green; CI(PostgreSQL) green. Backend CI was exit-2 = collection crash from an optional-dep import (PG lane passed because its install has the deps); this push should fix it. CHECK Backend CI on dcc7975cd via the unauthenticated check-runs API.
+#14 "setup-report PDF" = PHANTOM: no such feature exists in the repo, it is a stale v6.2.5-era label; leading guess is property_dev/document_templates.py (11 generators). Needs the founder to paste the 11 items.
+REMAINING TO SHIP v6.4.2: (1) await Lane C frontend-tests agent (CI already green, expect no-op); (2) bump 6.4.1 -> 6.4.2 in backend/pyproject.toml:3, frontend/package.json:4, frontend/package-lock.json (root version x2), desktop/src-tauri/tauri.conf.json:4; (3) commit "release: v6.4.2" together with this ROADMAP update; (4) annotated tag v6.4.2, push main + tag by SHA refspec, verify with ls-remote; (5) watch pypi-publish.yml (Trusted Publishing) + release.yml (Docker GHCR + GitHub Release, which reads the CHANGELOG [6.4.2] section); (6) VPS deploy: checkout the release SHA, CHECK pyarrow disk impact FIRST (disk ~98%, pyarrow floor moved to 23.0.1), pip install, ship _frontend_dist via tar-over-ssh, restart, verify /api/health reports 6.4.2. STILL gh-auth-blocked: close jehad PRs #172-176 + triage 10 dependabot PRs; read the Backend CI runner log if it is still red.
+
 PUBLISHED NOW:
 - v6.4.0 = the product release (cost spine, CLI module install, geo auto-framing). GitHub tag v6.4.0 (deref ^{commit}=a810f2f36), PyPI 6.4.0, GitHub Release, VPS live 6.4.0 (alembic v3151). Details in the v6.4.0 block below.
 - v6.4.1 = lint/CI-hygiene checkpoint (THIS commit). GitHub main 37f4d5ef8 / tag v6.4.1 (annotated; deref ^{commit}=37f4d5ef8). Tag pushed so PyPI + GitHub Release CI is running - verify PyPI shows 6.4.1. Contents: backend lint/format only (143a65998 ruff check fix, edcd7a751 ruff format + pin ruff==0.15.14, 37f4d5ef8 version bump). Runtime-identical to 6.4.0, so the VPS does NOT need a redeploy.
