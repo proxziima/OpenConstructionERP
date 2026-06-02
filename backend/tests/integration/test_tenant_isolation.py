@@ -10,12 +10,10 @@ the leak surfaces as a red test rather than a customer-reported bug.
 
 Test scaffolding
 ~~~~~~~~~~~~~~~~
-* The DB is a per-module temp SQLite file (``tempfile.mkdtemp()`` +
-  ``sqlite+aiosqlite:///``). The ``DATABASE_URL`` env var is set
-  *before* ``app.database`` is imported so the global
-  ``async_session_factory`` binds to the temp file — the production
-  ``backend/openestimate.db`` is never touched. This is a hard
-  requirement (see ``feedback_test_isolation.md``).
+* The DB is the PostgreSQL cluster that ``tests/conftest.py`` provisions
+  and binds to the SQLAlchemy engine before any test module imports.
+  The global ``async_session_factory`` is already bound to that engine,
+  so every fixture and direct DB write here runs against PostgreSQL.
 
 * The two-tenant setup fixture is **module-scoped** because:
   (a) registering 2 users + lifespan boot is expensive (~25-30s on
@@ -53,28 +51,11 @@ suite still runs green for the rest of CI but the leak is loud.
 
 from __future__ import annotations
 
-import os
-import tempfile
 import uuid
-from pathlib import Path
 
-# ── Per-test SQLite isolation (must run BEFORE app imports) ────────────────
-#
-# ``app.database`` constructs the global async engine at import time using
-# the value of ``settings.database_url`` it sees on first import. We
-# therefore have to point that env var at a fresh temp file *now*, before
-# any ``from app...`` line runs. ``get_settings()`` is ``lru_cache``-d so
-# the first call wins — but we still call ``cache_clear()`` defensively
-# inside the fixture in case a sibling module pre-imported it.
-
-_TMP_DIR = Path(tempfile.mkdtemp(prefix="oe-tenant-iso-"))
-_TMP_DB = _TMP_DIR / "tenant_iso.db"
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP_DB.as_posix()}"
-os.environ["DATABASE_SYNC_URL"] = f"sqlite:///{_TMP_DB.as_posix()}"
-
-import pytest  # noqa: E402
-import pytest_asyncio  # noqa: E402
-from httpx import ASGITransport, AsyncClient  # noqa: E402
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -83,8 +64,8 @@ from httpx import ASGITransport, AsyncClient  # noqa: E402
 async def app_instance():
     """Boot the FastAPI app once for the whole module.
 
-    Lifespan startup runs ``Base.metadata.create_all`` on the temp
-    SQLite. After lifespan we explicitly import the dashboards models
+    Lifespan startup runs ``Base.metadata.create_all`` on the conftest
+    PostgreSQL. After lifespan we explicitly import the dashboards models
     (which ``app.main`` does NOT pre-import — they get pulled in by the
     module loader, but only after ``create_all`` has already run) and
     run ``create_all`` a second time to backfill the missing table.

@@ -5,6 +5,16 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.6.0] - 2026-06-02
+
+### Changed
+
+- Embedded PostgreSQL is now the only database. SQLite has been removed from both the application and the test suite. This finishes the move that began in version 6.0.0, when an in-process PostgreSQL became the default with no Docker and no setup. The translation-memory cache now lives in the main database instead of its own SQLite file, the cost-database importer loads straight into PostgreSQL, and the SQLite-only code paths and dialect workarounds are gone. The app still boots its own PostgreSQL on first run under ~/.openestimate/pgdata, or you can point DATABASE_URL at any external PostgreSQL. The one-time import of a legacy SQLite database on upgrade still works. There is no longer a SQLite fallback to run on.
+
+### Fixed
+
+- 3D models placed on the project map now render. The map tile builder was writing each model's per-feature metadata as inline arrays, but the 3D Tiles format wants those values stored in the binary buffer and referenced by index. The viewer could not read the inline shape, so it gave up on the whole model and the map stayed blank. The metadata is now written the way the spec expects, with a binary property table, so the geometry shows on the map as soon as a model is placed.
+
 ## [6.5.0] - 2026-06-02
 
 ### Added

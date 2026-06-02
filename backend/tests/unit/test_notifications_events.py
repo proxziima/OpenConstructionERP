@@ -68,7 +68,7 @@ def captured_events(monkeypatch: pytest.MonkeyPatch):
 
     The service normally publishes via ``event_bus.publish_detached`` (a
     fire-and-forget ``asyncio.create_task``) so a request never blocks on a
-    subscriber while it holds the single SQLite writer lock. That makes the
+    subscriber while it holds a database connection. That makes the
     *timing* of delivery non-deterministic in a test: the event lands on a
     later loop turn, and pumping the loop to wait for it also drags in
     fire-and-forget tasks leaked by earlier tests (which can raise cross-loop

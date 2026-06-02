@@ -20,13 +20,8 @@ import uuid
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import Base
 from app.modules.documents.models import Document  # noqa: F401 — registers ORM
 from app.modules.file_references.models import (  # noqa: F401 — registers ORM
     FileNamingViolation,
@@ -45,18 +40,19 @@ from app.modules.file_references.service import (
 )
 from app.modules.projects.models import Project  # noqa: F401 — registers ORM
 from app.modules.users.models import User  # noqa: F401 — registers ORM
+from tests._pg import transactional_session
 
 
 @pytest_asyncio.fixture
 async def session() -> AsyncSession:
-    """Per-test in-memory SQLite with full schema applied."""
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    sm = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with sm() as s:
+    """Per-test PostgreSQL session inside an outer transaction.
+
+    Runs against the shared ``oe_test_unit`` database (full schema, no
+    ``create_all`` needed). The outer transaction is rolled back on teardown,
+    so every test starts from an empty database.
+    """
+    async with transactional_session() as s:
         yield s
-    await engine.dispose()
 
 
 async def _seed_user(session: AsyncSession) -> User:
