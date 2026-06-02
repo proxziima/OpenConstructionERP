@@ -42,7 +42,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/openestimate-server/openestimate-server"
+      "binaries/openestimate-server"
     ],
     "windows": {
       "nsis": {
