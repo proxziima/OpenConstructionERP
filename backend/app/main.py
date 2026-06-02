@@ -2183,14 +2183,32 @@ def create_app() -> FastAPI:
                     if exc.name != _models_mod:
                         raise
 
-            # SQLite-only: add missing columns to existing tables before
-            # create_all runs. PostgreSQL deployments must use Alembic for
-            # column-level migrations — sqlite_auto_migrate uses SQLite-
-            # specific PRAGMA / ALTER syntax.
+            # Add missing columns to existing tables before create_all runs.
+            # create_all only ever creates whole new *tables*; it never adds a
+            # *column* to a table that already exists. So after an app upgrade
+            # that added a column to an existing model (for example
+            # oe_boq_position.cost_line_id from the v6.4.0 cost spine), that
+            # column is absent on a database first created under the older
+            # version, and every ORM read of the table fails with a missing-
+            # column error.
+            #
+            # SQLite uses its own PRAGMA / ALTER syntax. Embedded PostgreSQL is
+            # the default no-Docker runtime and is not managed by Alembic, so it
+            # needs the same auto-heal via ADD COLUMN IF NOT EXISTS. External
+            # PostgreSQL (a user-supplied DATABASE_URL, where embedded_pg is not
+            # running) keeps managing columns with Alembic and is left alone.
+            from app.core import embedded_pg as _embedded_pg
+
             if "sqlite" in settings.database_url:
                 migrated = await sqlite_auto_migrate(engine, Base)
                 if migrated:
                     logger.info("SQLite auto-migration: %d columns added", migrated)
+            elif _embedded_pg.is_running():
+                from app.core.postgres_migrator import postgres_auto_migrate
+
+                migrated = await postgres_auto_migrate(engine, Base)
+                if migrated:
+                    logger.info("PostgreSQL auto-migration: %d columns added", migrated)
 
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
