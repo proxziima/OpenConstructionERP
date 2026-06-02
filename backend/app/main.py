@@ -788,14 +788,21 @@ async def _seed_demo_account() -> None:
         # a CWICR-priced, BIM-linked Bill of Quantities) is present out of the
         # box. Idempotent, so it also backfills existing databases on the next
         # startup. Runs regardless of project_count so an upgrade picks it up.
-        try:
-            from app.scripts.seed_flagship import install_flagship
+        if os.environ.get("OE_TEST_FAST_STARTUP", "").lower() in ("1", "true", "yes"):
+            # The flagship installer writes a 6640-element model and ~16MB of
+            # geometry; no test needs it, and it adds several seconds to every
+            # per-module app startup. Skip it when the test suite asks for a
+            # fast startup.
+            logger.debug("Flagship seed skipped (OE_TEST_FAST_STARTUP)")
+        else:
+            try:
+                from app.scripts.seed_flagship import install_flagship
 
-            async with async_session_factory() as fl_session:
-                fl_result = await install_flagship(fl_session, demo_user_id)
-                logger.info("Flagship seed: %s", fl_result)
-        except Exception:
-            logger.warning("Flagship seed skipped (non-fatal)", exc_info=True)
+                async with async_session_factory() as fl_session:
+                    fl_result = await install_flagship(fl_session, demo_user_id)
+                    logger.info("Flagship seed: %s", fl_result)
+            except Exception:
+                logger.warning("Flagship seed skipped (non-fatal)", exc_info=True)
     except Exception:
         logger.exception("Failed to seed demo account (non-fatal)")
 
@@ -2385,55 +2392,69 @@ def create_app() -> FastAPI:
                 "until an operator re-runs alembic or restarts the app"
             )
 
-        # Initialize vector database (LanceDB embedded, no Docker)
-        _section("Vector DB")
-        _init_vector_db()
-
-        # Pre-warm the embedder + boot the inference process pool. Both
-        # are env-var-gated so dev startup stays fast unless the
-        # operator opted in. See ``app.core.embedding_pool`` for the
-        # full rationale and trade-offs.
+        # Initialize vector database (LanceDB embedded, no Docker).
         #
-        # We unconditionally call get_embedder() here as well: the
-        # auto-backfill task (scheduled below) and /match-elements
-        # vector matcher both call ``encode_texts_async`` from worker
-        # threads. On Windows + Anaconda the first SentenceTransformer
-        # load from a worker thread can race with concurrent torch
-        # imports and silently leave the singleton at None — every
-        # subsequent encode then raises "No embedding model available".
-        # Loading on the main thread once primes the singleton so
-        # later calls just hit the cache.
-        try:
-            from app.core.vector import get_embedder as _ge
+        # Skipped under OE_TEST_FAST_STARTUP: connecting to the vector backend
+        # and loading the embedding model adds ~45s to startup, and the test
+        # suite stands up a fresh app per test module. Vector endpoints still
+        # work in tests because get_embedder() loads the model lazily on the
+        # first call that actually needs it.
+        _section("Vector DB")
+        _fast_startup = os.environ.get("OE_TEST_FAST_STARTUP", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if _fast_startup:
+            logger.info("Vector DB init + embedding warm-up skipped (OE_TEST_FAST_STARTUP)")
+        else:
+            _init_vector_db()
 
-            _ge()
-        except Exception as exc:  # noqa: BLE001 — never fatal for startup
-            logger.info("Embedder main-thread prime skipped: %s", exc)
+            # Pre-warm the embedder + boot the inference process pool. Both
+            # are env-var-gated so dev startup stays fast unless the
+            # operator opted in. See ``app.core.embedding_pool`` for the
+            # full rationale and trade-offs.
+            #
+            # We unconditionally call get_embedder() here as well: the
+            # auto-backfill task (scheduled below) and /match-elements
+            # vector matcher both call ``encode_texts_async`` from worker
+            # threads. On Windows + Anaconda the first SentenceTransformer
+            # load from a worker thread can race with concurrent torch
+            # imports and silently leave the singleton at None — every
+            # subsequent encode then raises "No embedding model available".
+            # Loading on the main thread once primes the singleton so
+            # later calls just hit the cache.
+            try:
+                from app.core.vector import get_embedder as _ge
 
-        try:
-            from app.core.embedding_pool import init_pool, maybe_preload_in_process
+                _ge()
+            except Exception as exc:  # noqa: BLE001 — never fatal for startup
+                logger.info("Embedder main-thread prime skipped: %s", exc)
 
-            preloaded = maybe_preload_in_process()
-            workers = init_pool()
-            if preloaded or workers:
-                logger.info(
-                    "Embedding warm-up: preload=%s pool_workers=%d",
-                    preloaded,
-                    workers,
-                )
-        except Exception as exc:  # noqa: BLE001 — never fatal for startup
-            logger.warning("Embedding pool init skipped: %s", exc)
+            try:
+                from app.core.embedding_pool import init_pool, maybe_preload_in_process
 
-        # Auto-backfill the multi-collection vector store from existing
-        # rows.  Detached as a background task so a slow embedding model
-        # download or a large dataset doesn't delay startup — semantic
-        # search remains available the moment the model finishes loading.
-        try:
-            import asyncio as _asyncio_bf
+                preloaded = maybe_preload_in_process()
+                workers = init_pool()
+                if preloaded or workers:
+                    logger.info(
+                        "Embedding warm-up: preload=%s pool_workers=%d",
+                        preloaded,
+                        workers,
+                    )
+            except Exception as exc:  # noqa: BLE001 — never fatal for startup
+                logger.warning("Embedding pool init skipped: %s", exc)
 
-            _asyncio_bf.create_task(_auto_backfill_vector_collections())
-        except Exception:
-            logger.debug("Could not schedule vector backfill", exc_info=True)
+            # Auto-backfill the multi-collection vector store from existing
+            # rows.  Detached as a background task so a slow embedding model
+            # download or a large dataset doesn't delay startup — semantic
+            # search remains available the moment the model finishes loading.
+            try:
+                import asyncio as _asyncio_bf
+
+                _asyncio_bf.create_task(_auto_backfill_vector_collections())
+            except Exception:
+                logger.debug("Could not schedule vector backfill", exc_info=True)
 
         # ── KPI auto-recalculation scheduler (24-hour interval) ──────────
         import asyncio

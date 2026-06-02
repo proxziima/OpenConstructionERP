@@ -159,7 +159,30 @@ async def _promote_to_admin(email: str) -> None:
     from app.modules.users.models import User
 
     async with async_session_factory() as session:
-        await session.execute(update(User).where(User.email == email.lower()).values(role="admin"))
+        await session.execute(
+            update(User).where(User.email == email.lower()).values(role="admin", is_active=True)
+        )
+        await session.commit()
+
+
+async def _activate_user(email: str) -> None:
+    """Force ``is_active=True`` so a self-registered viewer can log in.
+
+    The default registration mode is ``admin-approve`` (BUG-RBAC03), which
+    leaves new non-bootstrap accounts inactive until an admin promotes them.
+    Tenant B must stay a *viewer* yet still authenticate, so we flip the
+    active flag directly via the DB to keep the test focused on cross-tenant
+    access enforcement, not on the registration policy.
+    """
+    from sqlalchemy import update
+
+    from app.database import async_session_factory
+    from app.modules.users.models import User
+
+    async with async_session_factory() as session:
+        await session.execute(
+            update(User).where(User.email == email.lower()).values(is_active=True)
+        )
         await session.commit()
 
 
@@ -202,8 +225,9 @@ async def two_tenants(http_client):
     assert reg_b.status_code in (200, 201), reg_b.text
     b_uid = reg_b.json()["id"]
 
-    # Promote A so they can create contacts; B stays viewer.
+    # Promote A so they can create contacts; B stays viewer but must be active.
     await _promote_to_admin(a_email)
+    await _activate_user(b_email)
 
     # Re-login both to pick up role claim (and to obtain bearer tokens).
     a_headers = await _re_login(http_client, a_email, a_password)

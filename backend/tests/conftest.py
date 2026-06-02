@@ -52,6 +52,25 @@ os.environ.setdefault("LOGIN_RATE_LIMIT", "10000")
 os.environ.setdefault("API_RATE_LIMIT", "100000")
 os.environ.setdefault("AI_RATE_LIMIT", "10000")
 
+# ── Open registration for the suite ────────────────────────────────────────
+# The default registration mode is "admin-approve" (every registrant after the
+# first bootstrap admin is created inactive and cannot log in). The integration
+# suites register a fresh user per module and immediately log in, so under the
+# default they get a 401 and the auth fixture errors out. Open mode keeps every
+# registrant active. The two mode-specific suites (test_register_modes,
+# test_register_bootstrap) set the mode themselves and are unaffected.
+os.environ.setdefault("REGISTRATION_MODE", "open")
+
+# ── Fast app startup for tests ─────────────────────────────────────────────
+# Each integration module stands up its own FastAPI app via create_app() and
+# runs the full lifespan. In production that lifespan connects to the vector
+# backend, loads the embedding model (~35s) and installs the flagship showcase
+# project (6640 elements + ~16MB of geometry). None of that is needed by the
+# test suite, and paid per module it is the dominant cost of the whole run.
+# This flag skips the vector init/warm-up and the flagship seed; vector
+# endpoints still work because the embedder loads lazily on first use.
+os.environ.setdefault("OE_TEST_FAST_STARTUP", "1")
+
 import pytest  # noqa: E402
 
 import app.core.audit  # noqa: E402,F401
