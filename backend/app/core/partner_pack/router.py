@@ -7,10 +7,11 @@ from collections.abc import AsyncIterator
 from importlib import resources
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.core.partner_pack._safe_extract import has_zip_magic
 from app.core.partner_pack.apply import (
     apply_pack,
     build_preview,
@@ -196,11 +197,79 @@ def rescan() -> dict[str, Any]:
     """Bust the discovery cache so on-disk packs are re-read.
 
     Note: brand-new pip-installed (entry-point) packs may still need a restart;
-    this reliably picks up source-checkout packs under ``packs/``.
+    this reliably picks up source-checkout packs under ``packs/`` and dropped
+    packs under ``<data_dir>/packs/``.
     """
     reset_cache()
     packs = discover_packs()
     return {"count": len(packs), "slugs": [m.slug for m in packs]}
+
+
+# Cap an uploaded pack at 25 MiB. A declarative pack is a tiny JSON manifest
+# plus a logo/favicon and a few locale files; anything larger is almost
+# certainly wrong (or hostile), and rejecting early bounds memory use.
+_MAX_PACK_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+@router.post(
+    "/install",
+    summary="Upload and install a partner-pack .zip into the data dir (admin)",
+    dependencies=[Depends(RequirePermission("admin"))],
+)
+async def install_pack(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Install a declarative partner pack from an uploaded ``.zip``.
+
+    The archive must contain a ``manifest.json`` (a serialized
+    ``PartnerPackManifest``) at its root or in a single wrapping folder, plus
+    its assets (logo, favicon, locales, onboarding script). The pack ships NO
+    code and is never executed: the manifest is parsed as JSON and validated
+    against the schema. The archive is safely extracted (staged, every member
+    validated against Zip Slip / symlink / absolute / drive-letter / backslash)
+    into ``<data_dir>/packs/<slug>/`` and the discovery cache is busted so the
+    new pack is immediately listable. The pack is NOT activated by this call -
+    apply it separately from the Partner Packs tab.
+
+    Returns:
+        ``{"installed": true, "slug", "partner_name", "pack_version"}`` on
+        success.
+
+    Raises:
+        HTTPException: 400 if the upload is not a zip, exceeds the size cap,
+            contains an unsafe member, or has no valid ``manifest.json``.
+    """
+    # Read with a hard cap so a huge upload cannot exhaust memory. Read one byte
+    # past the limit to detect an over-size body deterministically.
+    raw = await file.read(_MAX_PACK_UPLOAD_BYTES + 1)
+    if len(raw) > _MAX_PACK_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Pack archive too large (limit {_MAX_PACK_UPLOAD_BYTES // (1024 * 1024)} MiB).",
+        )
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty upload.")
+
+    # Cheap magic-byte gate before the structural zip parse.
+    if not has_zip_magic(raw[:4]):
+        raise HTTPException(status_code=400, detail="Uploaded file is not a .zip archive.")
+
+    # Local import keeps the install path (and its PackInstallError type) out of
+    # the module import graph at boot; discovery is always importable here.
+    from app.core.partner_pack.discovery import PackInstallError, install_dropped_zip
+
+    try:
+        manifest = install_dropped_zip(raw)
+    except PackInstallError as exc:
+        raise HTTPException(status_code=400, detail=exc.reason) from exc
+
+    # Make the freshly installed pack visible to discovery immediately.
+    reset_cache()
+    logger.info("Partner pack uploaded and installed: %s v%s", manifest.slug, manifest.pack_version)
+    return {
+        "installed": True,
+        "slug": manifest.slug,
+        "partner_name": manifest.partner_name,
+        "pack_version": manifest.pack_version,
+    }
 
 
 def _read_pack_resource(filename: str) -> bytes | None:

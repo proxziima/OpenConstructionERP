@@ -1105,47 +1105,21 @@ def _read_manifest_name(source: str) -> str | None:
     return None
 
 
-def _is_unsafe_zip_member(info: object) -> str | None:
-    """Return a human-readable reason if a zip member is unsafe, else None.
-
-    Rejects:
-      * absolute POSIX paths (``/etc/passwd``)
-      * parent-directory traversal (any ``..`` path segment)
-      * Windows drive letters / backslash separators (``C:\\evil``, ``a\\b``)
-      * symlinks (encoded in the Unix mode bits of ``external_attr``)
-    """
-    import stat
-
-    name = getattr(info, "filename", "")
-
-    # Windows drive letter, e.g. "C:..." — also catches "C:\\..." once \\ -> /.
-    if len(name) >= 2 and name[1] == ":":
-        return f"drive-letter path: {name!r}"
-
-    # Normalise backslashes so a Windows-authored archive can't smuggle
-    # traversal past the POSIX checks below.
-    if "\\" in name:
-        return f"backslash separator in path: {name!r}"
-
-    if name.startswith("/"):
-        return f"absolute path: {name!r}"
-
-    parts = name.split("/")
-    if ".." in parts:
-        return f"parent-directory traversal: {name!r}"
-
-    # Symlink detection: the high 16 bits of external_attr hold the Unix mode.
-    external_attr = getattr(info, "external_attr", 0)
-    mode = external_attr >> 16
-    if mode and stat.S_ISLNK(mode):
-        return f"symlink member: {name!r}"
-
-    return None
-
-
 def cmd_module_install(args: argparse.Namespace) -> None:
     """Install a module from a .zip archive into the modules directory."""
+    import shutil
+    import tempfile
     import zipfile
+
+    # One shared, hardened zip-safety implementation (no weaker fork). Imported
+    # here rather than at module top so the CLI's pre-import env setup
+    # (_setup_env, which must run before any ``app`` import builds the DB
+    # engine) is never pre-empted by importing this command's helper.
+    from app.core.partner_pack._safe_extract import (
+        UnsafeArchiveError,
+        is_unsafe_zip_member,
+        safe_extract_all,
+    )
 
     zip_path = Path(args.zip).expanduser().resolve()
 
@@ -1165,7 +1139,7 @@ def cmd_module_install(args: argparse.Namespace) -> None:
 
         # 1. Reject any unsafe member before touching the filesystem.
         for info in infos:
-            reason = _is_unsafe_zip_member(info)
+            reason = is_unsafe_zip_member(info)
             if reason is not None:
                 print(_red(f"Refusing to install — unsafe archive member ({reason})."))
                 sys.exit(1)
@@ -1228,34 +1202,22 @@ def cmd_module_install(args: argparse.Namespace) -> None:
                     _red(f"Module '{module_name}' already installed at {target}.") + _dim(" Use --force to overwrite.")
                 )
                 sys.exit(1)
-            import shutil
-
             shutil.rmtree(target)
 
         # 7. Safe extraction into a temp staging dir, then atomically move the
         #    package into place under its canonical directory name. Staging
         #    first means a mid-extract failure never leaves a half-written
-        #    module in the loader's scan path. Re-validate each member name at
-        #    extraction time (defence in depth against a member that slipped
-        #    through, e.g. via a crafted ZipInfo).
-        import shutil
-        import tempfile
-
+        #    module in the loader's scan path. ``safe_extract_all`` re-validates
+        #    each member at write time (defence in depth against a crafted
+        #    ZipInfo whose name slipped past the up-front check).
         modules_dir.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix="oe_module_install_"))
         try:
-            staged_root = staging.resolve()
-            for info in infos:
-                # Skip directory entries — created implicitly by file writes.
-                if info.filename.endswith("/"):
-                    continue
-                dest = (staging / info.filename).resolve()
-                if not str(dest).startswith(str(staged_root) + os.sep) and dest != staged_root:
-                    print(_red(f"Refusing to install — member escapes staging dir: {info.filename!r}."))
-                    sys.exit(1)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(info) as src, open(dest, "wb") as out:
-                    shutil.copyfileobj(src, out)
+            try:
+                safe_extract_all(zf, staging)
+            except UnsafeArchiveError as exc:
+                print(_red(f"Refusing to install — {exc}."))
+                sys.exit(1)
 
             staged_pkg = staging / top
             if not staged_pkg.is_dir():
@@ -1380,6 +1342,191 @@ def cmd_module(args: argparse.Namespace) -> None:
     else:
         # No sub-action: print the module group's help.
         args._module_parser.print_help()
+
+
+# ── Partner-pack scaffolding (pack new) ─────────────────────────────────────
+# A partner pack dropped into ``<data-dir>/packs/`` is *declarative*: a
+# ``manifest.json`` (a serialized PartnerPackManifest) plus its assets. Unlike
+# business modules it ships NO Python and is never imported/executed by the
+# core. ``pack new`` emits a minimal, valid, immediately-discoverable folder so
+# a partner can edit the placeholders and drop it straight into the data dir.
+
+_PACK_PLACEHOLDER_LOGO_SVG = """\
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 64" role="img"
+     aria-label="Partner logo placeholder">
+  <rect width="240" height="64" rx="8" fill="#0F2C5F"/>
+  <text x="120" y="40" font-family="Arial, sans-serif" font-size="22"
+        font-weight="700" fill="#FFFFFF" text-anchor="middle">{partner}</text>
+</svg>
+"""
+
+_PACK_ONBOARDING_YAML = """\
+# {slug} - first-login onboarding script (declarative).
+#
+# Replaces the default OnboardingWizard steps when this pack is active. Each
+# step is rendered by the frontend OnboardingWizard; `kind` maps to an existing
+# step renderer (intro | form | choice | external_link | summary). Edit freely.
+
+version: 2
+pack: {slug}
+estimated_minutes: 5
+
+steps:
+  - id: welcome
+    kind: intro
+    skippable: false
+    title_i18n:
+      en: "Welcome"
+    body_i18n:
+      en: "This OpenConstructionERP install is pre-configured by {partner}. Replace these placeholder steps with your own onboarding flow."
+
+  - id: done
+    kind: summary
+    skippable: false
+    title_i18n:
+      en: "All set"
+    body_i18n:
+      en: "You are ready to start. Edit onboarding.yaml in this pack to customise these steps."
+"""
+
+_PACK_README = """\
+# {slug} - OpenConstructionERP partner pack
+
+This is a declarative partner pack (Shape A). It carries only presets:
+branding, default locale, currency/tax defaults, module visibility and an
+onboarding script. It contains no Python and is never executed by the core.
+
+## Files
+
+- `manifest.json` - the serialized PartnerPackManifest (the only required file)
+- `logo.svg` - partner logo, streamed on the co-brand badge
+- `onboarding.yaml` - optional first-login onboarding script
+- `README.md` - this file
+
+## Install
+
+Drop this whole folder (or a `.zip` of it) into your install's data directory
+under `packs/`:
+
+    <data-dir>/packs/{slug}/manifest.json
+
+Then in the app go to the Modules page, Partner Packs tab, click Rescan and
+Apply, or upload the `.zip` via the in-app installer. The default data dir is
+`~/.openestimate` (or wherever your database lives).
+
+Edit the placeholders in `manifest.json` (partner name, colours, locale,
+currency, CWICR regions, validation rule packs) before shipping.
+"""
+
+
+def _scaffold_pack_manifest_json(slug: str) -> str:
+    """Build a valid serialized ``PartnerPackManifest`` JSON for ``slug``.
+
+    Constructs a real :class:`PartnerPackManifest` with sensible placeholders so
+    the emitted file is guaranteed to validate (and therefore be discoverable),
+    then serialises it with indentation for easy hand-editing.
+    """
+    from app.core.partner_pack.manifest import PartnerBranding, PartnerPackManifest
+
+    partner_display = slug.replace("-", " ").title()
+    manifest = PartnerPackManifest(
+        slug=slug,
+        partner_name=partner_display,
+        partner_url="https://example.com",
+        pack_version="0.1.0",
+        description=f"Preset bundle for {partner_display}. Edit this manifest before shipping.",
+        default_locale="en",
+        additional_locales={},
+        cwicr_regions=[],
+        default_currency="EUR",
+        default_tax_template=None,
+        validation_rule_packs=[],
+        default_modules=[],
+        hidden_modules=[],
+        branding=PartnerBranding(
+            primary_color="#0F2C5F",
+            accent_color=None,
+            logo_path="logo.svg",
+            favicon_path=None,
+            powered_by_text=None,
+        ),
+        onboarding_script_path="onboarding.yaml",
+        metadata={"country": "", "support_email": "info@example.com"},
+    )
+    return manifest.model_dump_json(indent=2)
+
+
+def cmd_pack_new(args: argparse.Namespace) -> None:
+    """Scaffold a new declarative partner pack folder ready to drop in."""
+    from app.core.partner_pack.manifest import PartnerPackManifest
+
+    slug = args.slug.strip()
+
+    # Validate the slug against the same pattern the manifest enforces, so we
+    # fail fast with a clear message instead of emitting a pack that the loader
+    # would later reject.
+    slug_field = PartnerPackManifest.model_fields["slug"]
+    pattern = next((m.pattern for m in slug_field.metadata if hasattr(m, "pattern")), r"^[a-z][a-z0-9\-]{2,40}$")
+    import re
+
+    if not re.match(pattern, slug):
+        print(_red(f"Invalid pack slug {slug!r}."))
+        print(_dim(f"  Must match {pattern} (lowercase, starts with a letter, 3-41 chars, hyphens allowed)."))
+        sys.exit(1)
+
+    out_root = Path(args.out).expanduser().resolve() if args.out else Path.cwd()
+    target = out_root / slug
+
+    if target.exists():
+        if not args.force:
+            print(_red(f"Target already exists: {target}.") + _dim(" Use --force to overwrite."))
+            sys.exit(1)
+        import shutil
+
+        shutil.rmtree(target)
+
+    partner_display = slug.replace("-", " ").title()
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "manifest.json").write_text(_scaffold_pack_manifest_json(slug), encoding="utf-8")
+        (target / "logo.svg").write_text(_PACK_PLACEHOLDER_LOGO_SVG.format(partner=partner_display), encoding="utf-8")
+        (target / "onboarding.yaml").write_text(
+            _PACK_ONBOARDING_YAML.format(slug=slug, partner=partner_display), encoding="utf-8"
+        )
+        (target / "README.md").write_text(_PACK_README.format(slug=slug), encoding="utf-8")
+    except OSError as exc:
+        print(_red(f"Could not write pack files: {exc}"))
+        sys.exit(1)
+
+    # Sanity check: the file we just wrote must validate, so "new" never emits a
+    # pack the loader would silently skip.
+    try:
+        PartnerPackManifest.model_validate_json((target / "manifest.json").read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — defensive; placeholders are valid by construction
+        print(_red(f"Scaffolded manifest failed validation: {exc}"))
+        sys.exit(1)
+
+    print(_green(_bold(f"Created partner pack: {slug}")) + _dim(f"  ({target})"))
+    print()
+    print(f"  {_dim('manifest.json')}    serialized PartnerPackManifest (edit the placeholders)")
+    print(f"  {_dim('logo.svg')}         placeholder partner logo")
+    print(f"  {_dim('onboarding.yaml')}  first-login onboarding stub")
+    print(f"  {_dim('README.md')}        how to install")
+    print()
+    print(_bold("Next steps"))
+    print(f"  1. Edit {_amber(str(target / 'manifest.json'))} (partner name, colours, locale, currency).")
+    print(f"  2. Replace {_amber(str(target / 'logo.svg'))} with the real logo.")
+    print("  3. Drop the folder (or a .zip of it) into your install's data dir under packs/,")
+    print("     then open the Modules page > Partner Packs, click Rescan, and Apply.")
+
+
+def cmd_pack(args: argparse.Namespace) -> None:
+    """Dispatch ``pack`` sub-actions; print help when none is given."""
+    action = getattr(args, "pack_action", None)
+    if action == "new":
+        cmd_pack_new(args)
+    else:
+        args._pack_parser.print_help()
 
 
 # ── Arg parser ────────────────────────────────────────────────────────────
@@ -1523,12 +1670,41 @@ def main() -> None:
         help="Remove even core / auto-install modules",
     )
 
+    # pack — scaffold a new declarative partner pack
+    pack_p = subparsers.add_parser(
+        "pack",
+        help="Scaffold and manage partner packs",
+        description=(
+            "Manage OpenConstructionERP partner packs (declarative preset bundles).\n\n"
+            "    openconstructionerp pack new <slug> [--out DIR] [--force]\n\n"
+            "Emits a minimal, valid pack folder (manifest.json + logo + onboarding\n"
+            "+ README). Drop the folder (or a .zip of it) into <data-dir>/packs/ and\n"
+            "activate it from the Modules page."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    pack_sub = pack_p.add_subparsers(dest="pack_action")
+    pack_new_p = pack_sub.add_parser("new", help="Scaffold a new partner pack folder")
+    pack_new_p.add_argument("slug", help="Pack slug (lowercase, e.g. acme-de)")
+    pack_new_p.add_argument(
+        "--out",
+        default=None,
+        help="Parent directory to create the pack folder in (default: current directory)",
+    )
+    pack_new_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing folder of the same slug",
+    )
+
     args = parser.parse_args()
 
     # Make the module group's parser reachable from cmd_module so it can print
     # help when invoked with no sub-action (``openconstructionerp module``).
     if args.command == "module":
         args._module_parser = module_p
+    if args.command == "pack":
+        args._pack_parser = pack_p
 
     # Embedded PostgreSQL is the default (see embedded_pg.is_requested). The
     # flags are explicit overrides mapped to the same env vars _setup_env reads
@@ -1554,6 +1730,8 @@ def main() -> None:
         cmd_seed(args)
     elif args.command == "module":
         cmd_module(args)
+    elif args.command == "pack":
+        cmd_pack(args)
     elif args.command in ("welcome", "hello"):
         cmd_welcome(args)
     elif args.command is None:
