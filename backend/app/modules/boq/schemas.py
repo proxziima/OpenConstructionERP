@@ -887,9 +887,7 @@ class BOQWithSections(BOQResponse):
     tax_amount: Decimal = Decimal("0")
     grand_total: Decimal = Decimal("0")
 
-    @field_serializer(
-        "direct_cost", "net_total", "tax_rate", "tax_amount", "grand_total", when_used="json"
-    )
+    @field_serializer("direct_cost", "net_total", "tax_rate", "tax_amount", "grand_total", when_used="json")
     def _ser_money(self, v: Decimal | None) -> str | None:
         return _serialise_money(v)
 

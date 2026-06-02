@@ -317,7 +317,9 @@ async def test_create_reference_and_list_by_target_and_file(
     assert by_file[0].target_id == rfi_id
 
     # By target — same row, viewed from the other end.
-    by_target, total_t = await list_files_for_target(session, project_id=project.id, target_type="rfi", target_id=rfi_id)
+    by_target, total_t = await list_files_for_target(
+        session, project_id=project.id, target_type="rfi", target_id=rfi_id
+    )
     assert total_t == 1
     assert by_target[0].file_kind == "document"
     assert by_target[0].file_id == file_id
