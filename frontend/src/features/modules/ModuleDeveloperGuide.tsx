@@ -29,6 +29,9 @@ import {
   AlertTriangle,
   Rocket,
   Download,
+  UploadCloud,
+  RefreshCw,
+  Power,
 } from 'lucide-react';
 import { Card, Badge, Breadcrumb } from '@/shared/ui';
 
@@ -143,82 +146,176 @@ export function ModuleDeveloperGuide() {
           <p className="text-sm text-content-secondary leading-relaxed mb-4">
             {t('modules.dev_pack_intro', {
               defaultValue:
-                'A partner pack is a small, code-free preset bundle for a country, region or company: default currency, tax template, validation standards, default language, co-branding (logo and colours) and an optional demo project. Anyone can build one, share it, and let other users activate it in one click from the Partner Packs tab.',
+                'A partner pack is a small, code-free preset bundle for a country, region or company. It only carries presets: branding (logo and colours), a default locale, currency and tax defaults, which modules to show or hide, an optional onboarding script, and references to cost-database regions and validation rule packs that already exist in the core. Anyone can build one, share it, and let an admin activate it in one click from the Partner Packs tab.',
             })}
           </p>
 
+          {/* What a pack can and cannot do — honest framing up front */}
+          <div className="mb-5 grid sm:grid-cols-2 gap-3">
+            <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/20 p-3">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-400" />
+                <p className="text-xs font-semibold text-content-primary">
+                  {t('modules.dev_pack_can_title', { defaultValue: 'A pack switches on what already exists' })}
+                </p>
+              </div>
+              <p className="text-xs text-content-secondary leading-relaxed">
+                {t('modules.dev_pack_can_body', {
+                  defaultValue:
+                    'Default currency and tax template, default and additional languages, which modules are visible, co-branding, an onboarding script, and which built-in CWICR regions and validation rule packs to turn on.',
+                })}
+              </p>
+            </div>
+            <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/20 p-3">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400" />
+                <p className="text-xs font-semibold text-content-primary">
+                  {t('modules.dev_pack_cannot_title', { defaultValue: 'A pack ships no code and no data' })}
+                </p>
+              </div>
+              <p className="text-xs text-content-secondary leading-relaxed">
+                {t('modules.dev_pack_cannot_body', {
+                  defaultValue:
+                    'It is declarative only (Shape A) and is never executed. It cannot ship new validation rule classes or its own catalog data; it only references rule packs and cost regions the core already provides. Need new screens, endpoints, tables or rules? Build a module instead.',
+                })}
+              </p>
+            </div>
+          </div>
+
           <div className="space-y-5">
-            <Step number={1} title={t('modules.dev_pack_step_folder', { defaultValue: 'Create the pack folder' })}>
+            <Step number={1} title={t('modules.dev_pack_step_create', { defaultValue: 'Scaffold the pack' })}>
               <p>
-                Drop a pack under <Inline>packs/&lt;your-slug&gt;/</Inline> in a checkout, or ship it
-                as a tiny pip package. Both are discovered automatically.
+                {t('modules.dev_pack_step_create_body', {
+                  defaultValue:
+                    'The CLI scaffolds a ready-to-edit folder with a valid manifest, a placeholder logo, an onboarding script and a README. Edit the placeholders and you are done — no code to write.',
+                })}
               </p>
-              <Code lang="tree">
-{`packs/acme-co/
-└── src/openconstructionerp_acme_co/
-    ├── __init__.py
-    ├── manifest.py        # the pack definition (below)
-    ├── logo.svg           # your logo, shown in-app
-    ├── locales/           # optional shipped translations
-    └── onboarding.yaml    # optional guided setup`}
+              <Code lang="bash">
+{`openconstructionerp pack new acme-co
+# -> creates acme-co/ with:
+#      manifest.json    the pack definition (only required file)
+#      logo.svg         your logo, shown in-app
+#      onboarding.yaml  optional first-login onboarding script
+#      README.md`}
+              </Code>
+              <p>
+                {t('modules.dev_pack_step_create_byhand', {
+                  defaultValue:
+                    'Prefer to author it by hand? Just create a folder with a manifest.json. The minimal shape is below.',
+                })}
+              </p>
+            </Step>
+
+            <Step number={2} title={t('modules.dev_pack_step_manifest', { defaultValue: 'Edit manifest.json' })}>
+              <p>
+                {t('modules.dev_pack_step_manifest_body', {
+                  defaultValue:
+                    'manifest.json is a serialized PartnerPackManifest. slug, partner_name and pack_version identify the pack; the rest are the presets it applies. Empty default_modules means all modules stay visible.',
+                })}
+              </p>
+              <Code lang="json">
+{`{
+  "slug": "acme-co",
+  "partner_name": "ACME Construction",
+  "partner_url": "https://acme.example",
+  "pack_version": "0.1.0",
+  "description": "Preset for ACME teams in the UK.",
+  "default_locale": "en",
+  "additional_locales": {},
+  "cwicr_regions": [],
+  "default_currency": "GBP",
+  "default_tax_template": "uk_vat",
+  "validation_rule_packs": [],
+  "default_modules": [],
+  "hidden_modules": [],
+  "branding": {
+    "primary_color": "#0F2C5F",
+    "accent_color": null,
+    "logo_path": "logo.svg",
+    "favicon_path": null,
+    "powered_by_text": null
+  },
+  "onboarding_script_path": "onboarding.yaml",
+  "metadata": {
+    "country": "GB",
+    "country_name_en": "United Kingdom",
+    "support_email": "hello@acme.example"
+  }
+}`}
               </Code>
             </Step>
 
-            <Step number={2} title={t('modules.dev_pack_step_manifest', { defaultValue: 'Write manifest.py' })}>
-              <Code lang="python">
-{`from app.core.partner_pack.manifest import (
-    PartnerPackManifest, PartnerBranding,
-)
-
-MANIFEST = PartnerPackManifest(
-    slug="acme-co",
-    partner_name="ACME Construction",
-    partner_url="https://acme.example",     # your website, shown to users
-    pack_version="0.1.0",
-    description="Preset for ACME teams in the UK.",
-    default_locale="en-GB",
-    default_currency="GBP",
-    default_tax_template="uk_vat",
-    validation_rule_packs=["nrm2"],
-    default_modules=[],                      # empty = show all modules
-    hidden_modules=[],
-    branding=PartnerBranding(
-        primary_color="#0F2C5F",
-        logo_path="logo.svg",
-        powered_by_text="Powered by OpenConstructionERP, "
-                        "in partnership with ACME",
-    ),
-    metadata={
-        "country": "GB",
-        "country_name_en": "United Kingdom",
-        "support_email": "hello@acme.example",  # shown on your pack card
-    },
-)`}
+            <Step number={3} title={t('modules.dev_pack_step_install', { defaultValue: 'Install it (two ways)' })}>
+              <p className="flex items-start gap-2">
+                <RefreshCw size={14} className="mt-0.5 shrink-0 text-oe-blue" />
+                <span>
+                  {t('modules.dev_pack_step_install_drop', {
+                    defaultValue:
+                      'Drop the folder (or a .zip of it) into your install’s data directory under packs/ — by default ~/.openestimate/packs/, next to the database — then open the Partner Packs tab and click Rescan. No restart needed.',
+                  })}
+                </span>
+              </p>
+              <Code lang="bash">
+{`# Drop-in: place the pack beside the database, then Rescan in the app
+~/.openestimate/packs/acme-co/manifest.json`}
               </Code>
+              <p className="flex items-start gap-2">
+                <UploadCloud size={14} className="mt-0.5 shrink-0 text-oe-blue" />
+                <span>
+                  {t('modules.dev_pack_step_install_upload', {
+                    defaultValue:
+                      'Or zip the folder and upload the .zip directly on the Partner Packs tab using the in-app installer (admins only). It is extracted into the same packs/ directory and appears immediately.',
+                  })}
+                </span>
+              </p>
             </Step>
 
-            <Step number={3} title={t('modules.dev_pack_step_register', { defaultValue: 'Register it (pip package option)' })}>
-              <p>
-                If you ship the pack as its own pip package, expose it through the entry-point group
-                so it is discovered after <Inline>pip install</Inline>:
+            <Step number={4} title={t('modules.dev_pack_step_activate', { defaultValue: 'Activate it' })}>
+              <p className="flex items-start gap-2">
+                <Power size={14} className="mt-0.5 shrink-0 text-oe-blue" />
+                <span>
+                  {t('modules.dev_pack_step_activate_body_v2', {
+                    defaultValue:
+                      'Open Modules → Partner Packs, find your pack and press Activate. It applies the currency, language, validation standards, module visibility and branding, and can install a demo project. Activation is reversible — Deactivate restores the previous state any time.',
+                  })}
+                </span>
               </p>
-              <Code lang="toml">
+              <Link
+                to="/modules?tab=partner-packs"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-oe-blue hover:underline"
+              >
+                <ExternalLink size={13} />
+                {t('modules.dev_pack_open_tab', { defaultValue: 'Open the Partner Packs tab' })}
+              </Link>
+            </Step>
+          </div>
+
+          {/* Discovery caveat — replaces the old "restart the backend" claim */}
+          <div className="mt-5 flex items-start gap-2 rounded-lg border border-border-light bg-surface-secondary/40 p-3">
+            <Info size={14} className="text-content-tertiary shrink-0 mt-0.5" />
+            <p className="text-xs text-content-secondary">
+              {t('modules.dev_pack_restart_caveat', {
+                defaultValue:
+                  'Packs dropped into the data dir, and packs in the repo packs/ folder, are picked up by Rescan with no restart. Only a brand-new pack shipped as a pip package (registered via an entry point) may still need a backend restart before it appears.',
+              })}
+            </p>
+          </div>
+
+          {/* Pip-package option — still supported, just no longer the headline */}
+          <div className="mt-4">
+            <p className="text-xs font-semibold uppercase tracking-wider text-content-tertiary mb-2">
+              {t('modules.dev_pack_pip_title', { defaultValue: 'Optional: ship as a pip package' })}
+            </p>
+            <p className="text-xs text-content-secondary mb-2 leading-relaxed">
+              {t('modules.dev_pack_pip_body', {
+                defaultValue:
+                  'To distribute on PyPI instead of as a folder/zip, expose the manifest through the entry-point group so it is discovered after pip install. A pip-installed pack may require a one-time backend restart.',
+              })}
+            </p>
+            <Code lang="toml">
 {`[project.entry-points."openconstructionerp.partner_packs"]
 acme-co = "openconstructionerp_acme_co:MANIFEST"`}
-              </Code>
-            </Step>
-
-            <Step number={4} title={t('modules.dev_pack_step_activate', { defaultValue: 'Activate and test' })}>
-              <p>
-                Restart the backend, open{' '}
-                <Link to="/modules" className="text-oe-blue hover:underline">
-                  Modules &rarr; Partner Packs
-                </Link>
-                , and your pack appears with an Activate button. Activating applies the currency,
-                language, standards and branding, and can install your demo project. You can switch
-                back any time.
-              </p>
-            </Step>
+            </Code>
           </div>
 
           {/* Sharing */}
