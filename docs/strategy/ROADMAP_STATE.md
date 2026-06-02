@@ -6,6 +6,17 @@
 
 Founder directive: work continuously, implement everything so all modules work together on the PostgreSQL foundation, run full E2E (real clicks, screenshots, logic verification) at the end, then publish ONCE as a new version (target v6.4.0). Do not publish intermediate versions.
 
+=== v6.4.0 PUBLISHED 2026-06-02 (run complete) ===
+GitHub main a810f2f36 / tag v6.4.0 (deref ^{commit}=a810f2f36). PyPI 6.4.0 live. GitHub Release published. VPS https://openconstructionerp.com live on 6.4.0 (117 modules, db ok, alembic v3151 head-matches, SQLite 2.7G, boot ~194s).
+
+Shipped in v6.4.0: cost spine keystone (feature 01: ControlAccount + CostLine, FX rollups grouped by currency never blended, idempotent generate-from-BOQ; alembic v3150->v3151; 28 SQLite tests + PG lane + E2E green); CLI module install/list/uninstall (real partner-pack install); geo 3D auto-framing fix (CesiumViewer: auto-zoom awaits tileset readyPromise + fitToData frames the tileset sphere ALONE instead of unioning the sea-level anchor - verified camera settles at 2.92 sphere-radii = FRAMED).
+
+Full E2E result: 13/13 flows PASS, 0 functional bugs (dashboard, geo 3D, cost spine generate/rollup/idempotent, partner-packs guide+activate, 8-module smoke).
+
+Deferred to v6.5 (tasked): geo b3dm vertical-georeferencing data fix (models float 5-9km above ground; viewer frames them but the offset is wrong at ingest) = task #48. Broad user-facing em-dash sweep = optional. Roadmap features 06/07/08 = next.
+
+Known PRE-EXISTING red CI (NOT a v6.4.0 regression; red since v6.3.0 59b5e9b9): Backend ruff (50 errors, 20 N999 hyphenated demo_pack filenames + import nits, none in costmodel) + Frontend vitest (dependabot 2.1.9->4.1.0 major unreconciled). Passing: CI(PostgreSQL), CodeQL, OpenSSF, PyPI Publish, Release. CI repair tasked = #49. Desktop Release fails = known-broken installers #27.
+
 WORKING TREE WARNING: a large uncommitted changeset is on disk (accumulated 6.3.x fixes plus this run's work). DO NOT `git reset --hard`, `git stash`, or `git clean` - that destroys hours of work (see memory `zombie_bg_task_stash_pop`). Commit at clean milestones; tag/publish only at the very end. New untracked source that MUST be committed at milestone: `backend/openconstructionerp/` (launcher), `backend/app/modules/daily_diary/pdf_export.py`, `backend/app/modules/match_elements/{matchers/llm.py,pdf_import.py,sources/pdf_adapter.py}`, new tests under `backend/tests/`, `frontend/src/features/geo-hub/__tests__/`, `docs/strategy/`. Exclude scratch: `_*`, `_flagship/`, `_frontend_dist_prev/`, `*.txt`, `HANDOVER_NEW_AGENT.md`.
 
 DONE + VERIFIED this run:
@@ -36,7 +47,23 @@ E2E TOOLING confirmed for the end-of-run full E2E: frontend/playwright.config.ts
 
 ENV NOTE: the Glob tool is unreliable in this session (uv_spawn errors and false "No files found" for files that exist) - use Bash `ls`/Grep for file-existence checks.
 
-NEXT: review tests + frontend -> rebuild frontend dist + re-mirror to backend/app/_frontend_dist (picks up guide text + cost-spine UI + the CesiumLike fix) -> commit a clean milestone (NO tag) -> cross-module integration pass -> full E2E (real clicks, screenshots, logic) on :8000 covering geo + partner-packs + cost spine + a broad smoke -> bump 6.4.0 -> publish ONE release at the very end. Then if scope allows, the broad user-facing em-dash sweep TODO above.
+MILESTONE COMMITTED (local only, NO tag/push yet): main 27e6ad03b "feat: cost spine keystone, real module install, geo and login fixes" (122 files, +17016/-1026). Includes cost spine (backend+frontend+tests), partner-packs CLI+resources+em-dash+guide, geo+login+doc-link fixes, the CesiumLike type fix, plus the accumulated prior-session module work + docs/strategy. Working tree now clean of tracked changes; only scratch remains untracked (_*, _flagship/, _pr_review/, _frontend_dist_prev/, HANDOVER_NEW_AGENT.md). _frontend_dist is gitignored (the wheel build bundles it at publish; I rebuilt + mirrored it so :8000 serves the new UI).
+
+:8000 RESTARTED on the new code: confirmed embedded PostgreSQL ("PostgreSQL tables created/verified"), 117 modules, db ok. create_all made the 2 new cost-spine tables but NOT the 7 linkage columns on existing tables.
+
+DONE: DB-ops applied v3151 to the live v6live PG via alembic stamp v3150 + upgrade head (embedded cluster port 58487; all 7 columns + 2 tables + 6 linkage indexes present; alembic_version=v3151_cost_spine; the server now reports status=healthy + alembic_head_matches=true as a bonus). Smoke on the Montreal demo project (129 priced CAD positions): generate-from-boq HTTP 200 (107 accounts, 129 cost lines, 129 positions linked, 0 budget lines linked), rollup HTTP 200 (CAD, estimate 46,367,110.00). NOTE for E2E: that smoke ran generate TWICE, so the Montreal project now has ~258 cost lines (duplicates) - for a clean cost-spine E2E use a DIFFERENT demo project that has a BOQ but no spine yet, or delete Montreal's cost lines and regenerate after the fix below.
+
+BUG FOUND (fixing): generate-from-boq is NOT idempotent for BOQ positions WITHOUT reference_code - each re-run creates a fresh batch of cost lines (Montreal 129 -> 258) because the dedup key is the cost-line `code`, which is a random CL-XXXX for unreferenced positions. Accounts dedup fine (stable classification code). The tests' idempotency coverage used referenced positions, missing this common case.
+
+DONE: idempotency fix COMMITTED (main 4a0dd5953) - generate-from-boq now dedups BOQ-sourced lines by boq_position_id (new CostLineRepository.existing_by_boq_position), reuse-or-create, preserving the snapshot/account-dedup/currency/write-back/budget-autolink behavior. Tests: SQLite unit 18 + integration 10, PG lane 11 (added unreferenced-position re-run regression guards on all three lanes). :8000 RESTARTED on the fixed code (instance 779418c0, healthy, alembic_head_matches true, db ok, 117 modules).
+
+Commits so far this run: 27e6ad03b (milestone) -> 4a0dd5953 (idempotency fix). HEAD = 4a0dd5953. No tag/push yet.
+
+IN FLIGHT: comprehensive E2E agent (Playwright vs :8000 built dist, sequential, real clicks + screenshots to backend/_e2e_shots/): login (demo-login gated off, so real UI login or JWT inject), geo (the reported 3D/DWG/PDF map-visibility bug), cost spine (generate + rollup + idempotent re-run on a CLEAN project, explicitly NOT Montreal), partner-packs guide+list, broad module smoke; returns a ranked findings list.
+
+NEXT: review E2E findings + eyeball the geo + cost-spine screenshots (Read the image files) -> fix anything surfaced -> bump 6.4.0 across pyproject.toml/package.json/tauri.conf.json/CHANGELOG.md/Changelog.tsx + rebuild dist + re-mirror -> commit + tag v6.4.0 + push by SHA refspec + PyPI + GitHub release + VPS deploy, as ONE release at the very end.
+
+NEXT: full E2E (Playwright, real clicks + screenshots + logic) covering geo (the reported 3D/DWG/PDF map-visibility bug), partner-packs (guide + install), cost spine (generate + rollup), and a broad module smoke -> fix anything E2E surfaces -> bump 6.4.0 + finalize CHANGELOG / Changelog.tsx -> commit + tag v6.4.0 + push by explicit SHA refspec + PyPI + GitHub release + VPS deploy, as ONE release at the very end. Optional if time allows: the broad user-facing em-dash sweep TODO above.
 
 TODO (later phase, do NOT start while costmodel/boq/procurement/contracts/rfq or ModuleDeveloperGuide.tsx/en.ts are being edited): broad user-facing em-dash sweep across the rest of the app (other backend modules' data string literals + all frontend locale files + components), since demo content alone held 489 - the codebase likely has more user-facing em-dashes elsewhere.
 
