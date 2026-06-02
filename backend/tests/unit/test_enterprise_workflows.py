@@ -103,7 +103,8 @@ async def test_create_workflow_rejects_over_max_steps(session: AsyncSession) -> 
                 entity_type="invoice",
                 name="bad",
                 steps=too_many,
-            )
+            ),
+            user_id=str(uuid.uuid4()),
         )
     assert exc.value.status_code == 400
     assert "maximum" in exc.value.detail.lower()
@@ -118,7 +119,10 @@ async def test_create_workflow_rejects_unknown_action_type(session: AsyncSession
     service = WorkflowService(session)
     bad_step = [{"name": "exec", "action_type": "exec_python", "role": "admin"}]
     with pytest.raises(HTTPException) as exc:
-        await service.create_workflow(WorkflowCreate(entity_type="invoice", name="bad", steps=bad_step))
+        await service.create_workflow(
+            WorkflowCreate(entity_type="invoice", name="bad", steps=bad_step),
+            user_id=str(uuid.uuid4()),
+        )
     assert exc.value.status_code == 400
     assert "action_type" in exc.value.detail
 
@@ -128,7 +132,10 @@ async def test_allowed_action_types_accepted(session: AsyncSession) -> None:
     """Every allowed action_type round-trips cleanly through create."""
     service = WorkflowService(session)
     steps = [{"name": at, "action_type": at, "role": "admin"} for at in ALLOWED_ACTION_TYPES]
-    wf = await service.create_workflow(WorkflowCreate(entity_type="invoice", name="ok", steps=steps))
+    wf = await service.create_workflow(
+        WorkflowCreate(entity_type="invoice", name="ok", steps=steps),
+        user_id=str(uuid.uuid4()),
+    )
     assert len(wf.steps) == len(ALLOWED_ACTION_TYPES)
 
 
@@ -144,7 +151,8 @@ async def test_create_workflow_rejects_unknown_role(session: AsyncSession) -> No
                 entity_type="invoice",
                 name="bad-role",
                 steps=[{"name": "x", "role": "<script>alert(1)</script>"}],
-            )
+            ),
+            user_id=str(uuid.uuid4()),
         )
     assert exc.value.status_code == 400
     assert "role" in exc.value.detail
@@ -170,7 +178,8 @@ async def test_two_step_workflow_approve_flow(session: AsyncSession) -> None:
                 {"name": "review", "action_type": "review", "role": "manager"},
                 {"name": "sign-off", "action_type": "sign_off", "role": "admin"},
             ],
-        )
+        ),
+        user_id=str(admin_id),
     )
 
     req = await service.submit_request(
@@ -223,7 +232,8 @@ async def test_runtime_step_overflow_rejected(session: AsyncSession) -> None:
             entity_type="invoice",
             name="loop-guard",
             steps=[{"name": "s1", "action_type": "approve", "role": "admin"}],
-        )
+        ),
+        user_id=str(admin_id),
     )
     req = await service.submit_request(
         ApprovalRequestCreate(

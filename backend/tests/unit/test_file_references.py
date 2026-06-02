@@ -309,13 +309,15 @@ async def test_create_reference_and_list_by_target_and_file(
     assert created.relation == "references"
 
     # By file ─ Returns the RFI link.
-    by_file, total = await list_references_for_file(session, file_kind="document", file_id=file_id)
+    by_file, total = await list_references_for_file(
+        session, project_id=project.id, file_kind="document", file_id=file_id
+    )
     assert total == 1
     assert by_file[0].target_type == "rfi"
     assert by_file[0].target_id == rfi_id
 
     # By target — same row, viewed from the other end.
-    by_target, total_t = await list_files_for_target(session, target_type="rfi", target_id=rfi_id)
+    by_target, total_t = await list_files_for_target(session, project_id=project.id, target_type="rfi", target_id=rfi_id)
     assert total_t == 1
     assert by_target[0].file_kind == "document"
     assert by_target[0].file_id == file_id
@@ -361,13 +363,13 @@ async def test_delete_reference_removes_link(session: AsyncSession) -> None:
         actor_id=user.id,
     )
 
-    ok = await delete_reference(session, created.id)
+    ok = await delete_reference(session, created.id, project_id=project.id)
     assert ok is True
 
-    items, total = await list_files_for_target(session, target_type="rfi", target_id=rfi_id)
+    items, total = await list_files_for_target(session, project_id=project.id, target_type="rfi", target_id=rfi_id)
     assert total == 0
     assert items == []
 
     # Idempotent failure mode — second delete is False, not an error.
-    again = await delete_reference(session, created.id)
+    again = await delete_reference(session, created.id, project_id=project.id)
     assert again is False
