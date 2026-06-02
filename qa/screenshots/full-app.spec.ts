@@ -297,6 +297,11 @@ async function hydrateAuth(page: Page, accessToken: string): Promise<void> {
     // suppresses the card for any current/future release without needing to
     // import APP_VERSION here.
     localStorage.setItem('oe.last_seen_version', '9999.0.0');
+    // oe.v6_pg_notice_dismissed → PostgresMigrationNotice.tsx, the amber
+    // "v6 moved SQLite→PostgreSQL" strip that pins to the very top of every
+    // page on a v6/PostgreSQL install. A real notice for users, but it would
+    // otherwise crown every screenshot with a warning bar.
+    localStorage.setItem('oe.v6_pg_notice_dismissed', '1');
     sessionStorage.setItem('oe_access_token', p.token);
     sessionStorage.setItem('oe_refresh_token', p.token);
     // Dismiss the public-demo modal on the hosted demo VPS
