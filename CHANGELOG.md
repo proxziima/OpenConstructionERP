@@ -5,6 +5,27 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.4.2] - 2026-06-02
+
+### Fixed
+
+- BIM and 3D models now sit at ground level. Two separate geometry bugs put models far from where they belong. A file authored in millimetres or imperial units had its element placements read in raw file units while the extents were already converted to metres, so every element landed up to a thousand times too far from the origin and the viewer could not frame the building. Placements are now scaled to the file's declared length unit the same way the quantities are, and SI-metre and unit-less files are unaffected. Separately, the 3D tiles a project map serves were georeferenced several kilometres above the ground because of a duplicated coordinate conversion that used the wrong Earth radius. That math is replaced by the shared, tested helper, so a model now opens at the correct altitude. These close issue #53 and issue #48.
+- The X-DDC-License response header is ASCII-only again. It previously carried a non-ASCII separator character that some HTTP clients and test tools rejected. The separator is now a plain hyphen. The header is a decorative authorship marker and nothing depends on its exact text.
+
+### Added
+
+- Partner Packs are easier to create and install. A pack is declarative presets only, so it ships no code and no data and is never executed. You can now scaffold a valid pack from the command line with `pack new`, drop a pack folder or a .zip into the runtime data directory's packs folder and pick it up with Rescan, or, as an admin, upload the .zip straight from Modules then Partner Packs. None of these need a restart or a source checkout, which matters for pip and server installs that have no repository on disk. The in-app developer guide was rewritten to describe this create, install and apply flow as it actually works, and the old instruction to restart the backend is gone.
+- Zip uploads and dropped archives are extracted through one hardened routine that rejects path traversal, symlinks, absolute paths, drive letters and backslash members, checks every entry, and stages to a temporary directory before an atomic move into place. The admin upload endpoint is size-capped and checks the file is really a zip before reading it.
+
+### Security
+
+- Conservative dependency fixes for flagged advisories, none of which affect the running application. python-multipart was raised to 0.0.27 to pick up the fix for a multipart-parsing denial-of-service that is reachable through file uploads, and pyarrow to 23.0.1 for a patch within the same series. On the frontend, the uuid library bundled inside exceljs is pinned to 11.1.1 to clear a transitive advisory. The remaining flagged items are all inside the vitest test tooling, which is a development dependency that never ships in the build or runs in production, so that upgrade is being handled separately as a tested change because it is a major version.
+
+### Changed
+
+- The production Docker deployment is documented, covering both the single-image build and the split backend and nginx setup, including the upload size limit, module-worker content type and the WebSocket upgrade the nginx config handles.
+- Build and test hygiene. Backend test collection no longer aborts when an optional dependency is not installed, so the continuous integration run completes cleanly, and a batch of frontend unit tests that had drifted from the components they cover was brought back in line. None of this changes how the app runs.
+
 ## [6.4.1] - 2026-06-02
 
 ### Fixed
