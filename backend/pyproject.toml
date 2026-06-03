@@ -200,11 +200,14 @@ packages = ["app", "openconstructionerp"]
 # Build frontend first: cd frontend && npm run build
 [tool.hatch.build.targets.wheel.force-include]
 "../frontend/dist" = "app/_frontend_dist"
-# Ship the baked flagship/demo assets (real CAD geometry + plan-set PDF +
-# flagship spec) so the demo installer can attach real BIM geometry and a
-# downloadable PDF to every demo project from the wheel, with no CAD
-# conversion at runtime. These bytes are reused by seed_demo_assets.py.
-"app/scripts/flagship_assets" = "app/scripts/flagship_assets"
+# NOTE: the baked flagship/demo assets live at app/scripts/flagship_assets,
+# which is already inside the ``app`` package above, so the package walk
+# ships those tracked bytes (flagship.json, the .dae.gz geometry, the
+# plan-set PDF) into the wheel on its own. They must NOT also appear in this
+# force-include map: a path that is both inside a packaged directory and
+# force-included is added to the archive twice, and hatchling aborts the
+# build with "a second file is being added to the wheel archive at the same
+# path". seed_demo_assets.py reads them from the installed package location.
 
 # Editable installs (uv pip install -e ./backend, pip install -e .) do NOT
 # need the bundled frontend — Vite's dev server serves the UI on :5173
