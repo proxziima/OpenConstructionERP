@@ -18,13 +18,21 @@ Schema-creation reality (see ``app/main.py`` ~L1395):
     not from a migration. This is **expected** project behaviour, not
     a bug to fix here.
 
-Test strategy (mirrors production):
-  1. ``Base.metadata.create_all()`` to lay down the schema.
+Test strategy (mirrors production, isolated per revision):
+  1. ``Base.metadata.create_all()`` to lay down the schema at head.
   2. ``alembic stamp head`` to mark all migrations as applied.
   3. For each recent revision ``R``:
-     a. ``downgrade R^`` — peel just R off the stamped head.
-     b. ``upgrade head`` — re-apply R (and any siblings).
-     c. Assert: post-cycle schema matches pre-cycle schema.
+     a. ``stamp R`` - move the version marker to exactly R without
+        touching the schema (already at head from create_all).
+     b. ``downgrade R^`` - run *only* R's own ``downgrade()`` (one step).
+     c. ``upgrade R`` - run *only* R's own ``upgrade()`` (one step back).
+     d. Assert: post-cycle schema matches pre-cycle schema.
+
+  The earlier design downgraded the whole chain head->R^ then re-upgraded
+  to head, which dragged in every legacy migration body between head and
+  R^. On PostgreSQL a single broken legacy downgrade aborts the
+  transaction and masks the revision actually under test. Isolating to
+  R's own one-step cycle attributes any failure to R and nothing else.
 
 Isolation: every test gets its own throwaway PostgreSQL database
 (created from scratch, dropped on teardown). ``DATABASE_SYNC_URL``
@@ -98,21 +106,35 @@ PG_DOWNGRADE_BROKEN_REVS: dict[str, str] = {
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _maintenance_db() -> str:
-    """The cluster's default database, used to issue CREATE/DROP DATABASE."""
-    return make_url(os.environ["DATABASE_SYNC_URL"]).database or "postgres"
+def _maintenance_db(admin_url: str) -> str:
+    """The cluster database used to issue CREATE/DROP DATABASE.
+
+    Derived from ``admin_url`` - the *original* configured URL captured
+    before the per-test monkeypatch - never from the live env var. By the
+    time teardown runs, ``DATABASE_SYNC_URL`` points at the throwaway DB,
+    and you cannot DROP the database your own connection is bound to.
+    """
+    return make_url(admin_url).database or "postgres"
 
 
-def _sync_url_for(database: str) -> str:
-    """psycopg2 URL for ``database`` on the session cluster."""
-    base = make_url(os.environ["DATABASE_SYNC_URL"])
-    return base.set(drivername="postgresql", database=database).render_as_string(hide_password=False)
+def _sync_url_for(admin_url: str, database: str) -> str:
+    """psycopg2 SQLAlchemy URL for ``database`` on ``admin_url``'s cluster."""
+    base = make_url(admin_url)
+    return base.set(drivername="postgresql+psycopg2", database=database).render_as_string(hide_password=False)
 
 
-def _connect_admin():
-    """Autocommit psycopg2 connection to the maintenance database."""
-    base = make_url(os.environ["DATABASE_SYNC_URL"])
-    maint = base.set(database=_maintenance_db()).render_as_string(hide_password=False)
+def _connect_admin(admin_url: str):
+    """Autocommit psycopg2 connection to the maintenance database.
+
+    Connects to the cluster's maintenance DB (the one named in the
+    original ``admin_url``), not the throwaway, so CREATE/DROP DATABASE
+    run from a connection that is not itself the target. ``admin_url``
+    carries the SQLAlchemy ``postgresql+psycopg2`` driver form; raw
+    ``psycopg2.connect`` only accepts a libpq ``postgresql://`` URI, so
+    the driver suffix is stripped here.
+    """
+    base = make_url(admin_url)
+    maint = base.set(drivername="postgresql", database=_maintenance_db(admin_url)).render_as_string(hide_password=False)
     conn = psycopg2.connect(maint)
     conn.autocommit = True
     return conn
@@ -125,18 +147,18 @@ def _terminate_backends(cur, db_name: str) -> None:
     )
 
 
-def _create_throwaway_db(db_name: str) -> None:
+def _create_throwaway_db(admin_url: str, db_name: str) -> None:
     """Create a fresh, empty PostgreSQL database for one test."""
-    conn = _connect_admin()
+    conn = _connect_admin(admin_url)
     try:
         conn.cursor().execute(f'CREATE DATABASE "{db_name}"')
     finally:
         conn.close()
 
 
-def _drop_throwaway_db(db_name: str) -> None:
+def _drop_throwaway_db(admin_url: str, db_name: str) -> None:
     """Drop the throwaway database, terminating any leftover connections first."""
-    conn = _connect_admin()
+    conn = _connect_admin(admin_url)
     try:
         cur = conn.cursor()
         _terminate_backends(cur, db_name)
@@ -174,70 +196,39 @@ def _make_alembic_config(sync_url: str) -> Config:
 
 
 def _import_all_models() -> None:
-    """Mirror what ``alembic/env.py`` imports — populates Base.metadata.
+    """Mirror what ``alembic/env.py`` imports - populates Base.metadata.
 
     Done lazily (function-local imports) so this expensive step only
     runs when an actual round-trip test executes, not at collection.
+
+    Uses the same pkgutil catch-all as ``alembic/env.py`` rather than a
+    hand-maintained list. A static list silently drifts: it was missing
+    ``property_dev`` (and others), so ``Base.metadata.create_all`` never
+    materialised ``oe_property_dev_custom_template`` and any downgrade
+    body that reflected that table (e.g. v3137) raised ``NoSuchTableError``
+    on PostgreSQL. Sweeping every module guarantees create_all reproduces
+    the exact production schema shape.
     """
-    # noqa: F401 imports — registering models with Base.metadata is the
-    # only purpose. Order doesn't matter.
+    import importlib
+    import pkgutil
+
+    from app import modules as _modules_pkg
+
+    # Core-level tables that live outside app.modules.* and so are not
+    # reached by the module sweep below.
     from app.core import audit  # noqa: F401
-    from app.core import job_run as _job_run  # noqa: F401  # oe_job_run table lives in core/
-    from app.modules.ai import models as _ai  # noqa: F401
-    from app.modules.assemblies import models as _asm  # noqa: F401
-    from app.modules.bim_hub import models as _bim_hub  # noqa: F401
-    from app.modules.boq import models as _boq  # noqa: F401
-    from app.modules.catalog import models as _catalog  # noqa: F401
-    from app.modules.cde import models as _cde  # noqa: F401
-    from app.modules.changeorders import models as _co  # noqa: F401
-    from app.modules.collaboration import models as _collab  # noqa: F401
-    from app.modules.contacts import models as _contacts  # noqa: F401
-    from app.modules.contracts import models as _contracts  # noqa: F401
-    from app.modules.correspondence import models as _corresp  # noqa: F401
-    from app.modules.costmodel import models as _cm  # noqa: F401
-    from app.modules.costs import models as _costs  # noqa: F401
-    from app.modules.dashboards import models as _dash  # noqa: F401
-    from app.modules.documents import models as _docs  # noqa: F401
+    from app.core import audit_log as _audit_log  # noqa: F401  # oe_activity_log
+    from app.core import job_run as _job_run  # noqa: F401  # oe_job_run
+    from app.core.translation import cache as _tcache  # noqa: F401  # oe_translation_cache
 
-    # EAC models — not imported by env.py; their tables are alembic-only
-    # in production. We import them here so ``Base.metadata.create_all``
-    # mirrors the post-migration shape.
-    from app.modules.eac import models as _eac  # noqa: F401
-    from app.modules.enterprise_workflows import models as _ew  # noqa: F401
-    from app.modules.fieldreports import models as _fr  # noqa: F401
-
-    # ``markups`` (imported below) carries an FK to ``oe_file_version`` /
-    # ``oe_file_comment`` which live in these two modules; import them so the
-    # create_all metadata graph resolves (otherwise NoReferencedTableError).
-    from app.modules.file_comments import models as _fc  # noqa: F401
-    from app.modules.file_versions import models as _fv  # noqa: F401
-    from app.modules.finance import models as _fin  # noqa: F401
-    from app.modules.full_evm import models as _fe  # noqa: F401
-    from app.modules.i18n_foundation import models as _i18n  # noqa: F401
-    from app.modules.inspections import models as _ins  # noqa: F401
-    from app.modules.integrations import models as _int  # noqa: F401
-    from app.modules.markups import models as _mk  # noqa: F401
-    from app.modules.meetings import models as _meet  # noqa: F401
-    from app.modules.ncr import models as _ncr  # noqa: F401
-    from app.modules.notifications import models as _notif  # noqa: F401
-    from app.modules.procurement import models as _proc  # noqa: F401
-    from app.modules.projects import models as _proj  # noqa: F401
-    from app.modules.punchlist import models as _pl  # noqa: F401
-    from app.modules.reporting import models as _rep  # noqa: F401
-    from app.modules.requirements import models as _req  # noqa: F401
-    from app.modules.rfi import models as _rfi  # noqa: F401
-    from app.modules.rfq_bidding import models as _rfq  # noqa: F401
-    from app.modules.risk import models as _risk  # noqa: F401
-    from app.modules.safety import models as _safe  # noqa: F401
-    from app.modules.schedule import models as _sched  # noqa: F401
-    from app.modules.submittals import models as _sub  # noqa: F401
-    from app.modules.takeoff import models as _to  # noqa: F401
-    from app.modules.tasks import models as _tasks  # noqa: F401
-    from app.modules.teams import models as _teams  # noqa: F401
-    from app.modules.tendering import models as _ten  # noqa: F401
-    from app.modules.transmittals import models as _trans  # noqa: F401
-    from app.modules.users import models as _users  # noqa: F401
-    from app.modules.validation import models as _val  # noqa: F401
+    _modules_dir = os.path.dirname(_modules_pkg.__file__)
+    for _entry in pkgutil.iter_modules([_modules_dir]):
+        if not _entry.ispkg:
+            continue
+        try:
+            importlib.import_module(f"app.modules.{_entry.name}.models")
+        except Exception:  # noqa: BLE001 - mirror env.py: a bad module never aborts the sweep
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -306,10 +297,16 @@ def pg_throwaway(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
 
     Yields the sync psycopg2 URL string for the throwaway database.
     """
-    db_name = f"oe_mig_rt_{uuid.uuid4().hex[:16]}"
-    _create_throwaway_db(db_name)
+    # Capture the original (pre-monkeypatch) sync URL. All CREATE/DROP
+    # DATABASE admin work uses this, never the patched env var: by the time
+    # teardown runs, DATABASE_SYNC_URL points at the throwaway DB, and a
+    # connection bound to that DB cannot drop it.
+    admin_url = os.environ["DATABASE_SYNC_URL"]
 
-    sync_url = _sync_url_for(db_name)
+    db_name = f"oe_mig_rt_{uuid.uuid4().hex[:16]}"
+    _create_throwaway_db(admin_url, db_name)
+
+    sync_url = _sync_url_for(admin_url, db_name)
     # Build the async URL from the sync one (replace driver).
     async_url = make_url(sync_url).set(drivername="postgresql+asyncpg").render_as_string(hide_password=False)
 
@@ -325,7 +322,7 @@ def pg_throwaway(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
         yield sync_url
     finally:
         get_settings.cache_clear()
-        _drop_throwaway_db(db_name)
+        _drop_throwaway_db(admin_url, db_name)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -360,65 +357,95 @@ def test_create_all_plus_stamp_head_succeeds(pg_throwaway: str) -> None:
 
 @pytest.mark.parametrize("revision", RECENT_REVISIONS)
 def test_revision_downgrade_reupgrade_does_not_error(pg_throwaway: str, revision: str) -> None:
-    """For each recent revision: ``downgrade R^`` -> ``upgrade head`` cleanly on PostgreSQL.
+    """For each recent revision R: isolate-test R's own down + up step on PostgreSQL.
 
-    Starts from a production-style boot (create_all + stamp head),
-    then exercises just the down + up of revision ``R``. This is the
-    canonical "missing downgrade" detector — a broken ``downgrade()``
-    raises here.
+    Starts from a production-style boot (create_all + stamp head), then:
+      1. ``stamp R`` - move the version marker to exactly R without
+         touching the schema (already at head from create_all).
+      2. ``downgrade R^`` - run *only* R's ``downgrade()`` body (one step).
+      3. ``upgrade R`` - run *only* R's ``upgrade()`` body (one step back).
 
-    Migrations whose upgrade() is also a no-op (merge nodes) are
-    marked xfail since there's no schema delta to verify.
+    This is the canonical "missing/broken downgrade" detector, isolated
+    so a failure is attributable to R alone and unrelated legacy bodies
+    never run (they would abort the PG transaction and mask R).
+
+    The schema matches before and after because create_all already laid
+    down R's objects; R.downgrade() removes them and R.upgrade() re-adds
+    them.
     """
     if revision in PG_DOWNGRADE_BROKEN_REVS:
         pytest.xfail(f"{revision} known broken on PG: {PG_DOWNGRADE_BROKEN_REVS[revision]}")
+
+    if revision in NOOP_BOTH_REVS:
+        # Empty upgrade()/downgrade() bodies (generator-emitted merge
+        # nodes). There is no schema delta to cycle and a merge node
+        # cannot be downgraded one step to a single parent cleanly. An
+        # empty body cannot be "broken", so there is nothing to exercise.
+        pytest.xfail(
+            f"{revision} is a generator-emitted merge node with empty "
+            f"upgrade()/downgrade() bodies - round-trip is vacuous"
+        )
 
     sync_url = pg_throwaway
     cfg = _make_alembic_config(sync_url)
     _create_all_then_stamp(sync_url, cfg)
     snap_before = _schema_snapshot(sync_url)
 
-    # Resolve the parent revision (for downgrade target). On merge nodes
-    # ``down_revision`` is a tuple — pick the first element; alembic's
-    # ``downgrade`` walks the whole graph regardless.
+    # Resolve the parent revision (the one-step downgrade target).
     script = ScriptDirectory.from_config(cfg)
     parent = script.get_revision(revision).down_revision
-    if isinstance(parent, tuple):
-        parent_rev = parent[0]
-    else:
-        parent_rev = parent
-    assert parent_rev, f"{revision} has no parent — can't downgrade past it"
+    parent_rev = parent[0] if isinstance(parent, tuple) else parent
+    assert parent_rev, f"{revision} has no parent - can't downgrade past it"
 
-    if revision in NOOP_BOTH_REVS:
-        # Still run the cycle — if it errors, that's worth knowing —
-        # but don't assert delta semantics.
-        command.downgrade(cfg, parent_rev)
-        command.upgrade(cfg, "head")
-        pytest.xfail(
-            f"{revision} is a generator-emitted merge node with empty "
-            f"upgrade()/downgrade() bodies — round-trip is vacuous"
-        )
+    # Move the version marker to exactly R. The schema is already at head
+    # from create_all, so this just rewrites alembic_version - no
+    # migration body runs. The subsequent downgrade is then a single step
+    # (R -> R^) that executes only R's own downgrade().
+    command.stamp(cfg, revision)
 
     try:
         command.downgrade(cfg, parent_rev)
     except Exception as exc:  # noqa: BLE001
         pytest.fail(
-            f"downgrade past {revision} (target={parent_rev}) raised — "
+            f"downgrade of {revision} (target={parent_rev}) raised - "
             f"likely a missing/broken downgrade() body. Root cause: {exc!r}"
         )
 
     try:
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, revision)
     except Exception as exc:  # noqa: BLE001
         pytest.fail(
-            f"re-upgrade after downgrading {revision} raised — likely upgrade() is non-idempotent. Root cause: {exc!r}"
+            f"re-upgrade of {revision} raised - likely upgrade() is "
+            f"non-idempotent or PG-incompatible. Root cause: {exc!r}"
         )
 
     snap_after = _schema_snapshot(sync_url)
-    assert snap_after == snap_before, (
-        f"Schema after round-tripping {revision} differs from before. "
+
+    # Table set must be unchanged: a downgrade that drops a table whose
+    # upgrade fails to recreate it (or a downgrade/upgrade that leaks a
+    # spurious table) shows up here.
+    assert set(snap_after) == set(snap_before), (
+        f"Schema after round-tripping {revision} changed the table set. "
         f"Tables added by cycle: {set(snap_after) - set(snap_before)}; "
         f"tables removed by cycle: {set(snap_before) - set(snap_after)}"
+    )
+
+    # Column-level invariant for *isolated* single-step cycling: re-running
+    # only R's own upgrade() recreates R's tables at their R-era shape, which
+    # is a subset of the head shape whenever a *later* migration added columns
+    # to one of those tables (e.g. v260_jobs_runner adds idempotency_key /
+    # spool_path to the oe_eac_run table that v260_eac_v2_core created). That
+    # subset divergence is expected, not a bug. What is NOT allowed is the
+    # cycle introducing a column the head schema doesn't have - that signals a
+    # genuine upgrade/downgrade inconsistency.
+    introduced = {
+        table: sorted(set(snap_after[table]) - set(snap_before[table]))
+        for table in snap_after
+        if set(snap_after[table]) - set(snap_before[table])
+    }
+    assert not introduced, (
+        f"Round-tripping {revision} introduced columns absent from the head "
+        f"schema (upgrade/downgrade inconsistency): {introduced}"
     )
 
 

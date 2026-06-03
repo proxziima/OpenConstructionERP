@@ -74,7 +74,9 @@ def upgrade() -> None:
                 "shared_with_project",
                 sa.Boolean(),
                 nullable=False,
-                server_default=sa.text("0"),
+                # PostgreSQL rejects an integer default on a boolean column;
+                # "0" worked only under SQLite's loose typing.
+                server_default=sa.text("false"),
             ),
             sa.Column(
                 "created_at",
