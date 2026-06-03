@@ -5,6 +5,24 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.7.0] - 2026-06-03
+
+### Added
+
+- A simple builder on the AI Agents page. Alongside more ready-made agents, you can now create your own from the screen: give it a name and a short description, pick the tools it may use and write its instructions, with no code involved. Your agents are saved to your account and run next to the built-in ones.
+
+### Changed
+
+- All 27 interface languages are now fully translated. The pass focused on the dashboard and the project screens, where some English words were still showing through, and went over every module so the app reads naturally in each language.
+- The example projects are filled out across every module. Each demo now arrives with a real Revit, IFC and DWG model and a PDF plan set attached, so the BIM viewer, the quantity takeoff and the reports all have real content to work with, and validation runs at install time and stores a report against the bill of quantities.
+- Partner packs ship the real company logos for Doka Formwork, Batimatech and BIM-Cluster Hessen, and each pack installs cleanly together with its catalogue and demo data. The Batimatech pack now defaults to French and loads the Canadian CWICR cost database for Toronto through the DDC parser.
+
+### Fixed
+
+- Validation no longer fails when it runs straight after a demo is installed. It was reaching for a related collection that the async database session had not loaded yet, so the run could error before producing a report. It now reads the positions with an explicit query and produces the report every time.
+- Reinstalling a demo project no longer stops on a duplicate resource code. The seeding step clears the demo's own resource rows by code before inserting them again, so a forced reinstall completes cleanly.
+- The cost database import and the catalogue picker no longer fail with a server error. Importing the Germany and DACH cost database and adding items from the catalogue both work again.
+
 ## [6.6.0] - 2026-06-02
 
 ### Changed

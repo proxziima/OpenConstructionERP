@@ -9,6 +9,7 @@ import logging
 import uuid
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.validation.engine import (
@@ -250,15 +251,22 @@ class ValidationModuleService:
             id, ordinal, description, unit, quantity, unit_rate, total,
             classification, source, parent_id, type (section vs position).
         """
-        from app.modules.boq.models import BOQ
+        from app.modules.boq.models import BOQ, Position
 
         boq = await self.session.get(BOQ, boq_id)
         if boq is None:
             msg = f"BOQ {boq_id} not found"
             raise ValueError(msg)
 
+        # Load positions with an explicit awaited query rather than the lazy
+        # ``boq.positions`` relationship. Under AsyncSession, touching a lazy
+        # collection that is not already populated (e.g. positions inserted by
+        # FK during demo seeding, before the relationship is loaded) raises
+        # MissingGreenlet. An explicit select is safe in every caller context.
+        pos_rows = (await self.session.execute(select(Position).where(Position.boq_id == boq_id))).scalars().all()
+
         positions_data: list[dict[str, Any]] = []
-        for pos in boq.positions:
+        for pos in pos_rows:
             positions_data.append(
                 {
                     "id": str(pos.id),
