@@ -736,8 +736,13 @@ a.dl-dl.btn-primary{color:#fff;}
       if(linuxMeta) linuxMeta.removeAttribute("data-built");
       wire(deb, map.deb, ".deb");
       wire(app, map.app, ".AppImage");
-      if(!deb && !app && linuxMeta){
-        linuxMeta.innerHTML = '<a class="dl-mono" style="color:var(--accent-3);text-decoration:none" href="' + RELEASES_PAGE + '" rel="noopener">View on GitHub &rarr;</a>';
+      if(!deb && !app){
+        var lxDocs = "https://github.com/" + REPO + "#quick-start";
+        var dEl = document.getElementById("btn-deb"); if(dEl) dEl.setAttribute("href", lxDocs);
+        var aEl = document.getElementById("btn-app"); if(aEl) aEl.setAttribute("href", lxDocs);
+        if(linuxMeta){
+          linuxMeta.innerHTML = 'Native .deb / .AppImage are still building. On Linux right now: <code class="dl-mono">pip install openconstructionerp</code> or Docker &middot; <a style="color:var(--accent-3);text-decoration:none" href="' + lxDocs + '" rel="noopener">Quick Start &rarr;</a>';
+        }
       }
     })
     .catch(function(){ fallback(); });
