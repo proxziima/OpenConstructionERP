@@ -196,14 +196,20 @@ export function AssemblyEditorPage() {
   const breakdown = useMemo(() => {
     const comps = assembly?.components ?? [];
     const totals: Record<string, number> = {};
+    const counts: Record<string, number> = {};
     let grand = 0;
     for (const c of comps) {
       const t = c.resource_type ?? inferResourceType(c);
-      totals[t] = (totals[t] ?? 0) + (c.total || 0);
-      grand += c.total || 0;
+      // total is normalised to a number at the API boundary; coerce again
+      // defensively so a stray string can never turn this sum into string
+      // concatenation (which produced NaN and dropped whole categories).
+      const lineTotal = Number(c.total) || 0;
+      totals[t] = (totals[t] ?? 0) + lineTotal;
+      counts[t] = (counts[t] ?? 0) + 1;
+      grand += lineTotal;
     }
-    const bid = assembly?.bid_factor ?? 1;
-    return { totals, grand, withBid: grand * bid };
+    const bid = Number(assembly?.bid_factor) || 1;
+    return { totals, counts, grand, withBid: grand * bid };
   }, [assembly?.components, assembly?.bid_factor]);
 
   const handleExportJson = useCallback(async () => {
@@ -1536,7 +1542,12 @@ function BreakdownSidebar({
   unit,
   bidFactor,
 }: {
-  breakdown: { totals: Record<string, number>; grand: number; withBid: number };
+  breakdown: {
+    totals: Record<string, number>;
+    counts: Record<string, number>;
+    grand: number;
+    withBid: number;
+  };
   currency: string;
   unit: string;
   bidFactor: number;
@@ -1567,6 +1578,12 @@ function BreakdownSidebar({
             : rt === 'subcontractor'
               ? t('assemblies.type_subcontractor_full', { defaultValue: 'Subcontract' })
               : t('assemblies.type_overhead_full', { defaultValue: 'Overhead' });
+  // Show every category that has components, not only the priced ones, so a
+  // line you just added is visible (at 0) while you type its price in, and a
+  // category with several components never silently drops out.
+  const rows = order.filter(
+    (rt) => (breakdown.totals[rt] ?? 0) > 0 || (breakdown.counts[rt] ?? 0) > 0,
+  );
   return (
     <Card padding="md" className="xl:sticky xl:top-4 self-start">
       <div className="flex items-center gap-1.5 mb-3">
@@ -1575,7 +1592,7 @@ function BreakdownSidebar({
           {t('assemblies.breakdown_title', { defaultValue: 'Cost Drivers' })}
         </h3>
       </div>
-      {breakdown.grand <= 0 ? (
+      {rows.length === 0 ? (
         <div className="text-xs text-content-tertiary leading-snug">
           {t('assemblies.breakdown_empty', {
             defaultValue: 'Add components to see how the rate is built up by material, labor and equipment.',
@@ -1583,9 +1600,7 @@ function BreakdownSidebar({
         </div>
       ) : (
         <div className="space-y-3">
-          {order
-            .filter((rt) => (breakdown.totals[rt] ?? 0) > 0)
-            .map((rt) => {
+          {rows.map((rt) => {
               const value = breakdown.totals[rt] ?? 0;
               const pct = breakdown.grand > 0 ? (value / breakdown.grand) * 100 : 0;
               return (
@@ -1610,7 +1625,7 @@ function BreakdownSidebar({
             })}
         </div>
       )}
-      {breakdown.grand > 0 && (
+      {rows.length > 0 && (
         <div className="mt-4 pt-3 border-t border-border-light space-y-1">
           <div className="flex items-center justify-between text-xs">
             <span className="text-content-tertiary">
