@@ -10,7 +10,8 @@
     "github": "GitHub",
     "try_demo": "Try demo",
     "install": "Install",
-    "news": "News"
+    "news": "News",
+    "download": "Download"
   },
   "hero": {
     "version_meta": "shipped 2026-04-20",

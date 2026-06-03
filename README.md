@@ -739,9 +739,18 @@ Get productive in under 10 minutes:
 
 > <picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme-icons/eye-dark.svg"><img src="docs/readme-icons/eye-light.svg" width="14" align="center" alt=""></picture> **Prefer to see it first?** [▶ Watch the 12-minute walkthrough on YouTube](https://www.youtube.com/watch?v=X06cIaroAeI) - onboarding → BoQ → BIM → DWG → PDF → AI → dashboard.
 
-> **Requires Python 3.12+** (any path below). Check with `python --version`.
+### Easiest: download the desktop app (no Python, no setup)
 
-### Recommended: pip install (1 command, full app)
+Download the installer for your operating system, run it, and OpenConstructionERP opens as a native desktop app. No Python, no pip, no Docker, and no database to set up. Everything runs locally on your machine.
+
+- **[Download for your platform](https://openconstructionerp.com/download)** picks the right file for your OS automatically.
+- Or grab one straight from the **[latest release](https://github.com/datadrivenconstruction/OpenConstructionERP/releases/latest)**: Windows `.exe` installer, macOS `.dmg`, or Linux `.deb` / `.AppImage`.
+
+The first launch takes about a minute while it sets up your local database, then every launch after that is fast. Open source under AGPL-3.0.
+
+> **Prefer the command line?** The options below (pip, Docker, source) need Python 3.12+. Check with `python --version`.
+
+### pip install (full app, one command)
 
 ```bash
 pip install --upgrade openconstructionerp
