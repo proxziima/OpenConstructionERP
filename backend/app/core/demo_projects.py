@@ -8478,6 +8478,7 @@ async def install_demo_project(
     demo_id: str,
     *,
     force_reinstall: bool = False,
+    partner_pack: str | None = None,
 ) -> dict:
     """Install a demo project with full BOQ, Schedule, Budget, and Tendering data.
 
@@ -8485,6 +8486,12 @@ async def install_demo_project(
     When the demo is already installed and ``force_reinstall`` is False, returns
     the existing project info with ``already_installed=True`` instead of creating
     a duplicate.
+
+    When ``partner_pack`` is set, the project is tagged with
+    ``metadata_["partner_pack"] = <slug>`` so an active pack can scope the
+    workspace to show only its own projects. An already-installed demo is
+    re-tagged in place (idempotent) so re-activating a pack scopes the existing
+    sample too. Deactivating the pack clears the tag again.
 
     Raises ``ValueError`` if ``demo_id`` is not in the registry.
     """
@@ -8501,6 +8508,13 @@ async def install_demo_project(
 
     if existing_demo and not force_reinstall:
         proj = existing_demo[0]
+        # Re-tag the existing demo for the pack so re-activation scopes it too.
+        if partner_pack:
+            md = dict(proj.metadata_ or {})
+            if md.get("partner_pack") != partner_pack:
+                md["partner_pack"] = partner_pack
+                proj.metadata_ = md
+                await session.flush()
         logger.info(
             "Demo '%s' already installed as project %s — skipping duplicate creation",
             demo_id,
@@ -8538,7 +8552,12 @@ async def install_demo_project(
         status="active",
         owner_id=owner_id,
         address=template.address,
-        metadata_={**template.project_metadata, "demo_id": demo_id, "is_demo": True},
+        metadata_={
+            **template.project_metadata,
+            "demo_id": demo_id,
+            "is_demo": True,
+            **({"partner_pack": partner_pack} if partner_pack else {}),
+        },
     )
     session.add(project)
     await session.flush()

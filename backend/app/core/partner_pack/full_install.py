@@ -378,7 +378,7 @@ async def _step_demos(slug: str, demo_count: int) -> StepResult:
     for demo_id in install_ids:
         try:
             async with async_session_factory() as session:
-                await install_demo_project(session, demo_id)
+                await install_demo_project(session, demo_id, partner_pack=slug)
                 await session.commit()
             installed.append(demo_id)
         except Exception as exc:  # noqa: BLE001 — one bad demo never aborts the rest
