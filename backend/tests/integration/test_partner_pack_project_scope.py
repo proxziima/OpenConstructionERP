@@ -84,6 +84,10 @@ def _ids(projects) -> set[uuid.UUID]:  # noqa: ANN001
     return {p.id for p in projects}
 
 
+async def _async_true(*_args, **_kwargs) -> bool:  # noqa: ANN002, ANN003
+    return True
+
+
 @pytest.mark.asyncio
 async def test_no_active_pack_admin_sees_all(session, monkeypatch) -> None:
     """With no pack active, the admin listing is unscoped (sees all three)."""
@@ -155,3 +159,37 @@ async def test_untagging_releases_project_back_to_listing(session, monkeypatch) 
     # The freshly untagged project is gone; the still-tagged one remains.
     assert P_TAGGED_ADMIN not in ids
     assert P_TAGGED_REGULAR in ids
+
+
+@pytest.mark.asyncio
+async def test_dashboard_rollup_no_pack_sees_all(session, monkeypatch) -> None:
+    """With no pack active, the dashboard rollup access list is unscoped."""
+    monkeypatch.setattr("app.core.partner_pack.scope.active_pack_slug", lambda: None)
+    monkeypatch.setattr("app.modules.dashboard.service.is_admin", _async_true)
+    from app.modules.dashboard.service import accessible_projects
+
+    projects = await accessible_projects(session, str(ADMIN_ID))
+    ids = _ids(projects)
+    assert {P_TAGGED_ADMIN, P_UNTAGGED_ADMIN, P_TAGGED_REGULAR} <= ids
+
+
+@pytest.mark.asyncio
+async def test_dashboard_rollup_active_pack_scopes_to_tagged(session, monkeypatch) -> None:
+    """Regression: the dashboard rollup must hide untagged projects under an active pack.
+
+    Without ``scope_project_query`` in ``accessible_projects`` the rollup widgets
+    (boq_summary, budget_variance, ...) would aggregate every non-archived project,
+    a workspace-scope leak inconsistent with the scoped projects page and cards.
+    """
+    monkeypatch.setattr("app.core.partner_pack.scope.active_pack_slug", lambda: PACK_SLUG)
+    monkeypatch.setattr("app.modules.dashboard.service.is_admin", _async_true)
+    from app.modules.dashboard.service import accessible_projects
+
+    projects = await accessible_projects(session, str(ADMIN_ID))
+    ids = _ids(projects)
+    # Both pack-tagged projects remain (the rollup deliberately overrides
+    # admin-sees-all to match the scoped projects page).
+    assert P_TAGGED_ADMIN in ids
+    assert P_TAGGED_REGULAR in ids
+    # The untagged project must NOT leak into the rollup.
+    assert P_UNTAGGED_ADMIN not in ids
