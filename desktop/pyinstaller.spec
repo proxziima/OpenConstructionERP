@@ -138,25 +138,32 @@ a = Analysis(
 
 pyz = PYZ(a.pure, cipher=block_cipher)
 
+# Build a SINGLE self-contained executable (onefile), not a onedir folder.
+# Tauri ships the sidecar as an externalBin, which must be one standalone file;
+# a onedir build (exe + a separate _internal/ folder) cannot be used that way,
+# because Tauri copies only the named binary and the sidecar would then fail to
+# find its bundled Python runtime and PostgreSQL binaries. Folding a.binaries /
+# a.datas / a.zipfiles into EXE produces the single file.
+#
+# UPX is deliberately off. Compressing the embedded PostgreSQL executables and
+# their DLLs risks corrupting them, and UPX-packed binaries frequently trip
+# antivirus heuristics, which is the last thing a downloadable installer needs.
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="openestimate-server",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
+    runtime_tmpdir=None,
     console=True,  # Keep console for server logging
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name="openestimate-server",
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
 )
