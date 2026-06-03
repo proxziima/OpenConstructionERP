@@ -1252,12 +1252,19 @@ async def install_converter(
             try:
                 import subprocess
 
+                from app.modules.boq.cad_import import _converter_subprocess_env
+
                 def _smoke() -> tuple[int, bytes, bytes]:
                     proc = subprocess.run(
                         [str(exe_path)],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         cwd=str(exe_path.parent),
+                        # Probe in the SAME environment the real conversion uses
+                        # so the check is meaningful on Linux (the no-root
+                        # converter resolves its bundled DDC SDK libs via
+                        # LD_LIBRARY_PATH); None (inherit) on Windows/macOS.
+                        env=_converter_subprocess_env(exe_path),
                         input=b"\n",
                         timeout=15,
                     )
