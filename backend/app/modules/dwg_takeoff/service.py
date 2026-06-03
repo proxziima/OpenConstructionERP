@@ -883,13 +883,17 @@ class DwgTakeoffService:
                 include_no_dae=True,
             )
             # Pass the converter launch environment. On Linux this sets
-            # LD_LIBRARY_PATH so the DwgExporter can dlopen its ODA runtime
-            # plugins (AecScheduleData.tx and friends) that RUNPATH does not
-            # cover; without it the binary loads but conversion produces empty
-            # output on a headless server. Returns None on Windows/macOS, where
-            # inheriting the parent environment is correct. This mirrors every
-            # other converter launch site (cad_import.convert_cad_to_excel,
-            # smoke_test_converter, detect_converter_capabilities).
+            # LD_LIBRARY_PATH to the extracted .deb tree so the DDC cad2data
+            # DwgExporter resolves its bundled SDK shared libraries
+            # (ddc-deps-kernel/drawings/architecture, ddc-thirdparty) at launch.
+            # The frontend "Install converter" flow downloads and unpacks those
+            # .deb packages into a user-writable dir (no apt/root), so the libs
+            # are not on the system linker path; without LD_LIBRARY_PATH the
+            # binary starts but conversion produces empty output on a headless
+            # server. Returns None on Windows/macOS, where inheriting the parent
+            # environment is correct. This mirrors every other converter launch
+            # site (cad_import.convert_cad_to_excel, smoke_test_converter,
+            # detect_converter_capabilities).
             proc = await asyncio.to_thread(
                 lambda: subprocess.run(
                     args,
@@ -906,17 +910,25 @@ class DwgTakeoffService:
                 rc = proc.returncode
                 low = stderr_msg.lower()
                 # Surface the actual reason instead of a generic "no output".
-                # On a headless Linux server the most common failure is a
-                # missing system library: the converter dlopens ODA runtime
-                # plugins, and exit 127 / "error while loading shared
-                # libraries" is the tell. Reinstalling the converter ships
-                # those libraries, so point the user there.
+                # On a headless Linux server the common failure is a missing
+                # shared library: exit 127 / "error while loading shared
+                # libraries" is the tell. Name the library from stderr and give
+                # both fixes, since we can't reliably tell from the .so name
+                # alone which it is: a DDC cad2data SDK library means reinstall
+                # the converter (its .deb set bundles them), a system library
+                # such as libssl3 means install it with the OS package manager
+                # (the converter download does not ship system dependencies).
                 if rc == 127 or "error while loading shared libraries" in low:
+                    import re
+
+                    m = re.search(r"lib[\w.+-]*\.so[.\d]*", stderr_msg)
+                    lib_txt = f" ({m.group(0)})" if m else ""
                     nice_msg = (
-                        "The DWG converter could not start: a required system "
-                        "library is missing on this server. Reinstall the "
-                        'converter with the "Install converter" button on the '
-                        "/dwg-takeoff page (it bundles the runtime libraries). "
+                        f"The DWG converter could not start: a shared library{lib_txt} is missing "
+                        "on this server. If it is a system library (for example libssl3), install "
+                        "it with your OS package manager, e.g. apt-get install libssl3. If it is a "
+                        'converter library, reinstall the converter with the "Install converter" '
+                        "button on the /dwg-takeoff page so its cad2data SDK libraries are restored. "
                         f"Details: {stderr_msg}"
                     ).strip()
                 # "Error: converter crashed." is the DDC binary's generic
