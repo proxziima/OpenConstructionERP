@@ -4802,6 +4802,8 @@ const resource = {
     "propdev.compliance.regulator_desc.cma": "Bilingual Wafi off-plan licence disclosure (English + Arabic).",
     "meetings.title_placeholder": "Meeting title",
     "meetings.title_required": "Title is required",
+    "moc.title": "Management of Change",
+    "moc.page_title": "Management of Change",
     "ncr.action_close": "Close NCR",
     "ncr.source_clash": "From clash",
     "ncr.source_validation": "From validation",
