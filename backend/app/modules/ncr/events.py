@@ -261,6 +261,117 @@ async def _on_clash_high_severity(event: Event) -> None:
         logger.debug("ncr: _on_clash_high_severity failed", exc_info=True)
 
 
+# ── validation.results.errors_found → raise an NCR ──────────────────────
+
+
+async def _on_validation_errors_found(event: Event) -> None:
+    """``validation.results.errors_found`` → raise one NCR per validation run.
+
+    An ERROR-severity validation result blocks the data from being trusted; it
+    is a documentation/data non-conformance that belongs in the formal NCR
+    workflow (root cause, corrective action, sign-off). We raise a single NCR
+    per report summarising the blocking errors rather than one per error, to
+    keep the NCR dashboard readable.
+
+    Idempotent on ``metadata_['report_id']`` so re-running the same validation
+    (which produces a new report id) raises a fresh NCR, but a re-published
+    event for the *same* report never raises a duplicate.
+    """
+    if not await _can_open_isolated_session():
+        return
+    data = event.data or {}
+    report_id = data.get("report_id")
+    project_id_raw = data.get("project_id")
+    errors = data.get("errors") or []
+    error_count = int(data.get("error_count") or len(errors) or 0)
+    if not (report_id and project_id_raw) or error_count <= 0:
+        return
+
+    try:
+        project_id = uuid.UUID(str(project_id_raw))
+    except (ValueError, TypeError):
+        return
+
+    report_id_s = str(report_id)
+    try:
+        async with async_session_factory() as session:
+            # Idempotency — bail if an NCR already links this validation report.
+            # Match metadata in Python (as the QMS bridge does) rather than via a
+            # JSONB path operator, so the check never depends on column-type quirks.
+            existing_rows = (
+                await session.execute(select(NCR).where(NCR.project_id == project_id))
+            ).scalars().all()
+            for row in existing_rows:
+                md = row.metadata_ if isinstance(row.metadata_, dict) else {}
+                if md.get("source") == "validation" and md.get("report_id") == report_id_s:
+                    return
+
+            rule_set = str(data.get("rule_set") or "").strip()
+            target_id = str(data.get("target_id") or "").strip()
+            top = errors[:5]
+            bullet_lines = "\n".join(
+                f"- [{e.get('rule_id') or '?'}] {e.get('message') or ''}"
+                + (f" (at {e.get('element_ref')})" if e.get("element_ref") else "")
+                for e in top
+            )
+            more = error_count - len(top)
+            if more > 0:
+                bullet_lines += f"\n- ... and {more} more"
+            title = f"Validation errors in BOQ ({error_count})"[:500]
+            description = (
+                f"Auto-raised from a validation run that produced {error_count} "
+                f"blocking error(s).\n"
+                f"Rule set: {rule_set or 'n/a'}\n"
+                f"Validation report: {report_id_s}\n\n"
+                f"{bullet_lines}"
+            )[:10000]
+
+            from app.modules.ncr.repository import NCRRepository
+
+            repo = NCRRepository(session)
+            ncr_number = await repo.next_ncr_number(project_id)
+            ncr = NCR(
+                project_id=project_id,
+                ncr_number=ncr_number,
+                title=title,
+                description=description,
+                ncr_type="documentation",
+                severity="major",
+                status="identified",
+                metadata_={
+                    "source": "validation",
+                    "source_event": "validation.results.errors_found",
+                    "report_id": report_id_s,
+                    "target_id": target_id,
+                    "rule_set": rule_set,
+                    "error_count": error_count,
+                    "errors": top,
+                },
+            )
+            session.add(ncr)
+            await session.commit()
+            logger.info(
+                "ncr: auto-raised NCR %s (%s) from validation report %s (%d error(s))",
+                ncr.id,
+                ncr_number,
+                report_id_s,
+                error_count,
+            )
+            event_bus.publish_detached(
+                "ncr.created_from_validation",
+                {
+                    "ncr_id": str(ncr.id),
+                    "ncr_number": ncr_number,
+                    "project_id": str(project_id),
+                    "report_id": report_id_s,
+                    "error_count": error_count,
+                },
+                source_module="ncr",
+            )
+    except Exception:
+        logger.debug("ncr: _on_validation_errors_found failed", exc_info=True)
+
+
 # ── ncr.closed_with_cost_impact → MoC candidate fan-out ─────────────────
 
 
@@ -316,6 +427,7 @@ def register_subscribers() -> None:
         return
     event_bus.subscribe("qms.audit.finding_raised", _on_qms_finding_raised)
     event_bus.subscribe("clash.high_severity.detected", _on_clash_high_severity)
+    event_bus.subscribe("validation.results.errors_found", _on_validation_errors_found)
     event_bus.subscribe("ncr.closed_with_cost_impact", _on_ncr_closed_with_cost_impact)
     setattr(event_bus, _SUBSCRIBED_FLAG, True)
-    logger.info("NCR: 3 cross-module subscriber(s) registered")
+    logger.info("NCR: 4 cross-module subscriber(s) registered")

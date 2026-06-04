@@ -156,6 +156,41 @@ class ValidationModuleService:
         except Exception:
             logger.debug("Failed to publish validation.report.created event", exc_info=True)
 
+        # When the run produced ERROR-severity results, escalate. A blocking
+        # validation error is a formal non-conformance, so the NCR module raises
+        # (idempotently, per report) an NCR from this event. Kept in its own
+        # try so a failure here is visible and never hidden under the
+        # report.created handler above. We carry a compact, capped error list so
+        # the subscriber needs no DB read.
+        try:
+            from app.core.events import event_bus
+
+            if engine_report.errors:
+                error_digest = [
+                    {
+                        "rule_id": r.rule_id,
+                        "rule_name": r.rule_name,
+                        "message": r.message,
+                        "element_ref": r.element_ref,
+                    }
+                    for r in engine_report.errors[:50]
+                ]
+                event_bus.publish_detached(
+                    "validation.results.errors_found",
+                    {
+                        "report_id": str(db_report.id),
+                        "project_id": str(project_id),
+                        "target_type": "boq",
+                        "target_id": str(boq_id),
+                        "rule_set": "+".join(rule_sets),
+                        "error_count": len(engine_report.errors),
+                        "errors": error_digest,
+                    },
+                    source_module="oe_validation",
+                )
+        except Exception:
+            logger.warning("Failed to publish validation.results.errors_found event", exc_info=True)
+
         # 5. Build response
         return {
             "report_id": str(db_report.id),

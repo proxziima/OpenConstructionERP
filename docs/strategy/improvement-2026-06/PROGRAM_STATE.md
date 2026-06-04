@@ -77,14 +77,14 @@ increment, not a fake "done" on the XL items.
 
 | # | Feature | Status | Wave | Notes |
 |---|---------|--------|------|-------|
-| 1 | Clash + validation events into notifications/punchlist/NCR | partial (high-sev done) | 1 | |
+| 1 | Clash + validation events into notifications/punchlist/NCR | DONE | 1 | backend events + UI origin badges (f20c333f6) |
 | 2 | Mobile time/attendance -> job cost | triaging | 4 | |
-| 3 | Event-driven live EVM/KPI | triaging | 2 | |
+| 3 | Event-driven live EVM/KPI | DONE | 2 | KPI freshness watermark + cost/schedule/finance events invalidate; EVM "Live" pill auto-refreshes |
 | 4 | Bi-directional ERP/accounting connectors | triaging | 3 | |
-| 5 | Cross-project resource leveling | triaging | 2 | |
-| 6 | Unify schedule dependency graph + guards | triaging | 2 | |
+| 5 | Cross-project resource leveling | DONE | 2 | portfolio capacity heatmap (week/month), cross-project conflict detection + UI |
+| 6 | Unify schedule dependency graph + guards | DONE | 1 | canonical store + completion guard 409 + UI hint (f20c333f6) |
 | 7 | AI photo intelligence | triaging | 4 | |
-| 8 | Tendering vs Bid award reconciliation | triaging | 1 | |
+| 8 | Tendering vs Bid award reconciliation | DONE | 1 | idempotent bid-award PO + UI toast/link (f20c333f6) |
 | 9 | Lien waiver automation + pay enforcement | triaging | 3 | |
 | 10 | Commitment management + budget sync | triaging | 3 | |
 | 11 | Change Order AI draft + impact simulator | triaging | 3 | |
@@ -165,3 +165,50 @@ increment, not a fake "done" on the XL items.
     Also fixed a pre-existing red unit test (test_schedule_relationships_limit:
     date object into a VARCHAR start_date, rejected by asyncpg since the SQLite
     removal). NEXT: commit Wave 1 frontend + these fixes, push, then Wave 2.
+- 2026-06-04: WAVE 1 SHIPPED. Committed f20c333f6 (11 files: schedule router
+  greenlet fix, schedule limit test fix, new integration guard test, en.ts,
+  punchlist + ncr + schedule + tendering + validation pages, PROGRAM_STATE),
+  pushed to main (remote now f20c333f6, was 56508f372). Final verify before
+  commit: tsc 0 errors / 0 TS1117 dups; single alembic head
+  v3153_clash_source_links; schedule tests 5/5 (limit 4 + guard 1). The slow
+  full-app-boot version of the integration test hung on the 117-module ASGI
+  lifespan (>12 min, killed); rewritten to drive the real relationship handler
+  against an isolated transactional_session (real asyncpg engine still
+  reproduces the greenlet error), runs in ~25s. Items #1, #6, #8 done + plugin
+  stub. NEXT: Wave 2 (items 3 live EVM/KPI, 5 cross-project resource leveling,
+  6 dependency graph already unified in W1, plus cost-model roll-up and
+  validation->NCR escalation).
+- 2026-06-04: WAVE 2 built + deep-tested. Three backend lanes (file-disjoint):
+  Lane A (bi_dashboards) - KPI freshness watermark keyed per project + global,
+  cost/budget/schedule-progress/snapshot/invoice events bump it, new
+  GET /bi-dashboards/kpi-freshness; the 5D page polls it and invalidates the
+  EVM/dashboard/s-curve queries so the figures refresh on their own, surfaced as
+  a green "Live" pill. Lane B (resources) - portfolio capacity heatmap
+  (GET /resources/portfolio/capacity, week/month buckets) that rolls every
+  project's assignments per resource per bucket, flags over-allocation and
+  cross-project contention; new /portfolio/capacity page (heatmap, summary
+  chips, legend, week/month toggle) + sidebar entry. Lane D (validation->ncr) -
+  a validation run with ERROR results now publishes validation.results.errors_found
+  and the NCR module raises one NCR per report (idempotent), shown with a
+  "From validation" badge.
+  Root-caused the Lane D live failure: the escalation handler ran and its
+  session guard passed, but next_ncr_number crashed with asyncpg
+  "invalid input syntax for type integer" because an existing NCR carried a
+  non-canonical number ("901" from the clash bridge) whose suffix cast to
+  integer. SQLite cast an empty/non-numeric string to 0; PostgreSQL rejects it.
+  Fixed next_ncr_number to only cast canonical NCR-<digits> rows (regexp_match)
+  and hardened the same latent pattern in meetings, rfi and procurement
+  (projects already had a Python fallback). New regression test
+  test_ncr_number_pg_safe.py runs the real cast on PostgreSQL.
+  Also fixed a 5D UX gap found in the screenshot pass: the page forced a second
+  project pick even with an active project; it now opens straight to the active
+  project and keeps "Back to projects".
+  Verify: tsc 0 errors / 0 TS1117; touched-module pytest green (NCR 25/25,
+  meetings+rfi+procurement+kpi+capacity 48/48); no migration (all changes are
+  query-level or in-memory), single alembic head unchanged. Browser pass
+  (Playwright vs vite :5174 -> backend :8080, real demo login): /5d opens to the
+  Toronto EVM with the "Live" pill, /portfolio/capacity shows the Carpenter
+  cross-project conflict and Tower Crane, /ncr shows the auto-raised "Validation
+  errors in BOQ (26)" with the "From validation" badge - zero console errors on
+  all three. Items #3 and #5 done (#6 was W1). NEXT: commit Wave 2, push, then
+  Wave 3 (commercial depth: items 4, 9, 10, 11, 20).
