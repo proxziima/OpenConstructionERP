@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # ── Contract ─────────────────────────────────────────────────────────────
 
-CONTRACT_TYPES = "lump_sum|gmp|cost_plus|tm|unit_price|design_build|combination"
+CONTRACT_TYPES = "lump_sum|gmp|cost_plus|tm|unit_price|design_build|combination|remeasurement"
 COUNTERPARTY_TYPES = "client|subcontractor"
 CONTRACT_STATUSES = "draft|active|suspended|completed|terminated"
 RETENTION_RELEASE_EVENTS = "practical_completion|final_account|handover"

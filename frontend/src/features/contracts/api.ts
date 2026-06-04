@@ -21,7 +21,8 @@ export type ContractType =
   | 'tm'
   | 'unit_price'
   | 'design_build'
-  | 'combination';
+  | 'combination'
+  | 'remeasurement';
 
 export type CounterpartyType = 'client' | 'subcontractor';
 

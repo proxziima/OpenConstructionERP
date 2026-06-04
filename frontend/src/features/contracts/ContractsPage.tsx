@@ -92,6 +92,14 @@ const CONTRACT_TYPE_COLORS: Record<
   unit_price: { bg: 'bg-sky-50 dark:bg-sky-950/40', ring: 'ring-sky-200 dark:ring-sky-800', text: 'text-sky-700 dark:text-sky-300' },
   design_build: { bg: 'bg-fuchsia-50 dark:bg-fuchsia-950/40', ring: 'ring-fuchsia-200 dark:ring-fuchsia-800', text: 'text-fuchsia-700 dark:text-fuchsia-300' },
   combination: { bg: 'bg-slate-50 dark:bg-slate-800/60', ring: 'ring-slate-200 dark:ring-slate-700', text: 'text-slate-700 dark:text-slate-300' },
+  remeasurement: { bg: 'bg-teal-50 dark:bg-teal-950/40', ring: 'ring-teal-200 dark:ring-teal-800', text: 'text-teal-700 dark:text-teal-300' },
+};
+
+/** Neutral fallback so an unknown/missing contract type never crashes the chip. */
+const CONTRACT_TYPE_FALLBACK = {
+  bg: 'bg-slate-50 dark:bg-slate-800/60',
+  ring: 'ring-slate-200 dark:ring-slate-700',
+  text: 'text-slate-700 dark:text-slate-300',
 };
 
 const CONTRACT_STATUS_VARIANT: Record<
@@ -125,6 +133,7 @@ const CONTRACT_TYPES: ContractType[] = [
   'unit_price',
   'design_build',
   'combination',
+  'remeasurement',
 ];
 
 const CONTRACT_STATUSES: ContractStatus[] = [
@@ -198,9 +207,10 @@ function todayIso(): string {
 
 function ContractTypeChip({ type }: { type: ContractType }) {
   const { t } = useTranslation();
-  const c = CONTRACT_TYPE_COLORS[type];
-  const label = t(`contracts.type_${type}`, {
-    defaultValue: type === 'tm' ? 'T&M' : type.replace(/_/g, ' '),
+  const c = CONTRACT_TYPE_COLORS[type] ?? CONTRACT_TYPE_FALLBACK;
+  const safeType = type || 'unknown';
+  const label = t(`contracts.type_${safeType}`, {
+    defaultValue: safeType === 'tm' ? 'T&M' : safeType.replace(/_/g, ' '),
   });
   return (
     <span
