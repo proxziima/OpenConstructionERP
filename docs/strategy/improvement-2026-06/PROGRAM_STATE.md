@@ -96,7 +96,7 @@ increment, not a fake "done" on the XL items.
 | 17 | Auto drawing/BIM revision compare + cost | triaging | 5 | |
 | 18 | ML quantity extraction / symbol recog | triaging | 5 | |
 | 19 | Predictive schedule/cost risk analytics | triaging | 5 | |
-| 20 | Vendor/sub scorecards + prequal gating | triaging | 3 | |
+| 20 | Vendor/sub scorecards + prequal gating | PARTIAL | 3 | prequalification award gate done: blocked/rejected/suspended sub cannot have an agreement activated or be paid (409), award-eligibility endpoint + drawer banner. NCR-driven scorecard auto-decrement still open (no NCR<->sub link exists yet) |
 | 21 | ISO 19650 CDE suitability propagation | triaging | 6 | |
 | 22 | Subcontractor portal invoice submission | triaging | 6 | |
 | 23 | Persistent clash profiles + grouping | triaging | 5 | |
@@ -242,3 +242,28 @@ increment, not a fake "done" on the XL items.
   pay1 blocked (missing_waiver) and pay2 released. NEXT: Wave 3 items #10
   (commitment management + budget sync), #20 (vendor scorecards + prequal
   gating), #11 (CO AI draft + simulator), #4 (ERP connectors).
+- 2026-06-04: Wave 3 item #9 SHIPPED. Committed 34e802714, pushed to main.
+- 2026-06-04: Wave 3 item #20 (prequalification award gate) built + deep-tested.
+  Scoped to the genuinely-complete, demonstrable slice: a subcontractor that is
+  administratively blocked, or whose prequalification is rejected/suspended, can
+  no longer have an agreement moved to active (update_agreement) or have a
+  payment claimed (submit_payment_application) - both raise a 409 carrying the
+  reason. pending (the default) and approved proceed. New helper
+  subcontractor_award_block + GET /subcontractors/{id}/award-eligibility so the
+  UI can show the gate before anyone tries. Frontend: an amber "Not approved for
+  award" banner in the subcontractor drawer for rejected/suspended vendors
+  (the existing rose banner still covers admin-blocked). Verify: ruff clean, tsc
+  0 errors / 0 TS1117, prequal gate 10/10 + lien gate 11/11 + subcontractors
+  suite 73/73 (94 total), single alembic head v3154 unchanged (all query/in-
+  memory, no migration). Browser pass (Playwright vs vite :5174 -> backend
+  :8080, seeded a suspended sub and an approved sub with draft agreements): the
+  suspended drawer shows the amber banner, the approved drawer shows none, zero
+  console errors; live API confirms suspended activation 409 + awardable=false
+  and approved activation 200 + awardable=true.
+  Deliberately left PARTIAL and logged as such: the NCR-driven scorecard
+  auto-decrement half of #20 needs an NCR<->subcontractor link that does not
+  exist in the schema yet (qms/ncr models carry no supplier id; the
+  procurement.supplier_rating_update event already fires but with no resolvable
+  supplier), so that is a separate cross-module schema effort, not faked here.
+  NEXT: Wave 3 items #10 (commitment management + budget sync), #11 (CO AI draft
+  + simulator), #4 (ERP connectors).
