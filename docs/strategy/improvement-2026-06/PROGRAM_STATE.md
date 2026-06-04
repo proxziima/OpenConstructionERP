@@ -85,7 +85,7 @@ increment, not a fake "done" on the XL items.
 | 6 | Unify schedule dependency graph + guards | DONE | 1 | canonical store + completion guard 409 + UI hint (f20c333f6) |
 | 7 | AI photo intelligence | triaging | 4 | |
 | 8 | Tendering vs Bid award reconciliation | DONE | 1 | idempotent bid-award PO + UI toast/link (f20c333f6) |
-| 9 | Lien waiver automation + pay enforcement | triaging | 3 | |
+| 9 | Lien waiver automation + pay enforcement | DONE | 3 | opt-in per agreement; finance-approve + mark-paid held 409 until a covering signed waiver is on file; release-check endpoint + UI toggle + payment badges |
 | 10 | Commitment management + budget sync | triaging | 3 | |
 | 11 | Change Order AI draft + impact simulator | triaging | 3 | |
 | 12 | ITP workflow with hold points | triaging | 5 | |
@@ -212,3 +212,33 @@ increment, not a fake "done" on the XL items.
   errors in BOQ (26)" with the "From validation" badge - zero console errors on
   all three. Items #3 and #5 done (#6 was W1). NEXT: commit Wave 2, push, then
   Wave 3 (commercial depth: items 4, 9, 10, 11, 20).
+- 2026-06-04: WAVE 2 SHIPPED. Committed 8bd83f676, pushed to main (remote now
+  8bd83f676, was f20c333f6).
+- 2026-06-04: Wave 3 item #9 (lien-waiver pay enforcement) built + deep-tested +
+  SHIPPED. Backend: SubcontractAgreement gains an opt-in requires_lien_waiver
+  boolean (alembic v3154, idempotent; embedded PG auto-adds the column at boot).
+  When set, approve_payment_application_finance and mark_paid call
+  _assert_lien_waiver_ok, which 409s with code missing_waiver /
+  waiver_amount_mismatch unless a signed lien waiver covering the payment's net
+  amount is on file. New GET /payment-applications/{id}/release-check reports the
+  gate (waiver_required / blocked / reasons) so the UI can warn before the click.
+  Frontend (SubcontractorsPage): an inline toggle on each agreement turns the
+  requirement on/off (PATCH), and the Payments tab shows a per-payment badge -
+  green "Waiver on file" when covered, amber "Waiver required" / "Waiver too low"
+  when blocked - only fetched for payments still pending finance approval.
+  Deep test caught and fixed a real bug: the gate matched waiver_type against
+  the bare bases {conditional, unconditional, partial, final}, but the upload
+  endpoint actually stores the compound enum (conditional_partial,
+  unconditional_final, ...), so a genuine covering waiver would have been ignored
+  and the payment blocked forever. Rewrote the match to exclude only the W-9/W-8
+  tax forms and accept every conditional/unconditional lien type; added unit
+  coverage for all four canonical types + the W-8 exclusion. Verify: ruff clean,
+  tsc 0 errors / 0 TS1117, single alembic head v3154, lien-waiver gate 11/11 +
+  NCR PG-safe 2/2 + subcontractors suite 84/84. Browser pass (Playwright vs vite
+  :5174 -> backend :8080, seeded sub + active agreement + two foreman-approved
+  payments, one with a covering unconditional_final waiver): the toggle flips
+  off->on, the Payments tab then shows PA-002 "Waiver on file" (green) and PA-001
+  "Waiver required" (amber), zero console errors; live API release-check confirms
+  pay1 blocked (missing_waiver) and pay2 released. NEXT: Wave 3 items #10
+  (commitment management + budget sync), #20 (vendor scorecards + prequal
+  gating), #11 (CO AI draft + simulator), #4 (ERP connectors).
