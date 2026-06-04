@@ -87,7 +87,7 @@ increment, not a fake "done" on the XL items.
 | 8 | Tendering vs Bid award reconciliation | DONE | 1 | idempotent bid-award PO + UI toast/link (f20c333f6) |
 | 9 | Lien waiver automation + pay enforcement | DONE | 3 | opt-in per agreement; finance-approve + mark-paid held 409 until a covering signed waiver is on file; release-check endpoint + UI toggle + payment badges |
 | 10 | Commitment management + budget sync | DONE | 3 | PO FSM is now draft -> approved -> issued; approval (not issue) is the commitment moment that publishes procurement.po.approved -> finance ProjectBudget.committed += amount_total; manager-level approve permission + /approve/ endpoint; UI shows Approve on draft rows, Issue on approved; 4 unit tests + cross-module flow extended; browser-verified committed rose by exact PO total (e0ebb1ac7) |
-| 11 | Change Order AI draft + impact simulator | triaging | 3 | |
+| 11 | Change Order AI draft + impact simulator | DONE | 3 | deterministic what-if simulator on CO detail (budget before/after, finish-date shift, EVM BAC/EAC/VAC/SPI/CPI recomputed, BOQ preview, cost/days overrides + re-run, save-scenario to audit trail) + AI/heuristic draft-from-notes modal (AI when a key is set, deterministic figure-parsing fallback otherwise, human reviews before create). FX-correct, no LLM required for the simulator. Metadata-stored provenance/scenarios so no migration (single head v3154). 16 unit tests; browser-verified end to end (c921fb805) |
 | 12 | ITP workflow with hold points | triaging | 5 | |
 | 13 | LTIFR/TRIR computation | DONE | - | safety/service.py:488-503 |
 | 14 | Native offline-first mobile app | triaging | 4 | FieldShellPage stub |
@@ -287,3 +287,32 @@ increment, not a fake "done" on the XL items.
   pushed to main. No migration (status is an existing string column; single
   alembic head v3154 unchanged). NEXT: #11 (CO AI draft + simulator), #4 (ERP
   connectors).
+- 2026-06-04: Wave 3 item #11 (Change Order AI draft + impact simulator)
+  SHIPPED. Two deliverables. (1) A deterministic what-if impact simulator on the
+  CO detail page: revised budget before/after with % of budget, project finish
+  date shifting out by the schedule days, EVM (BAC/EAC/VAC/SPI/CPI) recomputed
+  with the CO applied, and a BOQ write preview. Figures come from the finance
+  budget aggregation converted to the project base currency (never blending
+  currencies), so the forecast matches the EVM snapshot the project would
+  record. Cost/extra-days overrides + re-run let a reviewer model an
+  alternative; save-scenario snapshots it into the CO metadata audit trail. No
+  AI call, always works. (2) AI/heuristic draft-from-notes modal: paste site
+  notes / RFI / daily-log text and get a review-ready draft with confidence
+  scores; uses the configured AI provider when a key exists, else a
+  deterministic figure-parsing heuristic clearly labelled as offline. Nothing is
+  saved until the user reviews and confirms (AI-suggests-human-confirms). Chose
+  to store AI provenance + saved scenarios in the existing CO metadata JSON
+  rather than add columns, so there is NO migration and the single alembic head
+  v3154 is unchanged - the triage flagged needs_migration but the data is
+  display/audit-only and the metadata column already exists, matching the
+  platform's LIGHTWEIGHT rule. New endpoints POST /changeorders/{id}/
+  simulate-impact, /publish-scenario, /ai-draft. 16 unit tests (pure cost/EVM/
+  schedule math, offline money/day parsing, and simulate_impact on real
+  PostgreSQL incl. FX conversion + missing-rate case). Deep browser test on the
+  Toronto project: opened CO-001, the What-If panel showed budget 197.58M ->
+  198.40M CAD (+825k, 0.4%), finish 2027-09-30 -> 2027-10-02, full EVM and a BOQ
+  preview; a 3,000,000 / +45-day what-if re-ran correctly (budget 200.58M,
+  finish 2027-11-14); the AI Draft modal generated an offline heuristic draft
+  (title, CAD 15,000, 3 days, 45% confidence, one suggested line) and Create
+  landed on the new CO-006 with its own live What-If panel - zero console
+  errors. Commit c921fb805, pushed to main. NEXT: #4 (ERP connectors).
