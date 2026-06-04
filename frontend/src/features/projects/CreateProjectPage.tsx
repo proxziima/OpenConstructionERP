@@ -1044,36 +1044,10 @@ export function CreateProjectModal({
               />
               <button
                 type="button"
-                onClick={() => { setMode('wizard'); setStep(1); setMaxStep(1); }}
-                className="group w-full text-left rounded-xl border border-border-light hover:border-oe-blue hover:bg-oe-blue/5 transition-all p-4 flex items-start gap-3.5"
-              >
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-oe-blue/10 text-oe-blue">
-                  <Wand2 size={20} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-content-primary">
-                      {t('project_wizard.choose_wizard_title', { defaultValue: 'Guided setup' })}
-                    </span>
-                    <span className="rounded-full bg-oe-blue/10 px-2 py-0.5 text-[10px] font-semibold text-oe-blue">
-                      {t('common.recommended', { defaultValue: 'Recommended' })}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs leading-relaxed text-content-tertiary">
-                    {t('project_wizard.choose_wizard_blurb', {
-                      defaultValue:
-                        '5 short steps — region, project type and scope. Pre-selects the right modules and a focused sidebar for the work you do.',
-                    })}
-                  </p>
-                </div>
-                <ArrowRight size={16} className="mt-1 shrink-0 text-content-quaternary transition-transform group-hover:translate-x-0.5 group-hover:text-oe-blue" />
-              </button>
-              <button
-                type="button"
                 onClick={() => { setMode('classic'); setStep(1); }}
                 className="group w-full text-left rounded-xl border border-border-light hover:border-oe-blue hover:bg-oe-blue/5 transition-all p-4 flex items-start gap-3.5"
               >
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-secondary text-content-secondary">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-oe-blue/10 text-oe-blue">
                   <Zap size={20} />
                 </div>
                 <div className="min-w-0 flex-1">
@@ -1084,6 +1058,27 @@ export function CreateProjectModal({
                     {t('project_wizard.choose_classic_blurb', {
                       defaultValue:
                         'Every project setting on one screen — name, region, currency, address, client, dates and budget. Only the name is required; everything else is optional and editable later.',
+                    })}
+                  </p>
+                </div>
+                <ArrowRight size={16} className="mt-1 shrink-0 text-content-quaternary transition-transform group-hover:translate-x-0.5 group-hover:text-oe-blue" />
+              </button>
+              <button
+                type="button"
+                onClick={() => { setMode('wizard'); setStep(1); setMaxStep(1); }}
+                className="group w-full text-left rounded-xl border border-border-light hover:border-oe-blue hover:bg-oe-blue/5 transition-all p-4 flex items-start gap-3.5"
+              >
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-secondary text-content-secondary">
+                  <Wand2 size={20} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm font-semibold text-content-primary">
+                    {t('project_wizard.choose_wizard_title', { defaultValue: 'Guided setup' })}
+                  </span>
+                  <p className="mt-1 text-xs leading-relaxed text-content-tertiary">
+                    {t('project_wizard.choose_wizard_blurb', {
+                      defaultValue:
+                        '5 short steps — region, project type and scope. Pre-selects the right modules and a focused sidebar for the work you do.',
                     })}
                   </p>
                 </div>
