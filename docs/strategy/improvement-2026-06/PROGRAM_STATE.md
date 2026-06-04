@@ -135,3 +135,33 @@ increment, not a fake "done" on the XL items.
   (clash/inspection origin badges on punch + NCR, validation deep-link, schedule
   "blocked by predecessor" hint, bid-award PO toast) + Playwright browser test
   with screenshots, then a frontend commit. Then Wave 2.
+- 2026-06-04: Wave 1 FRONTEND done + browser-tested + 2 bugs fixed.
+  Frontend: punchlist "From clash" badge (red) added next to existing
+  inspection/ncr chips (kanban + table); NCR "From clash" badge + metadata on
+  the type; schedule progress mutation maps HTTP 409 -> a warning toast titled
+  "Blocked by predecessor" carrying the backend detail; tendering award success
+  toast now names the auto-created draft PO and offers a "View purchase orders"
+  action to /procurement; en.ts keys for all of the above + the validation and
+  clash notification bodies. tsc clean (0 errors, 0 TS1117).
+  Browser test (Playwright vs vite :5174 -> backend :8080, real demo login,
+  injected clash/inspection rows on the Toronto project): punch "From clash" +
+  "From inspection" and NCR "From clash" render correctly with zero console
+  errors on all six surfaces (punchlist, ncr, validation, schedule, tendering,
+  procurement). Two real bugs caught by the deep test and fixed:
+    1. Validation ?report= deep link did nothing until a BOQ was picked, so a
+       notification link landed on an empty page. ValidationPage now fires the
+       report-by-id fetch on the param alone and auto-aligns project + BOQ to
+       the linked report. Re-tested cold (no preselected project): the report
+       (score 97) renders.
+    2. POST schedule relationships returned 500 (MissingGreenlet): the Lane B
+       JSON-mirror rebuild calls session.expire_all() and the handler then
+       serialised the expired ScheduleRelationship, triggering an implicit
+       async refresh from Pydantic's sync attribute access. Fixed by snapshotting
+       RelationshipResponse before the mirror rebuild. End-to-end re-test: create
+       relationship 201, complete successor while predecessor open -> 409 with
+       the named-blocker message, unblocked sequence -> 200. Added integration
+       regression test backend/tests/integration/test_schedule_relationship_guard.py
+       (real async DB; a fake session cannot reproduce the greenlet error).
+    Also fixed a pre-existing red unit test (test_schedule_relationships_limit:
+    date object into a VARCHAR start_date, rejected by asyncpg since the SQLite
+    removal). NEXT: commit Wave 1 frontend + these fixes, push, then Wave 2.
