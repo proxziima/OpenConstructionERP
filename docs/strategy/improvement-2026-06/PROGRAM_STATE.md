@@ -86,7 +86,7 @@ increment, not a fake "done" on the XL items.
 | 7 | AI photo intelligence | triaging | 4 | |
 | 8 | Tendering vs Bid award reconciliation | DONE | 1 | idempotent bid-award PO + UI toast/link (f20c333f6) |
 | 9 | Lien waiver automation + pay enforcement | DONE | 3 | opt-in per agreement; finance-approve + mark-paid held 409 until a covering signed waiver is on file; release-check endpoint + UI toggle + payment badges |
-| 10 | Commitment management + budget sync | triaging | 3 | |
+| 10 | Commitment management + budget sync | DONE | 3 | PO FSM is now draft -> approved -> issued; approval (not issue) is the commitment moment that publishes procurement.po.approved -> finance ProjectBudget.committed += amount_total; manager-level approve permission + /approve/ endpoint; UI shows Approve on draft rows, Issue on approved; 4 unit tests + cross-module flow extended; browser-verified committed rose by exact PO total (e0ebb1ac7) |
 | 11 | Change Order AI draft + impact simulator | triaging | 3 | |
 | 12 | ITP workflow with hold points | triaging | 5 | |
 | 13 | LTIFR/TRIR computation | DONE | - | safety/service.py:488-503 |
@@ -267,3 +267,23 @@ increment, not a fake "done" on the XL items.
   supplier), so that is a separate cross-module schema effort, not faked here.
   NEXT: Wave 3 items #10 (commitment management + budget sync), #11 (CO AI draft
   + simulator), #4 (ERP connectors).
+- 2026-06-04: Wave 3 item #10 (commitment management + budget sync) SHIPPED.
+  Purchase orders now move draft -> approved -> issued instead of draft ->
+  issued. Approval is the budget-commitment moment: approve_po() publishes
+  procurement.po.approved, and the finance subscriber (formerly listening on
+  po.issued) turns it into ProjectBudget.committed += amount_total. issue_po()
+  now requires status approved (409 otherwise). Manager-level procurement.approve
+  permission + POST /procurement/{id}/approve/. UI: draft rows show an Approve
+  action, approved rows show Issue; approving raises a "budget committed" toast
+  and refreshes the finance dashboard. Chose a mandatory FSM gate over the
+  triage agent's opt-in approval_routes integration because it is simpler and
+  guarantees every PO is a controlled commitment. Tests: 4 new unit (draft cannot
+  issue directly, approve then issue, approve idempotent, issued cannot
+  re-approve), cross-module flow extended with the approval step. Deep test:
+  created a draft PO (total 297,500 CAD) via API, then in the browser clicked
+  Approve (status flipped to approved, "Budget committed" toast, Issue button
+  appeared) and Issue (status flipped to issued, toast), zero console errors;
+  finance committed total rose by exactly 297,500 at approval. Commit e0ebb1ac7,
+  pushed to main. No migration (status is an existing string column; single
+  alembic head v3154 unchanged). NEXT: #11 (CO AI draft + simulator), #4 (ERP
+  connectors).
