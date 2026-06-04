@@ -3333,6 +3333,7 @@ async def list_elements(
         activity_briefs_by_id,
         requirement_briefs_by_id,
         validation_summaries_by_id,
+        current_pct_by_id,
     ) = await service.list_elements_with_links(
         model_id,
         element_type=element_type,
@@ -3378,6 +3379,7 @@ async def list_elements(
         resp.linked_requirements = requirement_briefs
         resp.validation_results = validation_summaries
         resp.validation_status = val_status  # type: ignore[assignment]
+        resp.current_pct = current_pct_by_id.get(elem.id)
         responses.append(resp)
 
     return BIMElementListResponse(

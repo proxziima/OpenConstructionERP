@@ -253,6 +253,7 @@ const SubcontractorsPage = lazy(() =>
 const EquipmentPage = lazy(() =>
   import('@/features/equipment').then((m) => ({ default: m.EquipmentPage }))
 );
+const PayrollPage = lazy(() => import('@/features/payroll/PayrollPage'));
 const PortalPage = lazy(() =>
   import('@/features/portal').then((m) => ({ default: m.PortalPage }))
 );
@@ -931,6 +932,8 @@ export default function App() {
         <Route path="/projects/:projectId/service" element={<P title="Service & Maintenance"><ServicePage /></P>} />
         <Route path="/equipment" element={<P title="Equipment & Fleet"><EquipmentPage /></P>} />
         <Route path="/projects/:projectId/equipment" element={<P title="Equipment & Fleet"><EquipmentPage /></P>} />
+        <Route path="/payroll" element={<P title="Payroll"><PayrollPage /></P>} />
+        <Route path="/projects/:projectId/payroll" element={<P title="Payroll"><PayrollPage /></P>} />
         <Route path="/daily-diary" element={<P title="Daily Diary"><DailyDiaryPage /></P>} />
         <Route path="/projects/:projectId/daily-diary" element={<P title="Daily Diary"><DailyDiaryPage /></P>} />
         <Route path="/portal" element={<P title="Subcontractor Portal"><PortalPage /></P>} />

@@ -27,6 +27,8 @@ import {
   ChevronDown,
   Image as ImageIcon,
   CheckSquare,
+  Sparkles,
+  Check,
 } from 'lucide-react';
 import { Card, Button, Badge, ConfirmDialog, EmptyState, Breadcrumb, AuthImage, SkeletonGrid } from '@/shared/ui';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
@@ -42,6 +44,8 @@ import {
   deletePhoto,
   getPhotoFileUrl,
   getPhotoThumbUrl,
+  getCategorySuggestion,
+  isGpsFromExif,
   type PhotoItem,
   type PhotoCategory,
   type PhotoFilters,
@@ -276,6 +280,11 @@ function Lightbox({
                   <span className="flex items-center gap-1">
                     <MapPin size={12} />
                     {photo.gps_lat.toFixed(5)}, {photo.gps_lon.toFixed(5)}
+                    {isGpsFromExif(photo) && (
+                      <span className="ml-1 text-white/40">
+                        {t('photos.gps_auto_paren', { defaultValue: '(auto, EXIF)' })}
+                      </span>
+                    )}
                   </span>
                 )}
                 <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-2xs font-medium ${CATEGORY_COLORS[photo.category]}`}>
@@ -500,14 +509,25 @@ function PhotoCard({
   selected,
   onToggleSelect,
   selectMode,
+  onAcceptSuggestion,
 }: {
   photo: PhotoItem;
   onClick: () => void;
   selected?: boolean;
   onToggleSelect?: () => void;
   selectMode?: boolean;
+  onAcceptSuggestion?: (photo: PhotoItem, category: PhotoCategory) => void;
 }) {
   const { t } = useTranslation();
+
+  // AI / heuristic suggestion — only surfaced when it differs from the
+  // category the user already chose (no point suggesting what's set). The
+  // suggestion is advisory: applying it is an explicit click.
+  const suggestion = getCategorySuggestion(photo);
+  const showSuggestion =
+    !selectMode && suggestion !== null && suggestion.suggested_category !== photo.category;
+  const confidencePct =
+    suggestion?.confidence != null ? Math.round(suggestion.confidence * 100) : null;
 
   return (
     <div
@@ -559,12 +579,62 @@ function PhotoCard({
         </div>
       )}
 
-      {/* Category badge */}
-      <div className="absolute top-2 left-2">
+      {/* Category badge + EXIF GPS cue */}
+      <div className="absolute top-2 left-2 flex items-center gap-1">
         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium backdrop-blur-sm ${CATEGORY_COLORS[photo.category]}`}>
           {t(`photos.cat_${photo.category}`, { defaultValue: photo.category })}
         </span>
+        {isGpsFromExif(photo) && photo.gps_lat != null && photo.gps_lon != null && (
+          <span
+            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-2xs font-medium bg-black/50 text-white/90 backdrop-blur-sm"
+            title={t('photos.gps_exif_hint', {
+              defaultValue: 'Location read from photo EXIF: {{lat}}, {{lon}}',
+              lat: photo.gps_lat.toFixed(5),
+              lon: photo.gps_lon.toFixed(5),
+            })}
+          >
+            <MapPin size={10} />
+            {t('photos.gps_auto', { defaultValue: 'GPS' })}
+          </span>
+        )}
       </div>
+
+      {/* AI-suggested category badge — user-confirmable, never auto-applied */}
+      {showSuggestion && suggestion && (
+        <div className="absolute top-2 right-2 z-10">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onAcceptSuggestion?.(photo, suggestion.suggested_category);
+            }}
+            title={t('photos.suggestion_apply_hint', {
+              defaultValue: 'Apply suggested category "{{cat}}"',
+              cat: t(`photos.cat_${suggestion.suggested_category}`, {
+                defaultValue: suggestion.suggested_category,
+              }),
+            })}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-2xs font-medium bg-violet-600/90 text-white backdrop-blur-sm shadow-sm hover:bg-violet-500 transition-colors"
+          >
+            <Sparkles size={10} />
+            {confidencePct != null
+              ? t('photos.suggested_with_conf', {
+                  defaultValue: 'AI: {{cat}} ({{pct}}%)',
+                  cat: t(`photos.cat_${suggestion.suggested_category}`, {
+                    defaultValue: suggestion.suggested_category,
+                  }),
+                  pct: confidencePct,
+                })
+              : t('photos.suggested', {
+                  defaultValue: 'Suggest: {{cat}}',
+                  cat: t(`photos.cat_${suggestion.suggested_category}`, {
+                    defaultValue: suggestion.suggested_category,
+                  }),
+                })}
+            <Check size={10} />
+          </button>
+        </div>
+      )}
 
       {/* Bottom overlay */}
       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/30 to-transparent p-3 pt-8 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
@@ -1042,6 +1112,16 @@ export function PhotoGalleryPage() {
     updateMutation.mutate({ id, data });
   }, [updateMutation]);
 
+  // Accept an AI / heuristic category suggestion. This is the explicit
+  // human-confirm step — it just PATCHes the category to the suggested
+  // value; the manual fields stay authoritative until the user clicks.
+  const handleAcceptSuggestion = useCallback(
+    (photo: PhotoItem, category: PhotoCategory) => {
+      updateMutation.mutate({ id: photo.id, data: { category } });
+    },
+    [updateMutation],
+  );
+
   // Batch selection helpers
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -1346,6 +1426,7 @@ export function PhotoGalleryPage() {
               selectMode={selectMode}
               selected={selectedIds.has(photo.id)}
               onToggleSelect={() => toggleSelect(photo.id)}
+              onAcceptSuggestion={handleAcceptSuggestion}
             />
           ))}
         </div>
@@ -1378,6 +1459,7 @@ export function PhotoGalleryPage() {
                       selectMode={selectMode}
                       selected={selectedIds.has(photo.id)}
                       onToggleSelect={() => toggleSelect(photo.id)}
+                      onAcceptSuggestion={handleAcceptSuggestion}
                     />
                   );
                 })}

@@ -2668,6 +2668,7 @@ const resource = {
     "nav.daily_diary": "Daily Diary",
     "nav.equipment": "Equipment & Fleet",
     "nav.resources": "Resources & Crew",
+    "nav.payroll": "Payroll",
     "nav.service": "Service & Maintenance",
     "nav.portal": "Sub Portal",
     "nav.crm": "CRM",

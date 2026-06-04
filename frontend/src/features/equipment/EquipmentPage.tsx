@@ -21,6 +21,7 @@ import {
   Info,
   Tags,
   Gauge,
+  HeartPulse,
 } from 'lucide-react';
 import {
   Button,
@@ -70,8 +71,15 @@ import { WorkOrderFormModal } from './modals/WorkOrderFormModal';
 import { InspectionFormModal } from './modals/InspectionFormModal';
 import { DamageReportFormModal } from './modals/DamageReportFormModal';
 import { TypeFormModal } from './modals/TypeFormModal';
+import { EquipmentHealthDashboard } from './components/EquipmentHealthDashboard';
+import { FleetOptimizationPanel } from './components/FleetOptimizationPanel';
 
-type DrawerTab = 'utilization' | 'maintenance' | 'certifications' | 'damage';
+type DrawerTab =
+  | 'utilization'
+  | 'health'
+  | 'maintenance'
+  | 'certifications'
+  | 'damage';
 const EQUIPMENT_TAB_IDS = ['assets', 'types'] as const;
 type PageTab = (typeof EQUIPMENT_TAB_IDS)[number];
 
@@ -224,6 +232,27 @@ export function EquipmentPage() {
       }),
   });
 
+  // The fleet is not single-currency; use the most common configured
+  // currency among loaded units so the Fleet Intelligence money cells render
+  // in something meaningful rather than an em-dash.
+  const fleetCurrency = useMemo(() => {
+    const items = eqQ.data ?? [];
+    const counts = new Map<string, number>();
+    for (const it of items) {
+      const c = (it.currency || '').trim();
+      if (c) counts.set(c, (counts.get(c) ?? 0) + 1);
+    }
+    let best: string | undefined;
+    let bestN = 0;
+    for (const [c, n] of counts) {
+      if (n > bestN) {
+        best = c;
+        bestN = n;
+      }
+    }
+    return best;
+  }, [eqQ.data]);
+
   const filtered = useMemo(() => {
     const items = eqQ.data ?? [];
     const s = search.toLowerCase();
@@ -315,6 +344,10 @@ export function EquipmentPage() {
         <TypesPage />
       ) : (
       <>
+      <FleetOptimizationPanel
+        currency={fleetCurrency}
+        onSelect={setSelectedId}
+      />
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px] max-w-md">
           <Search
@@ -764,6 +797,13 @@ function DetailDrawer({ id, onClose }: { id: string; onClose: () => void }) {
                       icon: Activity,
                     },
                     {
+                      id: 'health',
+                      label: t('equipment.tab_health', {
+                        defaultValue: 'Health & Analytics',
+                      }),
+                      icon: HeartPulse,
+                    },
+                    {
                       id: 'maintenance',
                       label: t('equipment.tab_maintenance', {
                         defaultValue: 'Maintenance',
@@ -815,6 +855,9 @@ function DetailDrawer({ id, onClose }: { id: string; onClose: () => void }) {
                   loading={telemetryQ.isLoading}
                   dashboard={dashQ.data ?? null}
                 />
+              )}
+              {tab === 'health' && (
+                <EquipmentHealthDashboard equipmentId={eq.id} />
               )}
               {tab === 'maintenance' && (
                 <MaintenanceTab

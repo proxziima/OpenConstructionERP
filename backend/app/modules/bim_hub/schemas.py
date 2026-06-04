@@ -431,6 +431,11 @@ class BIMElementResponse(BaseModel):
     linked_requirements: list[RequirementBrief] = Field(default_factory=list)
     validation_results: list[ElementValidationSummary] = Field(default_factory=list)
     validation_status: Literal["pass", "warning", "error", "unchecked"] = "unchecked"
+    # Latest percent-complete (0-100) of the BOQ position(s) this element is
+    # linked to, taken as the MAX across linked positions. ``None`` means the
+    # element is unlinked or no ProgressEntry has been recorded yet — the BIM
+    # viewer paints those neutral grey in the "By progress" colour mode.
+    current_pct: float | None = None
     created_at: datetime
     updated_at: datetime
 

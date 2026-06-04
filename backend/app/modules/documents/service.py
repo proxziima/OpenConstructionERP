@@ -954,6 +954,37 @@ class PhotoService:
         # stored canonical MIME is server-derived.
         stored_mime = _mime_for_signature(detected_photo_type)
 
+        # ── AI photo intelligence (Lane 7) ──────────────────────────────
+        # 1) Auto-extract EXIF GPS so geotagged photos place themselves on
+        #    the map. The CALLER's explicit lat/lon stays authoritative — we
+        #    only fill in coordinates that were left blank.
+        ai_meta: dict[str, Any] = {}
+        if gps_lat is None or gps_lon is None:
+            from app.core.match_service.extractors.photo import extract_exif_gps
+
+            coords = extract_exif_gps(content)
+            if coords is not None:
+                exif_lat, exif_lon = coords
+                if gps_lat is None:
+                    gps_lat = exif_lat
+                if gps_lon is None:
+                    gps_lon = exif_lon
+                ai_meta["gps_source"] = "exif"
+
+        # 2) Compute a defect-category SUGGESTION. This is NEVER auto-applied
+        #    — it is stored in metadata for the user to confirm in the UI. The
+        #    persisted ``category`` remains exactly what the caller chose.
+        suggestion = await self._suggest_category_safe(
+            user_id=user_id,
+            image_bytes=content,
+            media_type=stored_mime or content_type or "image/jpeg",
+            filename=safe_name,
+            caption=caption or "",
+            tags=tags or [],
+        )
+        if suggestion is not None:
+            ai_meta["category_suggestion"] = suggestion
+
         # Build storage path
         file_uuid = uuid.uuid4().hex[:12]
         storage_name = f"{file_uuid}_{safe_name}"
@@ -966,7 +997,9 @@ class PhotoService:
         thumb_name = f"{file_uuid}_thumb.jpg"
         thumb_path = thumb_dir / thumb_name
 
-        # Create DB record FIRST
+        # Create DB record FIRST. ``ai_meta`` carries the EXIF-GPS source flag
+        # and the (never-auto-applied) category suggestion in the existing
+        # JSON ``metadata`` column — no schema change needed (LIGHTWEIGHT).
         photo = ProjectPhoto(
             project_id=project_id,
             filename=safe_name,
@@ -978,6 +1011,7 @@ class PhotoService:
             tags=tags or [],
             taken_at=taken_at,
             category=category,
+            metadata_=ai_meta or {},
             created_by=user_id,
         )
         photo = await self.repo.create(photo)
@@ -1059,6 +1093,56 @@ class PhotoService:
             logger.exception("CROSS-LINK FAILED")
 
         return photo
+
+    async def _suggest_category_safe(
+        self,
+        *,
+        user_id: str,
+        image_bytes: bytes,
+        media_type: str,
+        filename: str,
+        caption: str,
+        tags: list[str],
+    ) -> dict[str, Any] | None:
+        """Best-effort photo-category suggestion (Lane 7).
+
+        Delegates to the AI module's :meth:`AIService.suggest_photo_category`
+        which uses the configured AI provider when a key exists, otherwise a
+        deterministic heuristic. Wrapped so any AI/import failure degrades to
+        "no suggestion" rather than failing the upload. The suggestion is
+        advisory only — the caller's chosen category stays authoritative.
+        """
+        try:
+            from app.modules.ai.service import AIService
+
+            uid: str | None = str(user_id) if user_id else None
+            if not uid:
+                # No user → fall back to the deterministic heuristic directly
+                # (the AI path needs a user to resolve provider keys).
+                from app.modules.ai.service import heuristic_photo_category
+
+                heuristic = heuristic_photo_category(filename=filename, caption=caption, tags=tags)
+                if heuristic is None:
+                    return None
+                category, confidence = heuristic
+                return {
+                    "suggested_category": category,
+                    "confidence": confidence,
+                    "source": "heuristic",
+                }
+
+            ai_service = AIService(self.session)
+            return await ai_service.suggest_photo_category(
+                uid,
+                image_bytes=image_bytes,
+                media_type=media_type,
+                filename=filename,
+                caption=caption,
+                tags=tags,
+            )
+        except Exception:
+            logger.debug("Photo-category suggestion skipped", exc_info=True)
+            return None
 
     # ── Read ───────────────────────────────────────────────────────────────
 

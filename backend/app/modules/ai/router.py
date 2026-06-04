@@ -468,6 +468,63 @@ async def photo_estimate(
     )
 
 
+# ── Photo category suggestion (Lane 7 — never auto-applied) ─────────────────
+
+
+@router.post(
+    "/photo-category-suggest/",
+    dependencies=[Depends(RequirePermission("ai.estimate"))],
+)
+async def photo_category_suggest(
+    user_id: CurrentUserId,
+    file: UploadFile = File(..., description="Construction-site photo to classify"),
+    caption: str = Form(default="", description="Optional caption text to help the heuristic"),
+    tags: str = Form(default="", description="Optional comma-separated tags"),
+    service: AIService = Depends(_get_service),
+) -> dict[str, Any]:
+    """Suggest a photo category (e.g. ``defect``) for the uploaded image.
+
+    Uses the configured AI vision provider when a key is set, otherwise a
+    transparent keyword heuristic over filename / caption / tags. The result
+    is a SUGGESTION only — the caller decides whether to apply it. Returns
+    ``{suggested_category, confidence, source}`` or ``{suggested_category: null}``
+    when no signal is found.
+    """
+    content_type = file.content_type or ""
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(f"Unsupported image type: {content_type}. Accepted: {', '.join(sorted(ALLOWED_IMAGE_TYPES))}"),
+        )
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty.")
+    try:
+        require_signature(
+            image_bytes[:SIGNATURE_BYTES_REQUIRED],
+            ALLOWED_PHOTO_TYPES,
+            filename=file.filename,
+        )
+    except FileSignatureMismatch as exc:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=str(exc),
+        ) from exc
+
+    parsed_tags = [t.strip() for t in tags.split(",") if t.strip()]
+    suggestion = await service.suggest_photo_category(
+        user_id,
+        image_bytes=image_bytes,
+        media_type=content_type or "image/jpeg",
+        filename=file.filename or "photo.jpg",
+        caption=caption,
+        tags=parsed_tags,
+    )
+    if suggestion is None:
+        return {"suggested_category": None, "confidence": None, "source": None}
+    return suggestion
+
+
 # ── Universal File Estimate (any file -> AI -> BOQ) ─────────────────────────
 
 

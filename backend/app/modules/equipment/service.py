@@ -56,8 +56,14 @@ from app.modules.equipment.schemas import (
     EquipmentRentalCreate,
     EquipmentTypeCreate,
     EquipmentUpdate,
+    FailureForecastResponse,
     FleetDashboardResponse,
+    FleetMaintenanceBundleResponse,
+    FleetOptimizationResponse,
+    FleetUnderutilizedResponse,
     FuelLogCreate,
+    HealthAnalyticsResponse,
+    HealthAnomalyResponse,
     InspectionCreate,
     MaintenanceScheduleCreate,
     MaintenanceWorkOrderCreate,
@@ -993,6 +999,87 @@ class EquipmentService:
             expiring_inspections=len(expiring),
             blocked_units=blocked_units,
             active_rentals=active_rentals,
+        )
+
+    # ── Predictive maintenance / fleet analytics ─────────────────────────
+
+    async def health_analytics(
+        self,
+        equipment_id: uuid.UUID,
+    ) -> HealthAnalyticsResponse:
+        """Predictive health assessment for one unit (validates existence)."""
+        from app.modules.equipment.predictive_service import EquipmentPredictiveService
+
+        await self.get_equipment(equipment_id)
+        predictive = EquipmentPredictiveService(self.session)
+        assessment = await predictive.analyze_equipment_health(equipment_id)
+        return HealthAnalyticsResponse(
+            equipment_id=equipment_id,
+            health_score=assessment.health_score,
+            band=assessment.band,
+            anomaly_detected=assessment.anomaly_detected,
+            maintenance_trend=assessment.maintenance_trend,
+            reasons=assessment.reasons,
+            anomalies=[
+                HealthAnomalyResponse(
+                    recorded_at=a.recorded_at,
+                    metric=a.metric,
+                    value=a.value,
+                    z_score=a.z_score,
+                    reason=a.reason,
+                )
+                for a in assessment.anomalies
+            ],
+            sample_count=assessment.sample_count,
+        )
+
+    async def failure_forecast(
+        self,
+        equipment_id: uuid.UUID,
+    ) -> FailureForecastResponse:
+        """Predicted next-service date + confidence for one unit."""
+        from app.modules.equipment.predictive_service import EquipmentPredictiveService
+
+        await self.get_equipment(equipment_id)
+        predictive = EquipmentPredictiveService(self.session)
+        forecast = await predictive.forecast_maintenance_need(equipment_id)
+        return FailureForecastResponse(
+            equipment_id=equipment_id,
+            predicted_failure_date=forecast.predicted_failure_date,
+            failure_confidence=forecast.failure_confidence,
+            days_to_failure=forecast.days_to_failure,
+            basis=forecast.basis,
+            daily_usage=forecast.daily_usage,
+        )
+
+    async def fleet_optimization(
+        self,
+        *,
+        target_utilization_pct: float = 70.0,
+        window_days: int = 30,
+    ) -> FleetOptimizationResponse:
+        """Fleet-wide optimisation recommendations."""
+        from app.modules.equipment.predictive_service import EquipmentPredictiveService
+
+        predictive = EquipmentPredictiveService(self.session)
+        data = await predictive.fleet_optimization_recommendations(
+            target_utilization_pct=target_utilization_pct,
+            window_days=window_days,
+        )
+        return FleetOptimizationResponse(
+            total_units=int(data.get("total_units", 0)),  # type: ignore[arg-type]
+            target_utilization_pct=float(data.get("target_utilization_pct", target_utilization_pct)),  # type: ignore[arg-type]
+            window_days=int(data.get("window_days", window_days)),  # type: ignore[arg-type]
+            underutilized_count=int(data.get("underutilized_count", 0)),  # type: ignore[arg-type]
+            estimated_monthly_savings=str(data.get("estimated_monthly_savings", "0")),
+            underutilized=[
+                FleetUnderutilizedResponse(**u)  # type: ignore[arg-type]
+                for u in data.get("underutilized", [])  # type: ignore[union-attr]
+            ],
+            maintenance_bundles=[
+                FleetMaintenanceBundleResponse(**b)  # type: ignore[arg-type]
+                for b in data.get("maintenance_bundles", [])  # type: ignore[union-attr]
+            ],
         )
 
 

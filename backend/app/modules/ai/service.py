@@ -100,6 +100,143 @@ def _coerce_confidence(value: Any) -> float | None:
     return round(conf, 2)
 
 
+# ── Photo defect-category suggestion (Lane 7) ────────────────────────────
+#
+# The set of categories the photo gallery understands. Kept in sync with
+# ``VALID_PHOTO_CATEGORIES`` in documents/service.py — duplicated here on
+# purpose so the AI module stays import-decoupled from documents.
+PHOTO_CATEGORIES: tuple[str, ...] = ("site", "progress", "defect", "delivery", "safety", "other")
+
+# Deterministic keyword → category map used when no AI provider is
+# configured. Ordered most-specific first; the first category whose keyword
+# matches the combined text (filename + caption + tags) wins. This is a
+# transparent, explainable heuristic — never a fabricated AI score.
+_CATEGORY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "defect",
+        (
+            "defect",
+            "crack",
+            "damage",
+            "damaged",
+            "leak",
+            "leakage",
+            "rust",
+            "corrosion",
+            "snag",
+            "snagging",
+            "fault",
+            "broken",
+            "spall",
+            "mould",
+            "mold",
+            "stain",
+            "deficien",
+            "punch",
+            "rework",
+            "mangel",
+            "riss",
+            "schaden",
+            "defaut",
+            "fissure",
+            "defecto",
+        ),
+    ),
+    (
+        "safety",
+        (
+            "safety",
+            "hazard",
+            "ppe",
+            "helmet",
+            "harness",
+            "guardrail",
+            "scaffold",
+            "fall",
+            "fire",
+            "extinguisher",
+            "first aid",
+            "danger",
+            "warning",
+            "barrier",
+            "sicherheit",
+            "gefahr",
+            "securite",
+        ),
+    ),
+    (
+        "delivery",
+        (
+            "delivery",
+            "delivered",
+            "shipment",
+            "pallet",
+            "truck",
+            "unload",
+            "material",
+            "rebar bundle",
+            "lieferung",
+            "livraison",
+            "entrega",
+        ),
+    ),
+    (
+        "progress",
+        (
+            "progress",
+            "pour",
+            "poured",
+            "concrete",
+            "formwork",
+            "rebar",
+            "installed",
+            "erection",
+            "framing",
+            "milestone",
+            "wip",
+            "fortschritt",
+            "avancement",
+            "progreso",
+        ),
+    ),
+    (
+        "site",
+        ("site", "overview", "aerial", "general", "panorama", "baustelle", "chantier"),
+    ),
+)
+
+
+def heuristic_photo_category(
+    *,
+    filename: str = "",
+    caption: str = "",
+    tags: list[str] | None = None,
+) -> tuple[str, float] | None:
+    """Deterministically guess a photo category from textual signals.
+
+    Returns ``(category, confidence)`` or ``None`` when nothing matches.
+    The confidence is a fixed, honest "this is a keyword match" score —
+    NOT an AI probability — so the UI can clearly label it as a heuristic.
+    """
+    parts = [filename or "", caption or ""]
+    parts.extend(tags or [])
+    text = " ".join(parts).lower()
+    if not text.strip():
+        return None
+    for category, keywords in _CATEGORY_KEYWORDS:
+        if any(kw in text for kw in keywords):
+            return category, 0.55
+    return None
+
+
+def _coerce_suggested_category(value: Any) -> str | None:
+    """Normalise an AI-returned category to the allowed set, else None."""
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().lower()
+    return cleaned if cleaned in PHOTO_CATEGORIES else None
+
+
 def _validate_items(raw_items: Any, currency: str = "") -> list[dict[str, Any]]:
     """‌⁠‍Validate and clean AI-generated work items.
 
@@ -823,6 +960,124 @@ class AIService:
         )
 
         return _build_job_response(job)
+
+    # ── Photo defect-category suggestion (Lane 7) ────────────────────────
+
+    async def suggest_photo_category(
+        self,
+        user_id: str,
+        *,
+        image_bytes: bytes | None = None,
+        media_type: str = "image/jpeg",
+        filename: str = "",
+        caption: str = "",
+        tags: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Suggest a photo category (e.g. ``defect``) without ever applying it.
+
+        Resolution order:
+
+        1. If the user has a usable AI provider key AND ``image_bytes`` is
+           supplied, ask the vision model to classify the photo into one of
+           ``PHOTO_CATEGORIES`` and report a confidence. The model output is
+           strictly validated against the allowed set; anything off-list is
+           discarded (no fabricated category).
+        2. Otherwise fall back to the deterministic keyword heuristic over
+           filename / caption / tags.
+        3. If neither yields a result, return ``None`` ("no suggestion").
+
+        Returns a dict ``{suggested_category, confidence, source}`` where
+        ``source`` is ``"ai"`` or ``"heuristic"`` so the UI can label it
+        honestly. NEVER raises — a classification failure degrades to the
+        heuristic (and then to ``None``); it must not block the upload.
+        """
+        uid = uuid.UUID(user_id)
+        settings = await self.settings_repo.get_by_user_id(uid)
+
+        # 1. Try the configured AI provider (vision) when we have both a key
+        #    and image bytes to look at.
+        if image_bytes:
+            try:
+                provider, api_key, model_override = resolve_provider_key_model(settings)
+            except ValueError:
+                provider = ""
+                api_key = ""
+                model_override = None
+            if provider:
+                ai_result = await self._ai_suggest_category(
+                    provider=provider,
+                    api_key=api_key,
+                    model_override=model_override,
+                    image_bytes=image_bytes,
+                    media_type=media_type,
+                )
+                if ai_result is not None:
+                    return ai_result
+
+        # 2. Deterministic fallback — clearly labelled as a heuristic.
+        heuristic = heuristic_photo_category(filename=filename, caption=caption, tags=tags)
+        if heuristic is not None:
+            category, confidence = heuristic
+            return {
+                "suggested_category": category,
+                "confidence": confidence,
+                "source": "heuristic",
+            }
+
+        # 3. No signal at all.
+        return None
+
+    async def _ai_suggest_category(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        model_override: str | None,
+        image_bytes: bytes,
+        media_type: str,
+    ) -> dict[str, Any] | None:
+        """Ask the vision model to classify the photo. Best-effort, never raises."""
+        prompt = (
+            "You are tagging a construction-site photo. Classify it into EXACTLY one "
+            "of these categories: site, progress, defect, delivery, safety, other.\n"
+            "- defect: visible damage, cracks, leaks, snags, deficiencies\n"
+            "- safety: PPE, hazards, scaffolding, fire/first-aid equipment, warnings\n"
+            "- delivery: materials/goods being delivered or stored on site\n"
+            "- progress: construction work in progress (pours, formwork, framing, installs)\n"
+            "- site: general site overview / context shots\n"
+            "- other: anything that fits none of the above\n\n"
+            'Reply with ONLY a JSON object: {"category": "<one>", "confidence": <0..1>}'
+        )
+        try:
+            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+            raw_response, _tokens = await call_ai(
+                provider=provider,
+                api_key=api_key,
+                system="You are a precise image classifier. Output JSON only.",
+                prompt=prompt,
+                image_base64=image_b64,
+                image_media_type=media_type,
+                model=model_override,
+                max_tokens=120,
+            )
+        except Exception:
+            logger.debug("AI photo-category suggestion failed; will fall back", exc_info=True)
+            return None
+
+        parsed = extract_json(raw_response)
+        if isinstance(parsed, list) and parsed:
+            parsed = parsed[0]
+        if not isinstance(parsed, dict):
+            return None
+        category = _coerce_suggested_category(parsed.get("category"))
+        if category is None:
+            return None
+        confidence = _coerce_confidence(parsed.get("confidence"))
+        return {
+            "suggested_category": category,
+            "confidence": confidence,
+            "source": "ai",
+        }
 
     # ── Universal file estimate ──────────────────────────────────────────
 

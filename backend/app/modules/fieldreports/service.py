@@ -316,6 +316,10 @@ class FieldReportService:
                 source_module="oe_fieldreports",
             )
 
+        # Publish the labour log so the cost model and payroll can roll up
+        # hours x rate. Best-effort: a failure here must not block submission.
+        await self._publish_labour(report, status="submitted")
+
         return report
 
     async def approve_report(self, report_id: uuid.UUID, user_id: str) -> FieldReport:
@@ -357,7 +361,127 @@ class FieldReportService:
         )
 
         logger.info("Field report approved: %s by %s", report_id, user_id)
+
+        # Re-publish the labour log on approval. Subscribers are idempotent
+        # per (report_id, status), so a submit + approve pair never
+        # double-counts the same hours into budget actuals.
+        await self._publish_labour(report, status="approved", actor_id=user_id)
+
         return report
+
+    # ── Labour log publication ──────────────────────────────────────────────
+
+    async def _collect_labour_rows(self, report: FieldReport) -> list[dict[str, Any]]:
+        """Normalise a report's workforce into payroll/cost-ready rows.
+
+        Prefers the structured :class:`SiteWorkforceLog` rows (they may carry
+        a ``resource_id`` / ``cost_rate`` in metadata); falls back to the
+        free-form ``workforce`` JSON column when no structured rows exist.
+
+        Each returned row carries at least ``worker_type`` and ``hours``
+        (a float, regular + overtime combined). ``resource_id`` / ``cost_rate``
+        / ``currency`` are surfaced when present so the cost model can apply
+        the resource rate or the snapshot rate deterministically.
+        """
+        from sqlalchemy import select
+
+        from app.modules.fieldreports.models import SiteWorkforceLog
+
+        def _to_float(value: object) -> float:
+            try:
+                f = float(str(value))
+            except (TypeError, ValueError):
+                return 0.0
+            return f if f >= 0.0 else 0.0
+
+        rows: list[dict[str, Any]] = []
+
+        stmt = select(SiteWorkforceLog).where(SiteWorkforceLog.field_report_id == report.id)
+        result = await self.session.execute(stmt)
+        structured = list(result.scalars().all())
+
+        for log in structured:
+            md = log.metadata_ if isinstance(log.metadata_, dict) else {}
+            hours = _to_float(log.hours_worked) + _to_float(log.overtime_hours)
+            row: dict[str, Any] = {
+                "worker_type": log.worker_type,
+                "company": log.company,
+                "headcount": int(log.headcount or 0),
+                "hours": round(hours, 4),
+                "overtime_hours": round(_to_float(log.overtime_hours), 4),
+                "wbs_id": log.wbs_id,
+                "cost_category": log.cost_category,
+            }
+            resource_id = md.get("resource_id")
+            if resource_id:
+                row["resource_id"] = str(resource_id)
+            if md.get("cost_rate") is not None:
+                row["cost_rate"] = str(md["cost_rate"])
+            if md.get("currency"):
+                row["currency"] = str(md["currency"])
+            rows.append(row)
+
+        if rows:
+            return rows
+
+        # Fallback: the simpler JSON ``workforce`` column (count + hours).
+        workforce = report.workforce if isinstance(report.workforce, list) else []
+        for entry in workforce:
+            if not isinstance(entry, dict):
+                continue
+            count = _to_float(entry.get("count"))
+            per_head = _to_float(entry.get("hours"))
+            total_hours = count * per_head if count else per_head
+            row = {
+                "worker_type": str(entry.get("trade") or entry.get("worker_type") or "labour"),
+                "company": entry.get("company"),
+                "headcount": int(count),
+                "hours": round(total_hours, 4),
+                "overtime_hours": 0.0,
+                "wbs_id": entry.get("wbs_id"),
+                "cost_category": entry.get("cost_category"),
+            }
+            if entry.get("resource_id"):
+                row["resource_id"] = str(entry["resource_id"])
+            if entry.get("cost_rate") is not None:
+                row["cost_rate"] = str(entry["cost_rate"])
+            if entry.get("currency"):
+                row["currency"] = str(entry["currency"])
+            rows.append(row)
+
+        return rows
+
+    async def _publish_labour(
+        self,
+        report: FieldReport,
+        *,
+        status: str,
+        actor_id: str | None = None,
+    ) -> None:
+        """Gather workforce rows and publish ``fieldreports.labour.logged``.
+
+        Swallows its own errors: the labour rollup is a downstream
+        convenience and must never break the report status transition.
+        """
+        try:
+            rows = await self._collect_labour_rows(report)
+            if not rows:
+                return
+            from app.modules.fieldreports.events import publish_labour_logged
+
+            publish_labour_logged(
+                report_id=str(report.id),
+                project_id=str(report.project_id),
+                report_date=str(report.report_date),
+                status=status,
+                rows=rows,
+                actor_id=actor_id,
+            )
+        except Exception:
+            logger.exception(
+                "Labour-log publish failed for report=%s — status transition unaffected",
+                report.id,
+            )
 
     # ── Link documents ─────────────────────────────────────────────────────
 

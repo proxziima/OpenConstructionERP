@@ -300,6 +300,14 @@ class FieldDiaryService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=("Diary entry is empty — add notes, activities, or attachments before submitting"),
             )
+        # Snapshot the labour-bearing activity rows BEFORE update_fields()
+        # expires the ORM state. Each work/inspection activity with positive
+        # hours becomes a labour row; delays/visits/incidents are ignored.
+        labour_rows = self._diary_labour_rows(activities)
+        project_id_s = str(entry.project_id)
+        author_id_s = str(entry.author_id)
+        entry_date_s = entry.entry_date
+
         now = now_utc()
         await self.entry_repo.update_fields(
             entry_id,
@@ -311,13 +319,69 @@ class FieldDiaryService:
             "field_diary.entry.submitted",
             {
                 "entry_id": str(entry_id),
-                "project_id": str(entry.project_id),
-                "author_id": str(entry.author_id),
-                "entry_date": entry.entry_date,
+                "project_id": project_id_s,
+                "author_id": author_id_s,
+                "entry_date": entry_date_s,
             },
             source_module="field_diary",
         )
+
+        # Feed diary work hours into the shared labour-cost / payroll flow.
+        # Best-effort: never let a rollup failure block submission.
+        if labour_rows:
+            try:
+                from app.modules.field_diary.events import publish_diary_labour
+
+                publish_diary_labour(
+                    entry_id=str(entry_id),
+                    project_id=project_id_s,
+                    entry_date=entry_date_s,
+                    author_id=author_id_s,
+                    activity_rows=labour_rows,
+                )
+            except Exception:
+                logger.exception(
+                    "Diary labour publish failed for entry=%s — submission unaffected",
+                    entry_id,
+                )
+
         return entry
+
+    @staticmethod
+    def _diary_labour_rows(activities: list[DiaryActivity]) -> list[dict[str, Any]]:
+        """Build labour rows from a diary entry's work activities.
+
+        Only ``work`` / ``inspection`` activities with positive ``hours``
+        count as labour; delays, visits and incidents carry no payable
+        hours. ``resource_id`` / ``cost_rate`` / ``currency`` are lifted
+        from the activity metadata when present so the cost model can apply
+        a resource rate deterministically.
+        """
+        rows: list[dict[str, Any]] = []
+        for act in activities:
+            if act.activity_type not in ("work", "inspection"):
+                continue
+            try:
+                hours = float(act.hours) if act.hours is not None else 0.0
+            except (TypeError, ValueError):
+                hours = 0.0
+            if hours <= 0.0:
+                continue
+            md = act.metadata_ if isinstance(act.metadata_, dict) else {}
+            row: dict[str, Any] = {
+                "worker_type": act.activity_type,
+                "hours": round(hours, 4),
+                "overtime_hours": 0.0,
+                "headcount": 1,
+            }
+            if md.get("resource_id"):
+                row["resource_id"] = str(md["resource_id"])
+            if md.get("cost_rate") is not None:
+                row["cost_rate"] = str(md["cost_rate"])
+            if md.get("currency"):
+                row["currency"] = str(md["currency"])
+            rows.append(row)
+        return rows
 
     async def approve_diary_entry(
         self,

@@ -31,6 +31,7 @@ from app.modules.costmodel.repository import (
     CostLineRepository,
     CostSpineRepository,
     SnapshotRepository,
+    _amount_in_base,
 )
 from app.modules.costmodel.schemas import (
     BudgetCategoryRow,
@@ -2318,3 +2319,209 @@ class CostSpineService:
 
         await self.session.flush()
         self.session.expire_all()
+
+
+# ── Labour actuals (field labour -> budget) ────────────────────────────────────
+
+
+# Marker used to find/track the single auto-maintained labour budget line per
+# project, and to record which (report_id, status) pairs have already been
+# folded into ``actual_amount`` so a submit -> approve pair never double-counts.
+_LABOUR_LINE_MARKER = "labour_actuals_auto"
+
+
+class LabourActualsService:
+    """Roll field-reported labour hours into the project budget actuals.
+
+    Subscribes (via :data:`event_bus`) to ``fieldreports.labour.logged`` and,
+    for each event, converts every workforce row's ``hours x cost_rate`` into
+    the project base currency and accumulates the total onto a single
+    auto-maintained ``category="labor"`` budget line. The line is found /
+    created idempotently per project (tagged via ``metadata.kind``), and each
+    event is applied at most once (the ``(report_id, status)`` key is recorded
+    in the line metadata).
+
+    FX is never blended: a row's own currency (explicit, or the resource's
+    currency) is converted to the project base via the project ``fx_rates``
+    using the shared :func:`_amount_in_base` helper.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.budget_repo = BudgetLineRepository(session)
+
+    @staticmethod
+    def _to_decimal(value: object) -> Decimal:
+        if value is None:
+            return Decimal("0")
+        try:
+            d = Decimal(str(value))
+        except (ValueError, ArithmeticError, TypeError):
+            return Decimal("0")
+        return d if d.is_finite() and d >= 0 else Decimal("0")
+
+    async def _resource_rate(self, resource_id: str) -> tuple[Decimal, str]:
+        """Return ``(default_cost_rate, currency)`` for a resource, or (0, "")."""
+        try:
+            rid = uuid.UUID(str(resource_id))
+        except (ValueError, AttributeError, TypeError):
+            return Decimal("0"), ""
+        try:
+            from app.modules.resources.repository import ResourceRepository
+
+            resource = await ResourceRepository(self.session).get_by_id(rid)
+        except Exception:
+            return Decimal("0"), ""
+        if resource is None:
+            return Decimal("0"), ""
+        rate = resource.default_cost_rate if resource.default_cost_rate is not None else Decimal("0")
+        return self._to_decimal(rate), (resource.currency or "").strip().upper()
+
+    async def compute_labour_cost(
+        self,
+        project_id: uuid.UUID,
+        rows: list[dict],
+    ) -> Decimal:
+        """Compute the total labour cost of ``rows`` in the project base currency.
+
+        Pure aggregation (no writes) so it is unit-testable in isolation:
+        for each row, ``hours x rate`` is evaluated in the row's own currency,
+        then converted to base via ``_amount_in_base``. A row with neither an
+        explicit ``cost_rate`` nor a resolvable resource rate contributes 0.
+        """
+        base, fx = await self.budget_repo._project_fx_context(project_id)
+        total = Decimal("0")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            hours = self._to_decimal(row.get("hours"))
+            if hours <= 0:
+                continue
+
+            rate = self._to_decimal(row.get("cost_rate"))
+            row_ccy = (str(row.get("currency") or "")).strip().upper()
+            if rate <= 0 and row.get("resource_id"):
+                rate, res_ccy = await self._resource_rate(str(row["resource_id"]))
+                if not row_ccy:
+                    row_ccy = res_ccy
+            if rate <= 0:
+                continue
+
+            amount_native = hours * rate
+            total += _amount_in_base(str(amount_native), row_ccy, base, fx)
+        return total
+
+    async def _get_or_create_labour_line(self, project_id: uuid.UUID) -> BudgetLine:
+        """Find (or create) the single auto-maintained labour budget line."""
+        lines, _ = await self.budget_repo.list_for_project(project_id, category="labor", limit=1000)
+        for line in lines:
+            md = line.metadata_ if isinstance(line.metadata_, dict) else {}
+            if md.get("kind") == _LABOUR_LINE_MARKER:
+                return line
+
+        currency = await CostModelService(self.session)._get_project_currency(project_id)
+        line = BudgetLine(
+            project_id=project_id,
+            category="labor",
+            description="Field labour (auto)",
+            planned_amount="0",
+            committed_amount="0",
+            actual_amount="0",
+            forecast_amount="0",
+            currency=currency,
+            metadata_={"kind": _LABOUR_LINE_MARKER, "applied_events": []},
+        )
+        return await self.budget_repo.create(line)
+
+    async def apply_labour_event(
+        self,
+        *,
+        project_id: uuid.UUID,
+        report_id: str,
+        status_value: str,
+        rows: list[dict],
+    ) -> Decimal:
+        """Fold one labour event into the labour budget line's ``actual_amount``.
+
+        Idempotent on ``(report_id, status_value)``: re-firing the same event
+        (or a submit followed by an approve carrying identical hours) adds the
+        amount at most once. Returns the amount applied (0 when skipped).
+        """
+        amount = await self.compute_labour_cost(project_id, rows)
+        if amount <= 0:
+            return Decimal("0")
+
+        line = await self._get_or_create_labour_line(project_id)
+        md = dict(line.metadata_) if isinstance(line.metadata_, dict) else {}
+        applied = md.get("applied_events")
+        if not isinstance(applied, list):
+            applied = []
+        event_key = f"{report_id}:{status_value}"
+        if event_key in applied:
+            return Decimal("0")  # already counted
+
+        prior = self._to_decimal(line.actual_amount)
+        new_actual = (prior + amount).quantize(Decimal("0.01"))
+        applied = [*applied, event_key]
+        md["applied_events"] = applied
+
+        await self.budget_repo.update_fields(
+            line.id,
+            actual_amount=str(new_actual),
+            metadata_=md,
+        )
+        logger.info(
+            "Labour actuals: project=%s report=%s status=%s +%s -> %s",
+            project_id,
+            report_id,
+            status_value,
+            amount,
+            new_actual,
+        )
+        return amount
+
+
+async def _on_labour_logged(event: object) -> None:
+    """Detached subscriber: roll a labour event into budget actuals.
+
+    Opens its own session (the publisher is still inside its request
+    transaction) and swallows errors so a cost-rollup failure never breaks
+    the field-report / diary submission that triggered it.
+    """
+    data = getattr(event, "data", None) or {}
+    rows = data.get("rows")
+    project_id_raw = data.get("project_id")
+    report_id = str(data.get("report_id") or "")
+    status_value = str(data.get("status") or "")
+    if not project_id_raw or not isinstance(rows, list) or not rows:
+        return
+    try:
+        project_id = uuid.UUID(str(project_id_raw))
+    except (ValueError, AttributeError, TypeError):
+        return
+
+    from app.database import async_session_factory
+
+    try:
+        async with async_session_factory() as session:
+            service = LabourActualsService(session)
+            await service.apply_labour_event(
+                project_id=project_id,
+                report_id=report_id,
+                status_value=status_value,
+                rows=rows,
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "Labour actuals rollup failed for report=%s — source submission unaffected",
+            report_id,
+        )
+
+
+# Register the subscriber at import time. The module loader imports
+# ``costmodel.events`` (absent) AND ``costmodel.service`` indirectly via the
+# router, so binding here keeps the wiring inside an allowed file. Guard
+# against double-registration on repeated imports (test reload, etc.).
+if _on_labour_logged not in event_bus._handlers.get("fieldreports.labour.logged", []):
+    event_bus.subscribe("fieldreports.labour.logged", _on_labour_logged)

@@ -96,6 +96,7 @@ import {
   fetchBIMModels,
   fetchBIMModel,
   fetchBIMElements,
+  fetchBIMElementProgress,
   fetchBIMConverters,
   deleteBIMModel,
   deleteLink,
@@ -1858,6 +1859,7 @@ export function BIMPage() {
     | 'document_coverage'
     | '5d_cost'
     | '4d_schedule'
+    | 'by_progress'
   >('default');
   const showBoundingBoxes = false;
   const [isolatedIds, setIsolatedIds] = useState<string[] | null>(null);
@@ -2081,6 +2083,31 @@ export function BIMPage() {
   });
   const elements: BIMElementData[] = elementsQuery.data?.items ?? [];
   const elementsTotal: number = elementsQuery.data?.total ?? 0;
+
+  // BOQ progress per element — fetched ONLY while the "By progress" colour
+  // mode is active (the skeleton element list carries no BOQ links, so
+  // progress comes from the enriched listing's `current_pct`). Gated on the
+  // mode so we never pay the extra round trip(s) for users who don't open
+  // the overlay. React Query caches the result, so toggling the mode back
+  // on is instant within the stale window.
+  const progressQuery = useQuery({
+    queryKey: ['bim-element-progress', activeModelId],
+    queryFn: () => fetchBIMElementProgress(activeModelId!),
+    enabled:
+      !!activeModelId &&
+      colorByMode === 'by_progress' &&
+      (activeModel?.status === 'ready' || activeModel?.status === 'degraded'),
+    staleTime: 60_000,
+  });
+  const progressByElementId: Record<string, number> = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const row of progressQuery.data?.items ?? []) {
+      if (row.current_pct != null && Number.isFinite(row.current_pct)) {
+        out[row.id] = row.current_pct;
+      }
+    }
+    return out;
+  }, [progressQuery.data]);
 
   // Apply the deep-link element selection as soon as the elements list
   // resolves.  Strips the query param afterwards so a refresh doesn't
@@ -3182,7 +3209,8 @@ export function BIMPage() {
                       | 'boq_coverage'
                       | 'document_coverage'
                       | '5d_cost'
-                      | '4d_schedule',
+                      | '4d_schedule'
+                      | 'by_progress',
                   )
                 }
                 title={t('bim.color_by', { defaultValue: 'Color by' })}
@@ -3214,6 +3242,9 @@ export function BIMPage() {
                 <optgroup label={t('bim.color_group_schedule', { defaultValue: 'By schedule' })}>
                   <option value="4d_schedule">
                     {t('bim.color_4d_schedule', { defaultValue: '4D timeline' })}
+                  </option>
+                  <option value="by_progress">
+                    {t('bim.color_by_progress', { defaultValue: 'By progress' })}
                   </option>
                 </optgroup>
               </select>
@@ -3599,6 +3630,7 @@ export function BIMPage() {
             showBoundingBoxes={showBoundingBoxes}
             filterPredicate={filterPredicate}
             colorByMode={colorByMode}
+            progressByElementId={progressByElementId}
             isolatedIds={isolatedIds}
             onIsolationChange={(ids) => {
               setIsolatedIds(ids);

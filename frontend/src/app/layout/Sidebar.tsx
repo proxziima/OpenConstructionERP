@@ -338,6 +338,7 @@ const navGroups: NavGroup[] = [
       { labelKey: 'nav.field_reports', to: '/field-reports', icon: ClipboardList, advancedOnly: true },
       { labelKey: 'nav.equipment', to: '/equipment', icon: Truck },
       { labelKey: 'nav.resources', to: '/resources', icon: Users },
+      { labelKey: 'nav.payroll', to: '/payroll', icon: Wallet, advancedOnly: true },
       { labelKey: 'nav.service', to: '/service', icon: Wrench },
       { labelKey: 'nav.portal', to: '/portal', icon: Globe },
       { labelKey: 'nav.assets', to: '/assets', icon: Package, badge: 'BETA' },
@@ -563,6 +564,7 @@ const ROUTE_BACKEND_MODULE: Record<string, string> = {
   '/field-reports': 'oe_fieldreports',
   '/equipment': 'oe_equipment',
   '/resources': 'oe_resources',
+  '/payroll': 'oe_payroll',
   '/service': 'oe_service',
   '/portal': 'oe_portal',
   // Quality
@@ -658,6 +660,7 @@ const ROUTE_MODULE_KEY: Record<string, string> = {
   '/field-reports': 'fieldreports',
   '/equipment': 'equipment',
   '/resources': 'resources',
+  '/payroll': 'payroll',
   '/service': 'service',
   '/portal': 'portal',
   '/assets': 'equipment',

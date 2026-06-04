@@ -36,6 +36,58 @@ export interface BIMElementsResponse {
   total: number;
 }
 
+/** One enriched element row carrying just the fields the "By progress"
+ *  3D overlay needs: the element id and its `current_pct` — the latest
+ *  percent-complete (0-100) of the BOQ position(s) it links to, computed
+ *  by the backend as the MAX across linked positions. `null` means the
+ *  element is unlinked or no progress has been recorded yet. */
+export interface BIMElementProgressRow {
+  id: string;
+  current_pct: number | null;
+}
+
+export interface BIMElementProgressResponse {
+  items: BIMElementProgressRow[];
+  total: number;
+}
+
+/** Fetch the latest BOQ progress per element for a model.
+ *
+ *  Uses the enriched element listing (`skeleton=false`) so the backend
+ *  resolves each element's BOQ links and folds the latest
+ *  `ProgressEntry.percent_complete` onto `current_pct`. We only keep the
+ *  `id` + `current_pct` pair here — the heavy property / relation payload
+ *  is discarded — so the caller gets a compact map to drive the 3D
+ *  colour ramp. Paginated server-side at 2000/page; we walk every page
+ *  so the overlay covers the whole model. */
+export async function fetchBIMElementProgress(
+  modelId: string,
+): Promise<BIMElementProgressResponse> {
+  const pageSize = 2000;
+  const rows: BIMElementProgressRow[] = [];
+  let offset = 0;
+  let total = 0;
+  // Bound the walk defensively so a backend that ignores pagination can
+  // never spin us forever (models cap well under 200k elements).
+  for (let page = 0; page < 200; page += 1) {
+    const params = new URLSearchParams({
+      limit: String(pageSize),
+      offset: String(offset),
+    });
+    const resp = await apiGet<{
+      items: Array<{ id: string; current_pct?: number | null }>;
+      total: number;
+    }>(`/v1/bim_hub/models/${encodeURIComponent(modelId)}/elements/?${params.toString()}`);
+    total = resp.total;
+    for (const item of resp.items) {
+      rows.push({ id: item.id, current_pct: item.current_pct ?? null });
+    }
+    offset += pageSize;
+    if (resp.items.length < pageSize || offset >= total) break;
+  }
+  return { items: rows, total };
+}
+
 export interface BIMUploadResponse {
   model_id: string;
   element_count: number;

@@ -220,6 +220,39 @@ _COUNT_UNITS: frozenset[str] = frozenset(
 _VALIDATION_REPORT_SENTINEL: uuid.UUID = uuid.UUID(int=0)
 
 
+def _fold_progress_onto_elements(
+    elements: list[BIMElement],
+    latest_pct_by_position: dict[uuid.UUID, float],
+) -> dict[uuid.UUID, float]:
+    """Fold per-position progress percentages onto their linked elements.
+
+    For each element we look at every linked BOQ position
+    (``element.boq_links``), pick the MAX of the latest percentages we
+    know about, and key it by the element id. Elements with no linked
+    position - or whose positions all lack a recorded percentage - are
+    omitted entirely so the caller can treat "absent" as "no data"
+    (neutral grey in the BIM "By progress" overlay).
+
+    Pure / deterministic: no DB access, no I/O. The ``boq_links`` must
+    already be loaded on each element (the listing query eager-loads
+    them via ``selectinload``).
+    """
+    out: dict[uuid.UUID, float] = {}
+    if not latest_pct_by_position:
+        return out
+    for elem in elements:
+        best: float | None = None
+        for lnk in elem.boq_links or []:
+            pct = latest_pct_by_position.get(lnk.boq_position_id)
+            if pct is None:
+                continue
+            if best is None or pct > best:
+                best = pct
+        if best is not None:
+            out[elem.id] = best
+    return out
+
+
 async def _strip_orphaned_bim_links(
     session: AsyncSession,
     deleted_element_ids: list[str],
@@ -673,15 +706,25 @@ class BIMHubService:
         dict[uuid.UUID, list[dict[str, Any]]],
         dict[uuid.UUID, list[dict[str, Any]]],
         dict[uuid.UUID, list[dict[str, Any]]],
+        dict[uuid.UUID, float],
     ]:
         """List elements AND their BOQ / Document / Task / Activity / Requirement briefs.
 
         Returns ``(elements, total, boq_links_by_element_id,
         doc_links_by_element_id, task_links_by_element_id,
         activity_briefs_by_element_id, requirement_briefs_by_element_id,
-        validation_summaries_by_element_id)`` where each brief is a plain
-        dict with the fields expected by the corresponding Pydantic brief
-        schema.
+        validation_summaries_by_element_id, current_pct_by_element_id)``
+        where each brief is a plain dict with the fields expected by the
+        corresponding Pydantic brief schema.
+
+        ``current_pct_by_element_id`` maps each element id to the latest
+        ``percent_complete`` (0-100) of the BOQ position(s) it is linked
+        to.  When an element links to several positions we take the MAX of
+        their latest percentages, because a human reading a "by progress"
+        3D overlay reads the most-advanced linked work as the element's
+        headline state.  Elements with no linked position (or with linked
+        positions that have no ProgressEntry yet) are simply absent from
+        the dict, so the viewer paints them neutral grey.
 
         BOQ briefs match ``BOQElementLinkBrief`` (id, boq_position_id,
         boq_position_ordinal, boq_position_description, link_type, confidence).
@@ -996,6 +1039,27 @@ class BIMHubService:
                         }
                     )
 
+        # ── Step 8: latest BOQ progress per element (model-based overlay) ─
+        # Each element may link to one or more BOQ positions; we resolve the
+        # latest ProgressEntry.percent_complete for every distinct linked
+        # position in ONE round trip (correlated-MAX subquery in the
+        # progress repository) and fold it back onto the elements. Taking
+        # the MAX across an element's positions mirrors the "headline
+        # progress" a human reads from a coloured 3D scene.
+        current_pct_by_element_id: dict[uuid.UUID, float] = {}
+        if pos_ids and model.project_id is not None:
+            from app.modules.progress.repository import ProgressRepository
+
+            progress_repo = ProgressRepository(self.session)
+            latest_pct_by_position = await progress_repo.latest_pct_for_positions(
+                model.project_id,
+                list(pos_ids),
+            )
+            current_pct_by_element_id = _fold_progress_onto_elements(
+                elements,
+                latest_pct_by_position,
+            )
+
         return (
             elements,
             total,
@@ -1005,6 +1069,7 @@ class BIMHubService:
             activity_briefs_by_element_id,
             requirement_briefs_by_element_id,
             validation_summaries_by_element_id,
+            current_pct_by_element_id,
         )
 
     async def get_element(self, element_id: uuid.UUID) -> BIMElement:
