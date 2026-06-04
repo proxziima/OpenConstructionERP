@@ -169,6 +169,7 @@ const BIMQuantityRulesPage = lazy(() =>
 const ClashDetectionPage = lazy(() =>
   import('@/features/clash/ClashDetectionPage').then((m) => ({ default: m.ClashDetectionPage }))
 );
+const ClashProfileManager = lazy(() => import('@/features/clash/ClashProfileManager'));
 const UserManagementPage = lazy(() =>
   import('@/features/users/UserManagementPage').then((m) => ({ default: m.UserManagementPage }))
 );
@@ -348,6 +349,9 @@ const VariationsPage = lazy(() =>
 );
 const ScheduleAdvancedPage = lazy(() =>
   import('@/features/schedule-advanced').then((m) => ({ default: m.ScheduleAdvancedPage }))
+);
+const TaktSchedulePage = lazy(() =>
+  import('@/features/schedule-advanced').then((m) => ({ default: m.TaktSchedulePage }))
 );
 const HSEAdvancedPage = lazy(() =>
   import('@/features/hse-advanced').then((m) => ({ default: m.HSEAdvancedPage }))
@@ -759,6 +763,8 @@ export default function App() {
             "quantity-rules" segment isn't swallowed as a UUID model id. */}
         <Route path="/bim/quantity-rules" element={<Navigate to="/bim/rules" replace />} />
         <Route path="/clash" element={<P title="Clash Detection"><ClashDetectionPage /></P>} />
+        <Route path="/clash/profiles" element={<P title="Clash Profiles"><ClashProfileManager /></P>} />
+        <Route path="/projects/:projectId/clash/profiles" element={<P title="Clash Profiles"><ClashProfileManager /></P>} />
         <Route path="/coordination" element={<P title="Model Coordination"><CoordinationHubPage /></P>} />
         <Route path="/assets" element={<P title="Asset Register"><AssetsPage /></P>} />
         <Route path="/bim/:modelId" element={<P title="BIM Viewer"><BIMPage /></P>} />
@@ -991,6 +997,8 @@ export default function App() {
         {/* 18-Modules Wave — Schedule & Quality */}
         <Route path="/schedule-advanced" element={<P title="Advanced Schedule"><ScheduleAdvancedPage /></P>} />
         <Route path="/projects/:projectId/schedule-advanced" element={<P title="Advanced Schedule"><ScheduleAdvancedPage /></P>} />
+        <Route path="/takt" element={<P title="Takt Planning"><TaktSchedulePage /></P>} />
+        <Route path="/projects/:projectId/takt" element={<P title="Takt Planning"><TaktSchedulePage /></P>} />
         <Route path="/qms" element={<P title="Quality Management"><QMSPage /></P>} />
         <Route path="/projects/:projectId/qms" element={<P title="Quality Management"><QMSPage /></P>} />
         <Route path="/hse-advanced" element={<P title="HSE Management"><HSEAdvancedPage /></P>} />

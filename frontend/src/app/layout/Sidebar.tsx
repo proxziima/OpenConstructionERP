@@ -318,6 +318,7 @@ const navGroups: NavGroup[] = [
     items: [
       { labelKey: 'schedule.title', to: '/schedule', icon: CalendarDays, moduleKey: 'schedule' },
       { labelKey: 'nav.schedule_advanced', to: '/schedule-advanced', icon: LineChart, advancedOnly: true },
+      { labelKey: 'nav.takt', to: '/takt', icon: GitBranch, advancedOnly: true },
       { labelKey: 'tasks.title', to: '/tasks', icon: ClipboardList },
       { labelKey: 'nav.5d_cost_model', to: '/5d', icon: TrendingUp, moduleKey: '5d', advancedOnly: true },
       { labelKey: 'nav.capacity_planning', to: '/portfolio/capacity', icon: CalendarRange, advancedOnly: true },
@@ -556,6 +557,7 @@ const ROUTE_BACKEND_MODULE: Record<string, string> = {
   // Planning
   '/schedule': 'oe_schedule',
   '/schedule-advanced': 'oe_schedule_advanced',
+  '/takt': 'oe_schedule_advanced',
   '/tasks': 'oe_tasks',
   '/5d': 'oe_costmodel',
   '/risks': 'oe_risk',
@@ -652,6 +654,7 @@ const ROUTE_MODULE_KEY: Record<string, string> = {
   // Planning
   '/schedule': 'schedule',
   '/schedule-advanced': 'schedule_advanced',
+  '/takt': 'schedule_advanced',
   '/tasks': 'tasks',
   '/5d': 'costmodel',
   '/risks': 'risk',

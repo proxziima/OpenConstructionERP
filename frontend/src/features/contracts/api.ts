@@ -518,6 +518,90 @@ export function listClauseTemplates(): Promise<ClauseTemplate[]> {
   return safeGetList<ClauseTemplate>('/v1/contracts/contract-templates/');
 }
 
+/* ── Compliance gate (Item #27) ───────────────────────────────────────── */
+
+export interface ComplianceViolation {
+  rule_id: string;
+  rule_name: string;
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  element_ref: string | null;
+  suggestion: string | null;
+}
+
+export interface ComplianceGateReport {
+  contract_id: string;
+  contract_status: ContractStatus;
+  rule_packs: string[];
+  rule_sets: string[];
+  status: 'passed' | 'warnings' | 'errors' | 'skipped';
+  score: number | null;
+  blocked: boolean;
+  counts: { errors: number; warnings: number; passed: number };
+  errors: ComplianceViolation[];
+  warnings: ComplianceViolation[];
+}
+
+/** Shape of the structured 422 body returned when the sign gate blocks. */
+export interface ComplianceGateError {
+  error: 'compliance_gate_failed';
+  message: string;
+  rule_packs: string[];
+  rule_sets: string[];
+  status: 'passed' | 'warnings' | 'errors' | 'skipped';
+  score: number | null;
+  counts: { errors: number; warnings: number; passed: number };
+  errors: ComplianceViolation[];
+  warnings: ComplianceViolation[];
+}
+
+export interface ComplianceRulePack {
+  id: string;
+  name: string;
+  description?: string;
+  jurisdiction: string | null;
+  enforced_workflows: string[];
+  rule_sets: string[];
+}
+
+/** Read-only preview of the compliance gate (does not transition the contract). */
+export function previewComplianceGate(
+  contractId: string,
+): Promise<ComplianceGateReport> {
+  return apiGet<ComplianceGateReport>(
+    `/v1/contracts/contracts/${contractId}/compliance-gate`,
+  );
+}
+
+/** List the jurisdiction compliance rule-pack catalogue. */
+export function listComplianceRulePacks(): Promise<ComplianceRulePack[]> {
+  return safeGetList<ComplianceRulePack>('/v1/contracts/compliance-rule-packs/');
+}
+
+/**
+ * Narrow a thrown {@link ApiError} body to a {@link ComplianceGateError}.
+ *
+ * The sign endpoint returns HTTP 422 with this structured detail when the
+ * compliance gate blocks. Returns the parsed detail or `null` when the error
+ * is something else (so the caller can fall back to a plain toast).
+ */
+export function asComplianceGateError(err: unknown): ComplianceGateError | null {
+  if (!err || typeof err !== 'object') return null;
+  const body = (err as { body?: unknown }).body;
+  const detail =
+    body && typeof body === 'object'
+      ? (body as { detail?: unknown }).detail
+      : undefined;
+  if (
+    detail &&
+    typeof detail === 'object' &&
+    (detail as { error?: unknown }).error === 'compliance_gate_failed'
+  ) {
+    return detail as ComplianceGateError;
+  }
+  return null;
+}
+
 /* ── Back-compat aliases (old skeleton names) ─────────────────────────── */
 
 export type Contract = ContractItem;

@@ -2,7 +2,7 @@
 
 import math
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -238,6 +238,48 @@ class TakeoffMeasurementSummary(BaseModel):
     by_type: dict[str, int] = Field(default_factory=dict)
     by_group: dict[str, int] = Field(default_factory=dict)
     by_page: dict[int, int] = Field(default_factory=dict)
+
+
+# ── Revision compare (Item 17) ─────────────────────────────────────────
+
+
+class TakeoffMeasurementDiffRow(BaseModel):
+    """One measurement-level change between two takeoff documents.
+
+    Measurements are matched across the two documents by a stable key:
+    ``metadata.compare_key`` when present, otherwise the natural tuple
+    ``(page, type, group_name, annotation)``. A measurement present only
+    in the new document is ``added``; only in the old one ``removed``; a
+    measured-value change is ``modified``; identical value ``unchanged``.
+
+    When the measurement is linked to a BOQ position and its value
+    changed, ``cost_impact`` carries the signed money delta
+    ``(new - old) * unit_rate`` in the project's base currency (Decimal
+    string; never blended across currencies).
+    """
+
+    change_type: Literal["added", "removed", "modified", "unchanged"]
+    measurement_id: str
+    type: str
+    group_name: str = "General"
+    page: int = 1
+    label: str | None = None
+    old_value: float | None = None
+    new_value: float | None = None
+    measurement_unit: str | None = None
+    linked_boq_position_id: str | None = None
+    cost_impact: str | None = None  # signed Decimal string in base currency
+    cost_currency: str | None = None
+
+
+class TakeoffCompareResponse(BaseModel):
+    """Full revision-compare payload for two takeoff documents."""
+
+    project_id: UUID
+    from_document_id: str
+    to_document_id: str
+    measurement_rows: list[TakeoffMeasurementDiffRow] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class LinkToBoqRequest(BaseModel):

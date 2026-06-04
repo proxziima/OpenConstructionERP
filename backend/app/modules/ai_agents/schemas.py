@@ -247,3 +247,85 @@ class CustomAgentResponse(BaseModel):
     guided: GuidedAgentSpec | None = None
     created_at: datetime
     updated_at: datetime
+
+
+# ── Automation: schedule + tools + triggers (Item 29) ────────────────────────
+
+
+class AgentMetadataResponse(BaseModel):
+    """The automation envelope of a custom agent — schedule, tools, triggers.
+
+    Returned by the schedule/tools endpoints so the builder can re-hydrate the
+    Schedule and Tools panels. ``next_run_at`` is an ISO-8601 UTC string the UI
+    renders with the shared DateDisplay; ``null`` when the schedule is paused or
+    absent.
+    """
+
+    cron: str | None = None
+    schedule_enabled: bool = True
+    next_run_at: str | None = None
+    schedule_input: str = ""
+    triggers: list[str] = Field(default_factory=list)
+    allowed_tools: list[str] = Field(default_factory=list)
+
+
+class SetScheduleRequest(BaseModel):
+    """Request body for ``POST /custom/{agent_id}/schedule``.
+
+    ``cron_expr`` is a 5-field POSIX cron string interpreted in UTC; it is
+    validated server-side (reusing the reporting parser) so a bad expression
+    yields a 422 rather than a silently-never-firing schedule.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    cron_expr: str = Field(..., min_length=1, max_length=120)
+    enabled: bool = True
+    # Optional fixed instruction a scheduled run is fired with. When blank the
+    # scheduler uses a generic default prompt.
+    schedule_input: str = Field("", max_length=2000)
+    # Optional event triggers to subscribe to alongside the cron. Unknown names
+    # are dropped server-side.
+    triggers: list[str] = Field(default_factory=list, max_length=10)
+
+
+class SetToolsRequest(BaseModel):
+    """Request body for ``POST /custom/{agent_id}/tools``.
+
+    ``allowed_tools`` is the operator's vetted tool selection. The server keeps
+    only tools that exist AND the operator has permission to grant; selecting a
+    tool the operator lacks permission for is a 403.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    allowed_tools: list[str] = Field(default_factory=list, max_length=30)
+
+
+class ToolWithPermission(BaseModel):
+    """A runner tool plus the permission an operator needs to grant it."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    required_permission: str
+
+
+class AgentToolsResponse(BaseModel):
+    """Tool-picker payload: every available tool + the agent's current grant.
+
+    Returned by ``GET /custom/{agent_id}/tools`` so the builder can render the
+    full catalogue with the agent's selected tools pre-checked.
+    """
+
+    available: list[ToolWithPermission] = Field(default_factory=list)
+    selected: list[str] = Field(default_factory=list)
+
+
+class EventTriggerDescriptor(BaseModel):
+    """One subscribable platform event for the trigger picker."""
+
+    name: str
+    label: str
+    description: str
+    available: bool = False

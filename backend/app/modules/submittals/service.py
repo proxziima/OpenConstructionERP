@@ -159,6 +159,16 @@ class SubmittalService:
                 data.submittal_type,
                 data.project_id,
             )
+            # Publish submittal.created so the vector indexer embeds the new
+            # row for semantic search / the floating-chat assistant (item 16).
+            await _safe_publish(
+                "submittal.created",
+                {
+                    "project_id": str(data.project_id),
+                    "submittal_id": str(submittal.id),
+                    "submittal_number": submittal_number,
+                },
+            )
             return submittal
 
         # All retries exhausted — translate to 409 so the caller can retry
@@ -265,12 +275,32 @@ class SubmittalService:
                 actor_id=None,  # PATCH path: actor visible only at router layer
                 extra={"source": "patch"},
             )
+        # Publish submittal.updated so the vector indexer re-embeds the
+        # edited row (title / spec section may have changed) — item 16.
+        await _safe_publish(
+            "submittal.updated",
+            {
+                "project_id": str(getattr(fresh or submittal, "project_id", "") or ""),
+                "submittal_id": str(submittal_id),
+                "submittal_number": getattr(fresh or submittal, "submittal_number", None),
+            },
+        )
         return fresh or submittal
 
     async def delete_submittal(self, submittal_id: uuid.UUID) -> None:
-        await self.get_submittal(submittal_id)
+        submittal = await self.get_submittal(submittal_id)
+        project_id_s = str(submittal.project_id) if submittal.project_id is not None else ""
         await self.repo.delete(submittal_id)
         logger.info("Submittal deleted: %s", submittal_id)
+        # Publish submittal.deleted so the vector indexer drops the
+        # embedding for the removed row (item 16).
+        await _safe_publish(
+            "submittal.deleted",
+            {
+                "project_id": project_id_s,
+                "submittal_id": str(submittal_id),
+            },
+        )
 
     async def submit_submittal(self, submittal_id: uuid.UUID) -> Submittal:
         """Move submittal from draft (or revise_and_resubmit) to submitted.

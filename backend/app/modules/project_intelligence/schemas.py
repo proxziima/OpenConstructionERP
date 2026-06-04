@@ -85,6 +85,9 @@ class CostModelStateResponse(BaseModel):
     actuals_linked: bool = False
     earned_value_active: bool = False
     completion_pct: float = 0.0
+    forecast_eac: str | None = None
+    forecast_vac: str | None = None
+    forecast_alert_active: bool = False
 
 
 # ── Full state response ───────────────────────────────────────────────────
@@ -185,3 +188,65 @@ class ActionDefinitionResponse(BaseModel):
     confirmation_message: str = ""
     navigate_to: str | None = None
     has_backend_action: bool = False
+
+
+# ── Forecast alerts (TOP-30 #19) ──────────────────────────────────────────
+
+
+class ForecastSnapshotPoint(BaseModel):
+    """A single EVM snapshot point for the SPI/CPI/EAC sparklines."""
+
+    date: str
+    spi: float = 0.0
+    cpi: float = 0.0
+    eac: float = 0.0
+    ev: float = 0.0
+    ac: float = 0.0
+
+
+class ForecastAlertRow(BaseModel):
+    """A forecast row carrying an active (triggered/snoozed) alert."""
+
+    forecast_id: str
+    forecast_date: str
+    alert_status: str
+    triggered_at: str | None = None
+    snoozed_until: str | None = None
+    severity: str = "warning"
+    eac: str = "0"
+    vac: str = "0"
+    tcpi: str = "0"
+    summary: str = ""
+
+
+class LatestForecast(BaseModel):
+    """The most recent forecast for a project, with the EVM inputs."""
+
+    forecast_id: str
+    forecast_date: str
+    method: str = "cpi"
+    etc: str = "0"
+    eac: str = "0"
+    vac: str = "0"
+    tcpi: str = "0"
+    bac: str = "0"
+    spi: str = "0"
+    cpi: str = "0"
+    eac_over_bac: float = 0.0
+    alert_status: str | None = None
+
+
+class ForecastsResponse(BaseModel):
+    """Payload for the Forecasts tab: latest forecast + alerts + sparklines."""
+
+    project_id: str
+    currency: str = ""
+    latest_forecast: LatestForecast | None = None
+    active_alerts: list[ForecastAlertRow] = Field(default_factory=list)
+    sparkline: list[ForecastSnapshotPoint] = Field(default_factory=list)
+
+
+class SnoozeForecastRequest(BaseModel):
+    """Snooze a forecast alert for a number of hours (1-720, default 24)."""
+
+    hours: int = Field(default=24, ge=1, le=720)

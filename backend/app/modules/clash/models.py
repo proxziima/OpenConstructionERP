@@ -182,6 +182,17 @@ class ClashResult(Base):
     # source element had no type.
     a_element_type: Mapped[str] = mapped_column(String(100), nullable=False, default="", server_default="")
     b_element_type: Mapped[str] = mapped_column(String(100), nullable=False, default="", server_default="")
+    # Snapshot of the participating elements' building *system* (MEP
+    # system / family-name / type-name from the source ``properties``) so
+    # the run summary can group by the multi-dimensional
+    # ``discipline_system`` axis (e.g. "Mechanical · Supply Air" ×
+    # "Structural · Beams"). Empty when the source element carried no
+    # system metadata — the grouping selector hides that dimension when
+    # no row resolved a system (graceful degradation). Stored on the row
+    # (not joined live) so the result table stays meaningful after the
+    # source model is re-imported.
+    a_element_system: Mapped[str] = mapped_column(String(100), nullable=False, default="", server_default="")
+    b_element_system: Mapped[str] = mapped_column(String(100), nullable=False, default="", server_default="")
     a_model_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
     b_model_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
     # Storey (level) index each element sits on — clustered from real
@@ -456,3 +467,60 @@ class ClashSuppression(Base):
 
     def __repr__(self) -> str:
         return f"<ClashSuppression {self.signature_hash[:8]} '{self.reason[:40]}'>"
+
+
+class ClashProfile(Base):
+    """‌⁠‍A reusable clash-run configuration template, scoped to one project.
+
+    Table: ``oe_clash_profile``.
+
+    A *profile* is a named snapshot of every run parameter a coordinator
+    tunes (tolerance, clearance, mode, discipline filter, selection sets,
+    per-discipline-pair rules, spatial grid) minus the model selection —
+    so the same coordination policy can be launched again on a fresh model
+    set with one click. Profiles are project-local (each project has its
+    own library) and mutable; they are templates, not history. ``name`` is
+    unique per project so the picker never shows two "MEP × Structural"
+    profiles. ``id`` / ``created_at`` / ``updated_at`` come from
+    :class:`app.database.Base`.
+    """
+
+    __tablename__ = "oe_clash_profile"
+    __table_args__ = (
+        # One profile name per project — same name on two projects is fine,
+        # two on one project is not (the picker keys on name).
+        UniqueConstraint("project_id", "name", name="uq_clash_profile_project_name"),
+        Index("ix_clash_profile_project", "project_id"),
+    )
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("oe_projects_project.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ── Run configuration snapshot (mirrors ClashRun's config columns) ──
+    clash_type: Mapped[str] = mapped_column(String(16), nullable=False, default="both", server_default="both")
+    ignore_same_model: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    tolerance_m: Mapped[float] = mapped_column(Float, nullable=False, default=0.01, server_default="0.01")
+    clearance_m: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0.0")
+    mode: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="cross_discipline",
+        server_default="cross_discipline",
+    )
+    discipline_filter: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    set_a: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    set_b: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    rules: Mapped[list] = mapped_column(  # type: ignore[assignment]
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    spatial_grid_mm: Mapped[int] = mapped_column(Integer, nullable=False, default=500, server_default="500")
+
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<ClashProfile {self.name!r} ({self.mode})>"

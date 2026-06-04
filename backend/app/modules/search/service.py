@@ -38,11 +38,14 @@ from app.core.vector_index import (
     COLLECTION_BIM_ELEMENTS,
     COLLECTION_BOQ,
     COLLECTION_CHAT,
+    COLLECTION_CORRESPONDENCE,
     COLLECTION_COSTS,
     COLLECTION_DOCUMENTS,
     COLLECTION_LABELS,
     COLLECTION_REQUIREMENTS,
+    COLLECTION_RFI,
     COLLECTION_RISKS,
+    COLLECTION_SUBMITTALS,
     COLLECTION_TASKS,
     COLLECTION_VALIDATION,
     VectorHit,
@@ -76,6 +79,17 @@ _SHORT_NAME_ALIASES: dict[str, str] = {
     "bim_elements": "oe_bim_elements",
     "requirements": "oe_requirements",
     "reqs": "oe_requirements",
+    "rfi": "oe_rfi_rfis",
+    "rfis": "oe_rfi_rfis",
+    # The /search/types/ endpoint derives ``short`` via removeprefix("oe_"),
+    # so the wire value for these collections is the doubled form below.
+    # Accept both the friendly alias and the doubled short name.
+    "rfi_rfis": "oe_rfi_rfis",
+    "submittals": "oe_submittals_submittals",
+    "submittal": "oe_submittals_submittals",
+    "submittals_submittals": "oe_submittals_submittals",
+    "correspondence": "oe_correspondence_correspondence",
+    "correspondence_correspondence": "oe_correspondence_correspondence",
     "validation": "oe_validation",
     "chat": "oe_chat",
 }
@@ -342,6 +356,113 @@ async def _sql_search_collection(
                 },
             )
             for req, rset in rows
+        ]
+
+    if collection == COLLECTION_RFI:
+        from app.modules.rfi.models import RFI
+
+        stmt = (
+            select(RFI)
+            .where(
+                or_(
+                    RFI.subject.ilike(pattern),
+                    RFI.question.ilike(pattern),
+                    RFI.official_response.ilike(pattern),
+                    RFI.rfi_number.ilike(pattern),
+                )
+            )
+            .order_by(RFI.created_at.desc())
+            .limit(limit)
+        )
+        if project_uuid is not None:
+            stmt = stmt.where(RFI.project_id == project_uuid)
+        rfis = (await session.execute(stmt)).scalars().all()
+        return [
+            _hit_from_row(
+                row_id=r.id,
+                title=(r.subject or r.rfi_number or "")[:160],
+                snippet=(r.question or r.official_response or r.subject or "")[:220],
+                collection=collection,
+                project_id=str(r.project_id) if r.project_id else "",
+                payload={
+                    "title": (r.subject or r.rfi_number or "")[:160],
+                    "rfi_number": r.rfi_number or "",
+                    "status": r.status or "",
+                    "discipline": getattr(r, "discipline", "") or "",
+                },
+            )
+            for r in rfis
+        ]
+
+    if collection == COLLECTION_SUBMITTALS:
+        from app.modules.submittals.models import Submittal
+
+        stmt = (
+            select(Submittal)
+            .where(
+                or_(
+                    Submittal.title.ilike(pattern),
+                    Submittal.spec_section.ilike(pattern),
+                    Submittal.submittal_number.ilike(pattern),
+                )
+            )
+            .order_by(Submittal.created_at.desc())
+            .limit(limit)
+        )
+        if project_uuid is not None:
+            stmt = stmt.where(Submittal.project_id == project_uuid)
+        submittals = (await session.execute(stmt)).scalars().all()
+        return [
+            _hit_from_row(
+                row_id=s.id,
+                title=(s.title or s.submittal_number or "")[:160],
+                snippet=(f"{s.submittal_number} — {s.title}" if s.submittal_number else (s.title or ""))[:220],
+                collection=collection,
+                project_id=str(s.project_id) if s.project_id else "",
+                payload={
+                    "title": (s.title or s.submittal_number or "")[:160],
+                    "submittal_number": s.submittal_number or "",
+                    "status": s.status or "",
+                    "submittal_type": getattr(s, "submittal_type", "") or "",
+                    "spec_section": getattr(s, "spec_section", "") or "",
+                },
+            )
+            for s in submittals
+        ]
+
+    if collection == COLLECTION_CORRESPONDENCE:
+        from app.modules.correspondence.models import Correspondence
+
+        stmt = (
+            select(Correspondence)
+            .where(
+                or_(
+                    Correspondence.subject.ilike(pattern),
+                    Correspondence.notes.ilike(pattern),
+                    Correspondence.reference_number.ilike(pattern),
+                )
+            )
+            .order_by(Correspondence.created_at.desc())
+            .limit(limit)
+        )
+        if project_uuid is not None:
+            stmt = stmt.where(Correspondence.project_id == project_uuid)
+        rows = (await session.execute(stmt)).scalars().all()
+        return [
+            _hit_from_row(
+                row_id=c.id,
+                title=(c.subject or c.reference_number or "")[:160],
+                snippet=(c.notes or c.subject or "")[:220],
+                collection=collection,
+                project_id=str(c.project_id) if c.project_id else "",
+                payload={
+                    "title": (c.subject or c.reference_number or "")[:160],
+                    "reference_number": c.reference_number or "",
+                    "direction": getattr(c, "direction", "") or "",
+                    "correspondence_type": getattr(c, "correspondence_type", "") or "",
+                },
+            )
+            for c in rows
         ]
 
     if collection == COLLECTION_COSTS:

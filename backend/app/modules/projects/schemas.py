@@ -329,6 +329,11 @@ class ProjectCreate(BaseModel):
         default_factory=lambda: ["boq_quality"],
         description="List of validation rule set IDs to apply (e.g. boq_quality, din276, gaeb)",
     )
+    compliance_rule_packs: list[str] = Field(
+        default_factory=lambda: ["universal"],
+        description="Compliance rule-pack IDs enforced at workflow gates "
+        "(e.g. universal, de_compliance, uk_compliance, us_compliance)",
+    )
 
     # Phase 12 expansion fields (all optional)
     project_code: str | None = Field(default=None, max_length=50)
@@ -452,6 +457,7 @@ class ProjectUpdate(BaseModel):
     currency: str | None = Field(default=None, max_length=10)
     locale: str | None = Field(default=None, max_length=10)
     validation_rule_sets: list[str] | None = None
+    compliance_rule_packs: list[str] | None = None
     metadata: dict[str, Any] | None = None
 
     # Phase 12 expansion fields
@@ -537,6 +543,17 @@ class ProjectUpdate(BaseModel):
         return _validate_percentage(v, "contingency_pct")
 
 
+class ComplianceRulePacksUpdate(BaseModel):
+    """Set the compliance rule packs enforced for a project (Item #27)."""
+
+    rule_pack_ids: list[str] = Field(
+        default_factory=list,
+        description="Compliance rule-pack IDs to enforce at workflow gates. "
+        "Validated against the known pack catalogue; unknown ids are rejected.",
+        examples=[["universal", "de_compliance"]],
+    )
+
+
 # ── Response ──────────────────────────────────────────────────────────────
 
 
@@ -553,6 +570,7 @@ class ProjectResponse(BaseModel):
     currency: str
     locale: str
     validation_rule_sets: list[str]
+    compliance_rule_packs: list[str] = Field(default_factory=lambda: ["universal"])
     status: str
     owner_id: UUID
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_")

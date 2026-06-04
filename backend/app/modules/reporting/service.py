@@ -7,6 +7,7 @@ Event publishing (slice E):
     reporting.report.generated     — new report rendered
 """
 
+import html
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -122,6 +123,20 @@ SYSTEM_TEMPLATES: list[dict] = [
                 {"id": "status", "title": "Project Statuses", "fields": ["by_status", "by_health"]},
                 {"id": "kpi_comparison", "title": "KPI Comparison", "fields": ["cpi_table", "spi_table"]},
                 {"id": "risks", "title": "Portfolio Risks", "fields": ["top_risks_across"]},
+            ],
+        },
+    },
+    {
+        "name": "Progress Report",
+        "report_type": "progress_report",
+        "description": "Weekly/monthly field progress summary with completion metrics, milestones, and site photos.",
+        "template_data": {
+            "sections": [
+                {"id": "header", "title": "Project Overview", "fields": ["name", "status"]},
+                {"id": "progress", "title": "Field Progress", "fields": ["overall_pct", "milestone_status"]},
+                {"id": "schedule", "title": "Schedule Status", "fields": ["progress_pct"]},
+                {"id": "risk", "title": "Top Risks", "fields": ["risk_score_avg"]},
+                {"id": "photos", "title": "Site Photos", "fields": ["photo_gallery"]},
             ],
         },
     },
@@ -612,6 +627,97 @@ class ReportingService:
             ) from exc
         return report, blob.decode("utf-8")
 
+    async def dispatch_report_email(
+        self,
+        report: GeneratedReport,
+        recipients: list[str],
+    ) -> int:
+        """Email a rendered report to the given recipients. Returns recipients reached.
+
+        ``recipients`` is the template's recipient list: entries containing
+        an ``@`` are treated as raw email addresses; bare entries are
+        treated as portal-user IDs and resolved to their email via the
+        portal repository. The rendered HTML body is fetched from storage
+        (falling back to a one-line stub when it has not been rendered).
+
+        Best-effort throughout: a missing portal user, an unrenderable
+        body, or a transport failure is logged, never raised, so a
+        scheduled or ad-hoc run is never lost just because notification
+        delivery failed. Returns the number of addresses an email was
+        dispatched to (0 when there were no usable recipients).
+        """
+        if not recipients:
+            return 0
+
+        email_addresses = [r for r in recipients if "@" in r]
+        portal_user_ids = [r for r in recipients if "@" not in r]
+
+        # Resolve portal-user IDs to email addresses (best-effort).
+        for raw_id in portal_user_ids:
+            try:
+                from app.modules.portal.repository import PortalUserRepository
+
+                pu_uuid = uuid.UUID(raw_id)
+                portal_user = await PortalUserRepository(self.session).get_by_id(pu_uuid)
+                if portal_user is not None and getattr(portal_user, "email", None):
+                    email_addresses.append(portal_user.email)
+            except Exception:
+                logger.warning(
+                    "reporting.dispatch_report_email could not resolve portal user %s",
+                    raw_id,
+                    exc_info=True,
+                )
+
+        # De-duplicate while preserving order.
+        seen: set[str] = set()
+        unique_addresses = [a for a in email_addresses if not (a in seen or seen.add(a))]
+        if not unique_addresses:
+            return 0
+
+        # Fetch the rendered body; fall back to a minimal stub if unavailable.
+        try:
+            _, html_content = await self.get_report_content(report.id)
+        except Exception:
+            logger.warning(
+                "reporting.dispatch_report_email could not load body for report %s; sending stub",
+                report.id,
+                exc_info=True,
+            )
+            html_content = f"<p>Report: {html.escape(report.title)}</p>"
+
+        from app.core.email.base import EmailMessage
+        from app.core.email.service import get_email_service
+
+        service = get_email_service()
+        subject = f"Progress Report: {report.title}"
+        sent = 0
+        for address in unique_addresses:
+            try:
+                result = await service.send(
+                    EmailMessage(
+                        to=address,
+                        subject=subject,
+                        html_body=html_content,
+                        tags=["progress_report"],
+                    )
+                )
+                if result.ok:
+                    sent += 1
+            except Exception:
+                logger.warning(
+                    "reporting.dispatch_report_email send failed for %s",
+                    address,
+                    exc_info=True,
+                )
+
+        logger.info(
+            "Dispatched report %s to %d/%d recipient(s)",
+            report.id,
+            sent,
+            len(unique_addresses),
+        )
+        return sent
+
     async def _lookup_project_name(self, project_id: uuid.UUID) -> str:
         """Best-effort lookup of a project's display name for the report header.
 
@@ -770,11 +876,86 @@ class ReportingService:
                 exc_info=True,
             )
 
-        # ``report_type`` is accepted for forward-compatibility (a future
-        # type-specific assembler can branch on it); today every type
-        # draws from the same KPI + finance source set above.
-        _ = report_type
+        # ── Progress data → progress / photos sections ──
+        # Only assembled for the progress_report type (item 15). Sourced
+        # from the progress module's project-level entries: the headline
+        # overall %, the current reporting period's milestone readings,
+        # and up to six site photos for the gallery. Best-effort: a
+        # failure here leaves the KPI/finance sections intact rather than
+        # failing the whole snapshot.
+        if report_type == "progress_report":
+            await self._assemble_progress_section(project_id, snapshot)
+
         return snapshot or None
+
+    async def _assemble_progress_section(
+        self,
+        project_id: uuid.UUID,
+        snapshot: dict,
+    ) -> None:
+        """Populate the ``progress`` and ``photos`` snapshot sections.
+
+        Reads the latest project-level :class:`ProgressEntry` for the
+        headline figure plus the current ISO-week reporting window for the
+        milestone summary. When no project-level entry has been recorded
+        the method falls back to the cumulative project series so a report
+        still shows a meaningful overall percentage. Mutates ``snapshot``
+        in place; never raises (failures degrade to an absent section).
+        """
+        try:
+            from app.modules.progress.repository import ProgressRepository
+
+            prog_repo = ProgressRepository(self.session)
+            overall_entry = await prog_repo.get_latest_project_entry(project_id)
+
+            progress_block: dict[str, object] = {}
+            photos: list = []
+
+            if overall_entry is not None:
+                progress_block["overall_pct"] = float(overall_entry.percent_complete)
+                recorded_at = overall_entry.recorded_at
+                progress_block["as_of_date"] = (
+                    recorded_at.isoformat() if hasattr(recorded_at, "isoformat") else str(recorded_at)
+                )
+                if overall_entry.recorded_by:
+                    progress_block["recorded_by"] = overall_entry.recorded_by
+                if isinstance(overall_entry.photos, list):
+                    photos = list(overall_entry.photos)
+            else:
+                # Fallback: derive overall % from the cumulative project
+                # series when no explicit project-level reading exists.
+                from app.modules.progress.service import ProgressService
+
+                cumulative = await ProgressService(self.session).get_cumulative(project_id)
+                if cumulative.periods:
+                    progress_block["overall_pct"] = float(cumulative.current_cumulative_pct)
+                    progress_block["as_of_date"] = cumulative.periods[-1].period_label
+                    progress_block["recorded_by"] = "Field Team"
+
+            # Current reporting window (ISO week) milestone summary.
+            period_label = datetime.now(UTC).strftime("%Y-W%V")
+            period_entries = await prog_repo.get_entries_for_period(project_id, period_label)
+            if period_entries:
+                # get_entries_for_period returns newest-first.
+                latest = period_entries[0]
+                progress_block["milestone_status"] = [
+                    {
+                        "period": period_label,
+                        "percent": float(latest.percent_complete),
+                        "entry_count": len(period_entries),
+                    }
+                ]
+
+            if progress_block:
+                snapshot["progress"] = progress_block
+            if photos:
+                snapshot["photos"] = {"photo_gallery": photos[:6]}
+        except Exception:
+            logger.debug(
+                "reporting._build_default_snapshot: progress data unavailable for %s",
+                project_id,
+                exc_info=True,
+            )
 
     # ── KPI Auto-Recalculation ───────────────────────────────────────────
 
@@ -1011,7 +1192,7 @@ class ReportingService:
     # ── Seed system templates ─────────────────────────────────────────────
 
     async def seed_system_templates(self) -> int:
-        """Seed the 6 system report templates. Truly idempotent.
+        """Seed the built-in system report templates. Truly idempotent.
 
         Checks each template by name+report_type to avoid duplicates even
         when some templates were manually deleted and re-seeded.

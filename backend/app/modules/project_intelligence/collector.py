@@ -121,13 +121,22 @@ class ReportsState:
 
 @dataclass
 class CostModelState:
-    """5D cost model domain state."""
+    """5D cost model domain state.
+
+    The ``forecast_*`` fields (TOP-30 #19) carry the latest predictive EVM
+    forecast so the dashboard's Cost detail tab and the forecast-gap rule
+    can surface a forecast overrun without a second round-trip. They stay
+    ``None`` when no forecast has been computed yet.
+    """
 
     budget_set: bool = False
     baseline_exists: bool = False
     actuals_linked: bool = False
     earned_value_active: bool = False
     completion_pct: float = 0.0
+    forecast_eac: str | None = None
+    forecast_vac: str | None = None
+    forecast_alert_active: bool = False
 
 
 # ── v1.4.6: 4 newly-wired domains ─────────────────────────────────────────
@@ -697,6 +706,28 @@ async def _collect_cost_model(
         if state.earned_value_active:
             pct += 0.2
         state.completion_pct = min(1.0, pct)
+
+        # Latest predictive EVM forecast (TOP-30 #19). Read directly from
+        # the full_evm table — additive, fail-soft. ``alert_status`` of
+        # 'triggered' or 'snoozed' means a forecast threshold is currently
+        # breached, which the forecast-gap rule turns into a critical gap.
+        try:
+            fc_row = (
+                await session.execute(
+                    text(
+                        "SELECT eac, vac, alert_status FROM oe_evm_forecast "
+                        "WHERE project_id = :pid "
+                        "ORDER BY forecast_date DESC, created_at DESC LIMIT 1"
+                    ),
+                    {"pid": project_id},
+                )
+            ).first()
+            if fc_row:
+                state.forecast_eac = str(fc_row[0]) if fc_row[0] is not None else None
+                state.forecast_vac = str(fc_row[1]) if fc_row[1] is not None else None
+                state.forecast_alert_active = (fc_row[2] or "") in ("triggered", "snoozed")
+        except Exception:
+            logger.debug("Could not collect EVM forecast for %s", project_id, exc_info=True)
 
     except Exception:
         logger.debug("Could not collect cost model state for %s", project_id, exc_info=True)

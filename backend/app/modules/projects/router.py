@@ -65,6 +65,7 @@ from app.modules.projects.member_schemas import (
 )
 from app.modules.projects.module_presence import probe_project_modules
 from app.modules.projects.schemas import (
+    ComplianceRulePacksUpdate,
     FocusModePatch,
     MatchProjectSettingsRead,
     MatchProjectSettingsUpdate,
@@ -2378,6 +2379,34 @@ async def post_reset_match_settings(
     await _verify_project_owner(service, project_id, user_id, payload)
     row = await reset_match_settings(session, project_id, user_id=user_id)
     return MatchProjectSettingsRead.model_validate(row)
+
+
+# ── Compliance rule packs (Item #27) ───────────────────────────────────
+
+
+@router.patch(
+    "/{project_id}/compliance-rule-packs",
+    response_model=ProjectResponse,
+    summary="Set project compliance rule packs",
+    description=(
+        "Set the compliance rule packs enforced for this project at workflow "
+        "gates (currently the contract-signature gate). Unknown pack ids are "
+        "rejected with 422; an empty selection falls back to the universal "
+        "pack. See GET /api/v1/contracts/compliance-rule-packs/ for the "
+        "valid catalogue. Owner / admin only."
+    ),
+)
+async def set_project_compliance_rule_packs(
+    project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    service: ProjectService = Depends(_get_service),
+    body: ComplianceRulePacksUpdate = Body(...),
+) -> ProjectResponse:
+    """Set the compliance rule packs enforced for the project."""
+    await _verify_project_owner(service, project_id, user_id, payload)
+    project = await service.set_compliance_rule_packs(project_id, body.rule_pack_ids)
+    return ProjectResponse.model_validate(project)
 
 
 # ── File manager (Issue #109) ─────────────────────────────────────────────

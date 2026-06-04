@@ -27,7 +27,9 @@ from app.modules.qms.models import (
     QMSAudit,
     QMSAuditFinding,
     QMSCalibration,
+    QMSHoldPointRelease,
     QMSInspection,
+    QMSInspectionAttachment,
     QMSInspectionSignature,
     QMSNCRAction,
     QMSPunchItem,
@@ -39,10 +41,13 @@ from app.modules.qms.schemas import (
     AuditUpdate,
     CalibrationCreate,
     CalibrationUpdate,
+    HoldPointReleaseCreate,
+    InspectionAttachmentCreate,
     InspectionCreate,
     InspectionSignatureCreate,
     InspectionUpdate,
     ITPItemCreate,
+    ITPItemLinkSpec,
     ITPPlanCreate,
     ITPPlanUpdate,
     ITPTemplateCloneRequest,
@@ -102,6 +107,23 @@ _AUDIT_STATUS_TRANSITIONS: dict[str, set[str]] = {
     "in_progress": {"completed", "closed"},
     "completed": {"closed"},
     "closed": set(),
+}
+
+# ── Signer-role authority ladder (item 12) ────────────────────────────────
+# Ranks the inspection sign-off roles so a signer can satisfy a control
+# point that names a *lower or equal* authority. A control point that
+# requires a "subcontractor" sign-off can therefore also be signed by a GC,
+# inspector, designer or client, but a control point that requires a "client"
+# sign-off cannot be satisfied by a subcontractor alone. ``responsible_role``
+# on the ITP item is free-form; only values that map here are gated, anything
+# else (or an empty role) is treated as "any role may sign" so legacy plans
+# never lock out their inspectors.
+_SIGNER_ROLE_RANK: dict[str, int] = {
+    "subcontractor": 1,
+    "inspector": 2,
+    "designer": 2,
+    "GC": 3,
+    "client": 4,
 }
 
 
@@ -208,6 +230,15 @@ class QMSService:
             raise ValueError(
                 f"Cannot add item to ITP plan in status '{plan.status}'",
             )
+        # A predecessor must be an existing item in the SAME plan. This keeps
+        # the hold-point dependency graph inside one plan and prevents a
+        # cross-plan FK that the release/guard logic can't reason about.
+        if data.predecessor_itp_item_id is not None:
+            pred = await self.repo.get_itp_item(data.predecessor_itp_item_id)
+            if pred is None or pred.itp_plan_id != plan_id:
+                raise ValueError(
+                    "predecessor_itp_item_id must reference an item in the same ITP plan",
+                )
         item = ITPItem(
             itp_plan_id=plan_id,
             sequence=data.sequence,
@@ -219,8 +250,47 @@ class QMSService:
             hold_witness_point=data.hold_witness_point,
             responsible_role=data.responsible_role,
             signatories_required=data.signatories_required,
+            boq_position_id=data.boq_position_id,
+            csi_section_ref=data.csi_section_ref,
+            spec_drawing_ref=data.spec_drawing_ref,
+            bim_element_id=data.bim_element_id,
+            predecessor_itp_item_id=data.predecessor_itp_item_id,
         )
         item = await self.repo.create_itp_item(item)
+        return item
+
+    async def link_itp_item_to_spec(
+        self,
+        itp_item_id: uuid.UUID,
+        data: ITPItemLinkSpec,
+    ) -> ITPItem:
+        """Link an ITP control point to its spec sources / predecessor.
+
+        Only the fields supplied in the request are written (PATCH
+        semantics). A ``predecessor_itp_item_id`` must reference an item in
+        the same plan and may not point at the item itself (self-cycle) nor
+        create a direct 2-cycle with a predecessor that already points back.
+        """
+        item = await self.repo.get_itp_item(itp_item_id)
+        if item is None:
+            raise ValueError(f"ITP item {itp_item_id} not found")
+        fields: dict[str, Any] = data.model_dump(exclude_unset=True)
+        pred_id = fields.get("predecessor_itp_item_id")
+        if pred_id is not None:
+            if pred_id == itp_item_id:
+                raise ValueError("An ITP item cannot be its own predecessor")
+            pred = await self.repo.get_itp_item(pred_id)
+            if pred is None or pred.itp_plan_id != item.itp_plan_id:
+                raise ValueError(
+                    "predecessor_itp_item_id must reference an item in the same ITP plan",
+                )
+            if pred.predecessor_itp_item_id == itp_item_id:
+                raise ValueError(
+                    "Circular hold-point dependency: that item already depends on this one",
+                )
+        if fields:
+            await self.repo.update_itp_item_fields(itp_item_id, **fields)
+            await self.session.refresh(item)
         return item
 
     async def activate_itp_plan(self, plan_id: uuid.UUID) -> ITPPlan:
@@ -336,12 +406,36 @@ class QMSService:
         )
         return inspection
 
+    @staticmethod
+    def validate_signer_role(required_role: str | None, signer_role: str) -> None:
+        """Gate a sign-off by the control point's ``responsible_role`` (item 12).
+
+        The signer's role must rank *at or above* the role the ITP control
+        point names. Unknown / empty required roles are treated as "any role
+        may sign" so free-form legacy plans never lock out inspectors. Raises
+        :class:`ValueError` when the signer has insufficient authority.
+        """
+        if not required_role:
+            return
+        required_rank = _SIGNER_ROLE_RANK.get(required_role)
+        if required_rank is None:
+            # Required role is not on the authority ladder — cannot gate it.
+            return
+        signer_rank = _SIGNER_ROLE_RANK.get(signer_role, 0)
+        if signer_rank < required_rank:
+            raise ValueError(
+                f"Signer role '{signer_role}' is below the control point's "
+                f"required authority '{required_role}'",
+            )
+
     async def add_signature(
         self,
         inspection_id: uuid.UUID,
         data: InspectionSignatureCreate,
         *,
         default_signer_user_id: uuid.UUID | None = None,
+        signer_ip: str | None = None,
+        signer_user_agent: str | None = None,
     ) -> QMSInspectionSignature:
         """Record a sign-off against an inspection.
 
@@ -349,6 +443,10 @@ class QMSService:
         (sign on behalf of another member), otherwise ``default_signer_user_id``
         — the authenticated caller. This lets the UI "sign as me" without
         hand-typing a UUID.
+
+        ``signer_ip`` / ``signer_user_agent`` capture non-repudiation context
+        from the HTTP request (item 12); both are optional so service-level
+        callers and tests can omit them.
         """
         inspection = await self.repo.get_inspection(inspection_id)
         if inspection is None:
@@ -360,6 +458,12 @@ class QMSService:
         signer_user_id = data.signer_user_id or default_signer_user_id
         if signer_user_id is None:
             raise ValueError("signer_user_id is required")
+        # Role gating: a control point that names a responsible_role can only
+        # be signed by a signer with at-or-above authority.
+        if inspection.itp_item_id is not None:
+            item = await self.repo.get_itp_item(inspection.itp_item_id)
+            if item is not None:
+                self.validate_signer_role(item.responsible_role, data.signer_role)
         # Dedup: one (user, role) signature per inspection. Two distinct
         # roles on the same user are still allowed (e.g. GC inspector +
         # designer reviewer when one person wears both hats).
@@ -369,13 +473,17 @@ class QMSService:
                 raise ValueError(
                     f"Signer has already signed this inspection in role '{data.signer_role}'",
                 )
+        now_iso = _utc_now_iso()
         sig = QMSInspectionSignature(
             inspection_id=inspection_id,
             signer_user_id=signer_user_id,
             signer_role=data.signer_role,
-            signed_at=_utc_now_iso(),
+            signed_at=now_iso,
             signature_method=data.signature_method,
             comments=data.comments,
+            timestamp_utc=now_iso,
+            signer_ip=signer_ip,
+            signer_user_agent=(signer_user_agent[:512] if signer_user_agent else None),
         )
         return await self.repo.add_signature(sig)
 
@@ -429,10 +537,23 @@ class QMSService:
         )
 
         required_sigs = 1
+        item: ITPItem | None = None
         if inspection.itp_item_id is not None:
             item = await self.repo.get_itp_item(inspection.itp_item_id)
             if item is not None:
                 required_sigs = item.signatories_required
+
+        # Hold-point sequencing guard: a control point with a predecessor
+        # cannot be PASSED until its predecessor's inspection has passed.
+        # Failing or conditional an inspection is always allowed (you must be
+        # able to record a failure regardless of upstream state).
+        if result == "passed" and item is not None and item.predecessor_itp_item_id is not None:
+            pred_ok = await self.check_hold_point_predecessor_status(item.id)
+            if not pred_ok["predecessor_passed"]:
+                raise ValueError(
+                    "Blocked: predecessor hold point has not passed yet "
+                    f"(item '{pred_ok.get('predecessor_name') or pred_ok['predecessor_itp_item_id']}')",
+                )
 
         sigs = await self.repo.list_signatures(inspection_id)
         if len(sigs) < required_sigs:
@@ -469,15 +590,239 @@ class QMSService:
             },
             source_module="qms",
         )
+
+        # Hold-point lifecycle events (item 12). When the inspection is a
+        # hold or witness point, fan out a dedicated event so downstream
+        # subscribers (punchlist, notifications) can react to the gate
+        # passing or failing without parsing the generic passed/failed event.
+        is_hold_point = item is not None and item.hold_witness_point in ("hold", "witness")
+        if is_hold_point and result in ("passed", "failed"):
+            hold_event = (
+                "qms.inspection.hold_point_passed"
+                if result == "passed"
+                else "qms.inspection.hold_point_failed"
+            )
+            event_bus.publish_detached(
+                hold_event,
+                {
+                    "inspection_id": str(inspection_id),
+                    "project_id": str(inspection.project_id),
+                    "itp_item_id": str(item.id),
+                    "control_point_name": item.control_point_name,
+                    "hold_witness_point": item.hold_witness_point,
+                    "result": result,
+                    "location_ref": inspection.location_ref,
+                },
+                source_module="qms",
+            )
+
         logger.info(
-            "QMS inspection completed: project=%s id=%s result=%s signatures=%d/%d",
+            "QMS inspection completed: project=%s id=%s result=%s signatures=%d/%d hold_point=%s",
             inspection.project_id,
             inspection_id,
             result,
             len(sigs),
             required_sigs,
+            is_hold_point,
         )
         return inspection
+
+    # ── Hold-point sequencing + evidence + release (item 12) ────────────
+
+    async def check_hold_point_predecessor_status(
+        self,
+        itp_item_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        """Resolve whether an ITP item's predecessor hold point has passed.
+
+        Returns a dict describing the gate. ``predecessor_passed`` is True
+        when there is no predecessor, or when at least one inspection
+        scheduled against the predecessor item has reached ``passed``.
+        """
+        item = await self.repo.get_itp_item(itp_item_id)
+        if item is None:
+            raise ValueError(f"ITP item {itp_item_id} not found")
+        if item.predecessor_itp_item_id is None:
+            return {
+                "itp_item_id": itp_item_id,
+                "predecessor_itp_item_id": None,
+                "predecessor_name": None,
+                "predecessor_passed": True,
+            }
+        pred = await self.repo.get_itp_item(item.predecessor_itp_item_id)
+        pred_inspections = await self.repo.list_inspections_for_itp_item(
+            item.predecessor_itp_item_id,
+        )
+        passed = any(ins.status == "passed" for ins in pred_inspections)
+        return {
+            "itp_item_id": itp_item_id,
+            "predecessor_itp_item_id": item.predecessor_itp_item_id,
+            "predecessor_name": pred.control_point_name if pred is not None else None,
+            "predecessor_passed": passed,
+        }
+
+    async def hold_point_status(
+        self,
+        inspection_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        """Aggregate the hold-point gate state for an inspection.
+
+        Combines predecessor status, whether the linked item is a hold/witness
+        point, and whether a manual release record already exists. Drives the
+        traffic-light in the UI.
+        """
+        inspection = await self.repo.get_inspection(inspection_id)
+        if inspection is None:
+            raise ValueError(f"Inspection {inspection_id} not found")
+        is_hold_point = False
+        predecessor_itp_item_id: uuid.UUID | None = None
+        predecessor_passed = True
+        blocking_reason: str | None = None
+        if inspection.itp_item_id is not None:
+            item = await self.repo.get_itp_item(inspection.itp_item_id)
+            if item is not None:
+                is_hold_point = item.hold_witness_point in ("hold", "witness")
+                if item.predecessor_itp_item_id is not None:
+                    pred = await self.check_hold_point_predecessor_status(item.id)
+                    predecessor_itp_item_id = pred["predecessor_itp_item_id"]
+                    predecessor_passed = pred["predecessor_passed"]
+                    if not predecessor_passed:
+                        blocking_reason = (
+                            "Predecessor hold point "
+                            f"'{pred.get('predecessor_name') or predecessor_itp_item_id}' "
+                            "has not passed yet"
+                        )
+        release = await self.repo.get_hold_point_release(inspection_id)
+        blocked = not predecessor_passed and inspection.status not in ("passed", "failed")
+        return {
+            "inspection_id": inspection_id,
+            "itp_item_id": inspection.itp_item_id,
+            "is_hold_point": is_hold_point,
+            "predecessor_itp_item_id": predecessor_itp_item_id,
+            "predecessor_passed": predecessor_passed,
+            "blocked": blocked,
+            "blocking_reason": blocking_reason,
+            "released": release is not None,
+        }
+
+    async def add_inspection_attachment(
+        self,
+        inspection_id: uuid.UUID,
+        data: InspectionAttachmentCreate,
+        *,
+        uploaded_by_user_id: uuid.UUID | None = None,
+    ) -> QMSInspectionAttachment:
+        """Link a stored document to an inspection as auditable evidence.
+
+        Keeps the denormalised ``attachment_document_ids`` array on the
+        inspection in sync so a single inspection read returns the id set.
+        """
+        inspection = await self.repo.get_inspection(inspection_id)
+        if inspection is None:
+            raise ValueError(f"Inspection {inspection_id} not found")
+        # Idempotency: a document can be linked to an inspection only once.
+        existing = await self.repo.list_inspection_attachments(inspection_id)
+        if any(a.document_id == data.document_id for a in existing):
+            raise ValueError("This document is already attached to the inspection")
+        attachment = QMSInspectionAttachment(
+            inspection_id=inspection_id,
+            document_id=data.document_id,
+            caption=data.caption,
+            file_hash_sha256=(data.file_hash_sha256.lower() if data.file_hash_sha256 else None),
+            uploaded_by=uploaded_by_user_id,
+            attached_at=_utc_now_iso(),
+        )
+        attachment = await self.repo.create_inspection_attachment(attachment)
+        # Sync the denormalised id list (deduplicated, order-stable).
+        doc_ids = list(inspection.attachment_document_ids or [])
+        doc_str = str(data.document_id)
+        if doc_str not in doc_ids:
+            doc_ids.append(doc_str)
+            await self.repo.update_inspection_fields(
+                inspection_id,
+                attachment_document_ids=doc_ids,
+            )
+        await self.repo.append_audit(
+            entity_type="inspection",
+            entity_id=inspection_id,
+            action="evidence_attached",
+            after_state={"document_id": doc_str},
+        )
+        return attachment
+
+    async def list_inspection_attachments(
+        self,
+        inspection_id: uuid.UUID,
+    ) -> list[QMSInspectionAttachment]:
+        return await self.repo.list_inspection_attachments(inspection_id)
+
+    async def release_hold_point(
+        self,
+        inspection_id: uuid.UUID,
+        data: HoldPointReleaseCreate,
+        *,
+        released_by_user_id: uuid.UUID | None = None,
+    ) -> QMSHoldPointRelease:
+        """Release a passed hold point so dependent work can proceed.
+
+        Pre-conditions:
+          * the inspection must exist and be linked to a hold / witness point,
+          * it must have PASSED (you cannot release a gate that has not been
+            satisfied),
+          * it must not already have a release record (the FK is unique).
+
+        Emits ``qms.inspection.hold_point_released`` on success.
+        """
+        inspection = await self.repo.get_inspection(inspection_id)
+        if inspection is None:
+            raise ValueError(f"Inspection {inspection_id} not found")
+        if inspection.itp_item_id is None:
+            raise ValueError("Inspection is not linked to an ITP control point")
+        item = await self.repo.get_itp_item(inspection.itp_item_id)
+        if item is None or item.hold_witness_point not in ("hold", "witness"):
+            raise ValueError("Only hold or witness control points can be released")
+        if inspection.status != "passed":
+            raise ValueError(
+                f"Cannot release a hold point from status '{inspection.status}'; "
+                "the inspection must have passed first",
+            )
+        if await self.repo.get_hold_point_release(inspection_id) is not None:
+            raise ValueError("This hold point has already been released")
+
+        release = QMSHoldPointRelease(
+            inspection_id=inspection_id,
+            released_by=released_by_user_id,
+            released_at=_utc_now_iso(),
+            justification=data.justification,
+            approval_route_id=data.approval_route_id,
+        )
+        release = await self.repo.create_hold_point_release(release)
+        await self.repo.append_audit(
+            entity_type="inspection",
+            entity_id=inspection_id,
+            action="hold_point_released",
+            actor_user_id=released_by_user_id,
+            after_state={"justification": data.justification},
+        )
+        event_bus.publish_detached(
+            "qms.inspection.hold_point_released",
+            {
+                "inspection_id": str(inspection_id),
+                "project_id": str(inspection.project_id),
+                "itp_item_id": str(item.id),
+                "control_point_name": item.control_point_name,
+                "released_by": (str(released_by_user_id) if released_by_user_id else None),
+                "justification": data.justification,
+            },
+            source_module="qms",
+        )
+        logger.info(
+            "QMS hold point released: project=%s inspection=%s by=%s",
+            inspection.project_id,
+            inspection_id,
+            released_by_user_id,
+        )
+        return release
 
     # ── NCR ────────────────────────────────────────────────────────────
 

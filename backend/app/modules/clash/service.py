@@ -60,19 +60,26 @@ from app.modules.clash.events import (
 from app.modules.clash.models import (
     ClashCluster,
     ClashIssue,
+    ClashProfile,
     ClashResult,
     ClashRun,
     ClashSuppression,
 )
 from app.modules.clash.repository import ClashRepository
 from app.modules.clash.schemas import (
+    CLASH_GROUPING_DIMENSIONS,
     CLASH_ISSUE_STATUSES,
     CLASH_SEVERITIES,
     CLASH_STATUSES,
     CLASH_TYPES,
     OPEN_STATUSES,
     ClashBCFExportRequest,
+    ClashProfileApplyRequest,
+    ClashProfileCreate,
+    ClashProfileUpdate,
+    ClashRule,
     ClashRunCreate,
+    ClashSelectionSet,
 )
 
 try:  # The geometry loader is a sibling module; tolerate its absence.
@@ -874,6 +881,40 @@ def _ifc_entity_of(element: object) -> str:
     return ""
 
 
+def _system_of(element: object) -> str:
+    """Resolve an element's building *system* for multi-dim grouping.
+
+    Prefers an explicit MEP system property (``system`` / ``System`` /
+    ``system_name`` / IFC ``Pset_*System``), then falls back to the
+    family / type name a Revit / DDC element carries. Returns ``""`` when
+    the element has no usable system metadata — the grouping selector
+    then hides the ``discipline_system`` dimension (graceful degradation).
+    Item #23 — snapshotted onto :class:`ClashResult.a_element_system`.
+    """
+    props = getattr(element, "properties", None) or {}
+    if not isinstance(props, dict):
+        return ""
+    for key in (
+        "system",
+        "System",
+        "system_name",
+        "SystemName",
+        "mep_system",
+        "ifc_system",
+        "family",
+        "Family",
+        "family_name",
+        "type_name",
+        "TypeName",
+    ):
+        v = props.get(key)
+        if v is not None and not isinstance(v, (dict, list)):
+            sv = str(v).strip()
+            if sv:
+                return sv[:100]
+    return ""
+
+
 def _property_value_of(element: object, key: str) -> str | None:
     """An element's scalar ``properties[key]`` as a trimmed string.
 
@@ -1443,8 +1484,20 @@ class ClashService:
 
     # ── Run lifecycle ──────────────────────────────────────────────────
 
-    async def create_run(self, project_id: uuid.UUID, data: ClashRunCreate, user_id: str) -> ClashRun:
-        """Persist + execute a clash run synchronously, return it complete."""
+    async def create_run(
+        self,
+        project_id: uuid.UUID,
+        data: ClashRunCreate,
+        user_id: str,
+        *,
+        spatial_grid_mm: int | None = None,
+    ) -> ClashRun:
+        """Persist + execute a clash run synchronously, return it complete.
+
+        ``spatial_grid_mm`` overrides the smart-issue signature grid on the
+        run (used by the apply-profile path to carry the profile's grid);
+        ``None`` keeps the model default (500 mm).
+        """
         models = await self.repo.models_for_project(project_id)
         valid_ids = {m.id for m in models}
         requested = [mid for mid in data.model_ids if mid in valid_ids]
@@ -1498,6 +1551,7 @@ class ClashService:
             created_by=str(user_id),
             summary={},
             rules=rules_payload,
+            spatial_grid_mm=int(spatial_grid_mm) if spatial_grid_mm else _DEFAULT_SPATIAL_GRID_MM,
         )
         self.repo.add_run(run)
         await self.session.flush()
@@ -2202,6 +2256,202 @@ class ClashService:
     async def delete_run(self, project_id: uuid.UUID, run_id: uuid.UUID) -> None:
         run = await self.get_run(project_id, run_id)
         await self.repo.delete_run(run)
+
+    # ── Persistent clash profiles (item #23) ───────────────────────────
+
+    @staticmethod
+    def _validate_profile_config(mode: str, clash_type: str) -> None:
+        """Reject an unknown mode / clash_type before persisting a profile.
+
+        Mirrors the guards in :meth:`create_run` so a profile can never be
+        saved with config that would 422 the moment it is applied.
+        """
+        if mode not in ("cross_discipline", "all", "selected", "selection_sets"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown clash mode '{mode}'",
+            )
+        if clash_type not in CLASH_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown clash type '{clash_type}' (expected one of {', '.join(CLASH_TYPES)})",
+            )
+
+    async def create_profile(
+        self,
+        project_id: uuid.UUID,
+        data: ClashProfileCreate,
+        user_id: str,
+    ) -> ClashProfile:
+        """Save a run configuration as a named, reusable profile.
+
+        Name uniqueness is enforced per project (a 409 on a clash) so the
+        picker never shows two profiles with the same name. Selection sets
+        / rules are stored as plain JSON snapshots.
+        """
+        name = data.name.strip()
+        if not name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Profile name must not be empty.",
+            )
+        self._validate_profile_config(data.mode, data.clash_type)
+        existing = await self.repo.get_profile_by_name(project_id, name)
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"A clash profile named '{name}' already exists in this project.",
+            )
+        profile = ClashProfile(
+            project_id=project_id,
+            name=name,
+            description=(data.description or "").strip() or None,
+            clash_type=data.clash_type,
+            ignore_same_model=bool(data.ignore_same_model),
+            tolerance_m=data.tolerance_m,
+            clearance_m=data.clearance_m,
+            mode=data.mode,
+            discipline_filter=data.discipline_filter,
+            set_a=data.set_a.model_dump() if data.set_a is not None else None,
+            set_b=data.set_b.model_dump() if data.set_b is not None else None,
+            rules=[r.model_dump() for r in (data.rules or [])],
+            spatial_grid_mm=int(data.spatial_grid_mm),
+            created_by=str(user_id),
+        )
+        self.repo.add_profile(profile)
+        await self.session.flush()
+        return profile
+
+    async def list_profiles(self, project_id: uuid.UUID) -> list[ClashProfile]:
+        return await self.repo.list_profiles(project_id)
+
+    async def get_profile(self, project_id: uuid.UUID, profile_id: uuid.UUID) -> ClashProfile:
+        profile = await self.repo.get_profile(project_id, profile_id)
+        if profile is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clash profile not found")
+        return profile
+
+    async def update_profile(
+        self,
+        project_id: uuid.UUID,
+        profile_id: uuid.UUID,
+        data: ClashProfileUpdate,
+        user_id: str,
+    ) -> ClashProfile:
+        """Patch a profile in place (only supplied fields change).
+
+        ``updated_at`` is bumped by the ORM ``onupdate`` whenever any
+        column is dirtied. Renaming to an already-taken name 409s.
+        """
+        profile = await self.get_profile(project_id, profile_id)
+        fields = data.model_dump(exclude_unset=True)
+        if "name" in fields:
+            new_name = (fields["name"] or "").strip()
+            if not new_name:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Profile name must not be empty.",
+                )
+            if new_name != profile.name:
+                clash = await self.repo.get_profile_by_name(project_id, new_name)
+                if clash is not None and clash.id != profile.id:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"A clash profile named '{new_name}' already exists in this project.",
+                    )
+            profile.name = new_name
+        if "description" in fields:
+            profile.description = (fields["description"] or "").strip() or None
+        # Validate config changes against the same guards as a run.
+        new_mode = fields.get("mode", profile.mode)
+        new_ctype = fields.get("clash_type", profile.clash_type)
+        if "mode" in fields or "clash_type" in fields:
+            self._validate_profile_config(new_mode, new_ctype)
+        if "clash_type" in fields:
+            profile.clash_type = fields["clash_type"]
+        if "ignore_same_model" in fields:
+            profile.ignore_same_model = bool(fields["ignore_same_model"])
+        if "tolerance_m" in fields:
+            profile.tolerance_m = float(fields["tolerance_m"])
+        if "clearance_m" in fields:
+            profile.clearance_m = float(fields["clearance_m"])
+        if "mode" in fields:
+            profile.mode = fields["mode"]
+        if "discipline_filter" in fields:
+            profile.discipline_filter = fields["discipline_filter"]
+        if "set_a" in fields:
+            sa = data.set_a
+            profile.set_a = sa.model_dump() if sa is not None else None
+        if "set_b" in fields:
+            sb = data.set_b
+            profile.set_b = sb.model_dump() if sb is not None else None
+        if "rules" in fields and data.rules is not None:
+            profile.rules = [r.model_dump() for r in data.rules][:500]
+        if "spatial_grid_mm" in fields:
+            profile.spatial_grid_mm = int(fields["spatial_grid_mm"])
+        await self.session.flush()
+        return profile
+
+    async def delete_profile(self, project_id: uuid.UUID, profile_id: uuid.UUID) -> None:
+        profile = await self.get_profile(project_id, profile_id)
+        await self.repo.delete_profile(profile)
+
+    async def apply_profile_to_new_run(
+        self,
+        project_id: uuid.UUID,
+        profile_id: uuid.UUID,
+        data: ClashProfileApplyRequest,
+        user_id: str,
+    ) -> ClashRun:
+        """Launch + execute a fresh clash run using a profile as template.
+
+        The profile supplies every engine parameter; the caller supplies
+        the models to test plus an optional run name. The run snapshots
+        the config (so a later profile edit never mutates a past run).
+        """
+        profile = await self.get_profile(project_id, profile_id)
+        run_create = ClashRunCreate(
+            name=(data.name or "").strip() or f"{profile.name} run {_now():%Y-%m-%d %H:%M}",
+            description=profile.description,
+            model_ids=list(data.model_ids),
+            clash_type=profile.clash_type,
+            ignore_same_model=bool(profile.ignore_same_model),
+            tolerance_m=float(profile.tolerance_m),
+            clearance_m=float(profile.clearance_m),
+            mode=profile.mode,
+            discipline_filter=profile.discipline_filter,
+            set_a=ClashSelectionSet.model_validate(profile.set_a) if profile.set_a else None,
+            set_b=ClashSelectionSet.model_validate(profile.set_b) if profile.set_b else None,
+            carry_forward=bool(data.carry_forward),
+            rules=[ClashRule.model_validate(r) for r in _coerce_rules(profile.rules)],
+        )
+        return await self.create_run(
+            project_id,
+            run_create,
+            user_id,
+            spatial_grid_mm=int(profile.spatial_grid_mm),
+        )
+
+    # ── Multi-dimensional grouping (item #23) ──────────────────────────
+
+    async def grouped_summary(
+        self,
+        project_id: uuid.UUID,
+        run_id: uuid.UUID,
+        dimension: str,
+    ) -> dict:
+        """Group a run's clashes by one of the multi-dimensional axes.
+
+        IDOR-guarded via :meth:`get_run`. ``dimension`` is one of
+        :data:`CLASH_GROUPING_DIMENSIONS`; an unknown value degrades to
+        ``discipline_pair`` (the default, forgiving param-normalisation
+        the rest of the module already uses).
+        """
+        await self.get_run(project_id, run_id)
+        if dimension not in CLASH_GROUPING_DIMENSIONS:
+            dimension = "discipline_pair"
+        rows = await self.repo.all_results(run_id)
+        return _build_grouped_summary(rows, dimension)
 
     # ── Wave A4: clusters, rules, suggestions, KPI ─────────────────────
 
@@ -2918,6 +3168,8 @@ class ClashService:
             b_discipline=db[:64] or "Unassigned",
             a_element_type=(getattr(ea, "element_type", "") or "")[:100],
             b_element_type=(getattr(eb, "element_type", "") or "")[:100],
+            a_element_system=_system_of(ea),
+            b_element_system=_system_of(eb),
             a_model_id=ea.model_id,  # type: ignore[attr-defined]
             b_model_id=eb.model_id,  # type: ignore[attr-defined]
             a_storey=cls._storey_of(ga),
@@ -3688,3 +3940,145 @@ def _build_summary(results: list[ClashResult]) -> dict:
         "by_type": by_type,
         "by_severity": by_severity,
     }
+
+
+def _disc(value: object) -> str:
+    """Normalise a discipline cell to a non-empty label."""
+    return (str(value or "").strip()) or "Unassigned"
+
+
+def _disc_system(disc: object, system: object) -> str:
+    """Compose the ``discipline · system`` axis key for the system matrix.
+
+    Falls back to the bare discipline when an element carried no system
+    (so a partially-tagged model still groups meaningfully).
+    """
+    d = _disc(disc)
+    s = (str(system or "").strip())
+    return f"{d} · {s}" if s else d
+
+
+def _build_grouped_summary(results: list[ClashResult], dimension: str) -> dict:
+    """Multi-dimensional grouping of a run's clashes (item #23).
+
+    Exactly one payload is populated for ``dimension``; the rest stay
+    empty so the response shape is stable. ``has_system_data`` reports
+    whether ANY clash resolved a building system, so the UI can hide the
+    ``discipline_system`` option when there is nothing to show.
+
+    * ``discipline_pair`` — the flat discipline×discipline matrix (same
+      cell shape as :func:`_build_summary`).
+    * ``level`` — one ``{key, count, open_count}`` bucket per storey
+      index; clashes whose level is unknown fall into the ``"(no level)"``
+      bucket so the totals always add up.
+    * ``level_discipline`` — a discipline×discipline matrix per storey
+      (only rows whose level resolved); rendered as level tabs.
+    * ``discipline_system`` — discipline·system × discipline·system grid.
+    """
+    has_system_data = any(
+        (getattr(r, "a_element_system", "") or "").strip() or (getattr(r, "b_element_system", "") or "").strip()
+        for r in results
+    )
+    out: dict = {
+        "dimension": dimension,
+        "disciplines": [],
+        "matrix": [],
+        "levels": [],
+        "level_disciplines": [],
+        "systems": [],
+        "system_matrix": [],
+        "has_system_data": has_system_data,
+    }
+
+    if dimension == "level":
+        # 1-D: clashes per storey. Unknown level → "(no level)" bucket.
+        buckets: dict[str, dict[str, int]] = {}
+        for r in results:
+            sa = getattr(r, "a_storey", None)
+            sb = getattr(r, "b_storey", None)
+            # A clash spans two levels; attribute it to the lower one when
+            # both are known, else to whichever resolved, else (no level).
+            level: str
+            known = [int(s) for s in (sa, sb) if s is not None]
+            level = str(min(known)) if known else "(no level)"
+            c = buckets.setdefault(level, {"count": 0, "open_count": 0})
+            c["count"] += 1
+            if r.status in OPEN_STATUSES:
+                c["open_count"] += 1
+
+        def _level_sort(key: str) -> tuple[int, int]:
+            # Numeric levels sort ascending; "(no level)" sorts last.
+            try:
+                return (0, int(key))
+            except ValueError:
+                return (1, 0)
+
+        out["levels"] = [
+            {"key": k, "count": v["count"], "open_count": v["open_count"]}
+            for k, v in sorted(buckets.items(), key=lambda kv: _level_sort(kv[0]))
+        ]
+        return out
+
+    if dimension == "level_discipline":
+        # discipline×discipline matrix per storey (both storeys known).
+        per_level: dict[int, dict[tuple[str, str], dict[str, int]]] = {}
+        for r in results:
+            sa = getattr(r, "a_storey", None)
+            sb = getattr(r, "b_storey", None)
+            if sa is None or sb is None:
+                continue
+            lvl = min(int(sa), int(sb))
+            a, b = sorted((_disc(r.a_discipline), _disc(r.b_discipline)))
+            cell = per_level.setdefault(lvl, {}).setdefault((a, b), {"count": 0, "open_count": 0})
+            cell["count"] += 1
+            if r.status in OPEN_STATUSES:
+                cell["open_count"] += 1
+        out["level_disciplines"] = [
+            {
+                "level": lvl,
+                "cells": [
+                    {"a": a, "b": b, "count": v["count"], "open_count": v["open_count"]}
+                    for (a, b), v in sorted(cells.items())
+                ],
+            }
+            for lvl, cells in sorted(per_level.items())
+        ]
+        return out
+
+    if dimension == "discipline_system":
+        systems: set[str] = set()
+        cell_s: dict[tuple[str, str], dict[str, int]] = {}
+        for r in results:
+            a = _disc_system(r.a_discipline, getattr(r, "a_element_system", ""))
+            b = _disc_system(r.b_discipline, getattr(r, "b_element_system", ""))
+            a, b = sorted((a, b))
+            systems.add(a)
+            systems.add(b)
+            cell = cell_s.setdefault((a, b), {"count": 0, "open_count": 0})
+            cell["count"] += 1
+            if r.status in OPEN_STATUSES:
+                cell["open_count"] += 1
+        out["systems"] = sorted(systems)
+        out["system_matrix"] = [
+            {"a": a, "b": b, "count": v["count"], "open_count": v["open_count"]}
+            for (a, b), v in sorted(cell_s.items())
+        ]
+        return out
+
+    # Default: discipline_pair (flat discipline×discipline matrix).
+    disciplines: set[str] = set()
+    cell_d: dict[tuple[str, str], dict[str, int]] = {}
+    for r in results:
+        a, b = sorted((_disc(r.a_discipline), _disc(r.b_discipline)))
+        disciplines.add(a)
+        disciplines.add(b)
+        cell = cell_d.setdefault((a, b), {"count": 0, "open_count": 0})
+        cell["count"] += 1
+        if r.status in OPEN_STATUSES:
+            cell["open_count"] += 1
+    out["dimension"] = "discipline_pair"
+    out["disciplines"] = sorted(disciplines)
+    out["matrix"] = [
+        {"a": a, "b": b, "count": v["count"], "open_count": v["open_count"]} for (a, b), v in sorted(cell_d.items())
+    ]
+    return out

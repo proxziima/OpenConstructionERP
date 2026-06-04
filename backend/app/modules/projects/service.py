@@ -198,6 +198,20 @@ class ProjectService:
             project_code = await self._generate_project_code()
             reserved_code = project_code
 
+        # Compliance rule packs (Item #27). When the caller left the default
+        # ``["universal"]`` we upgrade it to a region-matched pack so a DACH /
+        # UK / US project gets its jurisdiction gate out of the box; an
+        # explicit non-default choice is always respected verbatim.
+        from app.modules.contracts.compliance_packs import (
+            DEFAULT_PACK_ID,
+            suggest_pack_for_region,
+            valid_pack_ids,
+        )
+
+        requested_packs = valid_pack_ids(list(data.compliance_rule_packs or []))
+        if not requested_packs or requested_packs == [DEFAULT_PACK_ID]:
+            requested_packs = [suggest_pack_for_region(data.region)]
+
         project = Project(
             name=data.name,
             description=data.description,
@@ -206,6 +220,7 @@ class ProjectService:
             currency=data.currency,
             locale=data.locale,
             validation_rule_sets=data.validation_rule_sets,
+            compliance_rule_packs=requested_packs,
             owner_id=owner_id,
             # Phase 12 expansion fields
             project_code=project_code,
@@ -519,6 +534,64 @@ class ProjectService:
         logger.info("Project updated: %s (fields=%s)", project_id, list(fields.keys()))
         return project
 
+    # ── Compliance rule packs (Item #27) ─────────────────────────────────
+
+    async def set_compliance_rule_packs(
+        self,
+        project_id: uuid.UUID,
+        rule_pack_ids: list[str],
+    ) -> Project:
+        """Set the compliance rule packs enforced for a project.
+
+        Unknown pack ids are rejected (HTTP 422) so a typo never silently
+        disables the contract-signature gate. An empty selection is
+        normalised to the cross-market ``universal`` pack so the gate always
+        has something to run. Audit-logged with before/after snapshots.
+        """
+        from app.modules.contracts.compliance_packs import (
+            DEFAULT_PACK_ID,
+            valid_pack_ids,
+        )
+
+        project = await self.get_project(project_id)
+
+        requested = list(rule_pack_ids or [])
+        valid = valid_pack_ids(requested)
+        unknown = [p for p in requested if p not in valid]
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "unknown_compliance_rule_packs",
+                    "message": (
+                        "One or more compliance rule packs are not recognised. "
+                        "Use GET /api/v1/contracts/compliance-rule-packs/ for the "
+                        "valid list."
+                    ),
+                    "unknown_packs": unknown,
+                },
+            )
+        if not valid:
+            valid = [DEFAULT_PACK_ID]
+
+        before = list(getattr(project, "compliance_rule_packs", None) or [])
+        await self.repo.update_fields(project_id, compliance_rule_packs=valid)
+        await self.session.refresh(project)
+
+        await _safe_audit(
+            self.session,
+            action="update",
+            entity_type="project",
+            entity_id=str(project_id),
+            details={
+                "field": "compliance_rule_packs",
+                "before": before,
+                "after": valid,
+            },
+        )
+        logger.info("Project %s compliance rule packs set to %s", project_id, valid)
+        return project
+
     # ── Duplicate (deep clone) ───────────────────────────────────────────
 
     async def duplicate_project(
@@ -575,6 +648,7 @@ class ProjectService:
             currency=source.currency,
             locale=source.locale,
             validation_rule_sets=list(source.validation_rule_sets or []),
+            compliance_rule_packs=list(getattr(source, "compliance_rule_packs", None) or ["universal"]),
             status="active",
             owner_id=owner_id,
             # Phase 12 expansion fields

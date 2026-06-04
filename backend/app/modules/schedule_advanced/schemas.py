@@ -757,3 +757,186 @@ class PPCWeeklyResponse(BaseModel):
     avg_planned_pct: Decimal = Decimal("0")
     avg_actual_pct: Decimal = Decimal("0")
     ppc: Decimal = Decimal("0")
+
+
+# ── Takt / line-of-balance scheduling ──────────────────────────────────────
+
+_TAKT_STATUS = r"^(draft|active|completed|archived)$"
+_TAKT_ACTIVITY_STATUS = r"^(planned|in_progress|completed)$"
+
+
+class LocationCreate(BaseModel):
+    """One location in a takt schedule's location sequence."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    sequence_order: int = Field(..., ge=1)
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str = ""
+    work_area_sqm: Decimal | None = None
+
+
+class LocationResponse(BaseModel):
+    """Location returned from the API."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    takt_schedule_id: UUID
+    sequence_order: int
+    name: str
+    description: str = ""
+    work_area_sqm: Decimal | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaktScheduleCreate(BaseModel):
+    """Create a takt schedule with its location sequence."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    master_schedule_id: UUID
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str = ""
+    target_cycle_days: int = Field(default=7, ge=1, le=365)
+    takt_rhythm_tolerance_days: int = Field(default=1, ge=0, le=60)
+    locations: list[LocationCreate] = Field(default_factory=list)
+
+
+class TaktScheduleUpdate(BaseModel):
+    """Patch update for a takt schedule."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, max_length=255)
+    description: str | None = None
+    target_cycle_days: int | None = Field(default=None, ge=1, le=365)
+    takt_rhythm_tolerance_days: int | None = Field(default=None, ge=0, le=60)
+    status: str | None = Field(default=None, pattern=_TAKT_STATUS)
+
+
+class TaktScheduleResponse(BaseModel):
+    """Takt schedule returned from the API (with nested locations)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    master_schedule_id: UUID
+    name: str
+    description: str = ""
+    target_cycle_days: int = 7
+    takt_rhythm_tolerance_days: int = 1
+    location_sequence_count: int = 0
+    status: str = "draft"
+    created_by: UUID | None = None
+    locations: list[LocationResponse] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaktActivityCreate(BaseModel):
+    """One trade activity in a takt schedule."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(..., min_length=1, max_length=255)
+    activity_code: str = Field(default="", max_length=50)
+    sequence_order: int = Field(default=1, ge=1)
+    planned_cycle_duration_days: int = Field(..., ge=1, le=365)
+    crew_size: int = Field(default=1, ge=1, le=10_000)
+    crew_skill_codes: list[str] = Field(default_factory=list)
+    buffer_days_before: int = Field(default=0, ge=0, le=365)
+    sequence_predecessor_activity_id: UUID | None = None
+
+
+class TaktActivityImport(BaseModel):
+    """Bulk-import payload for takt activities."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    activities: list[TaktActivityCreate] = Field(default_factory=list)
+
+
+class TaktActivityUpdate(BaseModel):
+    """Patch update for a takt activity."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, max_length=255)
+    activity_code: str | None = Field(default=None, max_length=50)
+    sequence_order: int | None = Field(default=None, ge=1)
+    planned_cycle_duration_days: int | None = Field(default=None, ge=1, le=365)
+    crew_size: int | None = Field(default=None, ge=1, le=10_000)
+    crew_skill_codes: list[str] | None = None
+    buffer_days_before: int | None = Field(default=None, ge=0, le=365)
+    actual_cycle_duration_days: Decimal | None = None
+    status: str | None = Field(default=None, pattern=_TAKT_ACTIVITY_STATUS)
+
+
+class TaktActivityResponse(BaseModel):
+    """Takt activity returned from the API."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    takt_schedule_id: UUID
+    name: str
+    activity_code: str = ""
+    sequence_order: int = 1
+    planned_cycle_duration_days: int = 1
+    crew_size: int = 1
+    crew_skill_codes: list[str] = Field(default_factory=list)
+    buffer_days_before: int = 0
+    sequence_predecessor_activity_id: UUID | None = None
+    status: str = "planned"
+    actual_cycle_duration_days: Decimal | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class LineOfBalanceBar(BaseModel):
+    """One diagonal bar on the line-of-balance chart.
+
+    ``start_day`` / ``end_day`` are 0-based working-day indices relative to
+    the takt schedule's day-zero. The chart plots the bar from
+    ``(start_day, location)`` to ``(end_day, next location)`` — the diagonal
+    that gives line-of-balance its name.
+    """
+
+    activity_id: UUID
+    location_id: UUID
+    activity_name: str
+    location_name: str
+    sequence_order: int
+    start_day: int
+    end_day: int
+    crew_size: int
+    is_critical: bool = False
+    has_rhythm_break: bool = False
+
+
+class TaktViolation(BaseModel):
+    """A detected takt feasibility / rhythm issue."""
+
+    activity_id: UUID
+    location_id: UUID | None = None
+    activity_name: str = ""
+    location_name: str = ""
+    violation_type: str  # "rhythm_break" | "overlap" | "buffer_infeasible"
+    deviation_days: float = 0.0
+    severity: str  # "warning" | "error"
+    message: str
+
+
+class LineOfBalanceResponse(BaseModel):
+    """Computed line-of-balance geometry + violations + critical path."""
+
+    takt_schedule_id: UUID
+    total_makespan_days: int = 0
+    bars: list[LineOfBalanceBar] = Field(default_factory=list)
+    violations: list[TaktViolation] = Field(default_factory=list)
+    critical_path: list[UUID] = Field(default_factory=list)
+    total_locations: int = 0
+    total_activities: int = 0
+    average_cycle_days: float = 0.0

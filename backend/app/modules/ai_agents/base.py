@@ -200,6 +200,11 @@ class Agent:
     system_prompt: str = ""
     description: str = ""
     max_iterations: int = 8
+    # Tool slugs this agent may dispatch to. Empty means prompt-only (the loop
+    # returns the model's first answer). Built-in agents declare their tools at
+    # registration; user-authored custom agents (Item 29) populate this from
+    # the operator's vetted ``automation.allowed_tools`` selection, gated on the
+    # operator already holding each tool's required permission.
     allowed_tools: list[str] = field(default_factory=list)
     max_total_tokens: int = DEFAULT_MAX_TOTAL_TOKENS
     max_wall_seconds: float = DEFAULT_MAX_WALL_SECONDS

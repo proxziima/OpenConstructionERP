@@ -182,6 +182,18 @@ _GAP_RULES: list[dict[str, Any]] = [
         "action_id": None,
     },
     {
+        # TOP-30 #19 — surface a live predictive-forecast alert as a gap so
+        # it shows in Critical Gaps, not only in the Forecasts tab.
+        "id": "forecast_alert_active",
+        "domain": "cost_model",
+        "severity": "critical",
+        "condition": lambda s: s.cost_model.forecast_alert_active,
+        "title": "Forecast breaches a cost/schedule threshold",
+        "description": "The latest predictive EVM forecast triggered an active alert.",
+        "impact": "The project is forecast to miss a configured cost or schedule target.",
+        "action_id": None,
+    },
+    {
         "id": "no_documents",
         "domain": "documents",
         "severity": "suggestion",

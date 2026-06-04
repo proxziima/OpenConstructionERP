@@ -29,6 +29,8 @@ export interface Project {
   currency: string;
   locale: string;
   validation_rule_sets: string[];
+  /** Item #27 — compliance rule packs enforced at workflow gates. */
+  compliance_rule_packs?: string[];
   status: string;
   phase?: string | null;
   owner_id: string;
@@ -245,4 +247,10 @@ export const projectsApi = {
     }),
   listModules: (id: string) =>
     apiGet<ProjectModule[]>(`/v1/projects/${id}/modules`),
+
+  /* ── compliance rule packs (Item #27) ──────────────────────────── */
+  setComplianceRulePacks: (id: string, rulePackIds: string[]) =>
+    apiPatch<Project>(`/v1/projects/${id}/compliance-rule-packs`, {
+      rule_pack_ids: rulePackIds,
+    }),
 };

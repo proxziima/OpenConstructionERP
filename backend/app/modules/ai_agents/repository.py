@@ -102,6 +102,49 @@ class CustomAgentRepository:
         await self.session.flush()
         return agent
 
+    async def update_metadata(self, agent_id: uuid.UUID, automation: dict) -> None:  # type: ignore[type-arg]
+        """Replace the whole ``automation`` JSON envelope on a custom agent.
+
+        Used by the scheduler and the schedule/tools endpoints. The caller owns
+        merge semantics (read-modify-write the dict, then pass the full value)
+        so a partial knob update never clobbers a sibling key. Expires the
+        identity map so a subsequent load re-reads the persisted value.
+        """
+        stmt = update(CustomAgent).where(CustomAgent.id == agent_id).values(automation=automation)
+        await self.session.execute(stmt)
+        await self.session.flush()
+        self.session.expire_all()
+
+    async def list_due_scheduled(self, as_of: str) -> list[CustomAgent]:
+        """Return custom agents whose schedule is due as of ``as_of`` (ISO UTC).
+
+        A row is due when its ``automation`` envelope has a non-null ``cron``,
+        is not paused (``schedule_enabled`` defaults true), and its stored
+        ``next_run_at`` is at or before ``as_of``. ``next_run_at`` is an
+        ISO-8601 string, so the lexical ``<=`` comparison is chronological.
+
+        Scoped across all users by design — the scheduler fires on behalf of
+        each agent's own creator (``agent.user_id``), so it must see every
+        user's scheduled agents, unlike the per-user read paths.
+        """
+        next_run = CustomAgent.automation["next_run_at"].as_string()
+        cron = CustomAgent.automation["cron"].as_string()
+        enabled = CustomAgent.automation["schedule_enabled"].as_string()
+        stmt = (
+            select(CustomAgent)
+            .where(
+                cron.is_not(None),
+                next_run.is_not(None),
+                next_run <= as_of,
+                # ``schedule_enabled`` defaults true; treat anything that is not
+                # the literal JSON ``false`` as enabled so an absent key (older
+                # rows / a cron set before the toggle existed) still fires.
+                enabled != "false",
+            )
+            .order_by(next_run.asc())
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
     async def delete(self, agent: CustomAgent) -> None:
         await self.session.delete(agent)
         await self.session.flush()

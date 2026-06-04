@@ -64,6 +64,45 @@ export interface ITPItem {
   hold_witness_point: 'hold' | 'witness' | 'review';
   responsible_role: string | null;
   signatories_required: number;
+  boq_position_id: string | null;
+  csi_section_ref: string | null;
+  spec_drawing_ref: string | null;
+  bim_element_id: string | null;
+  predecessor_itp_item_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HoldPointStatus {
+  inspection_id: string;
+  itp_item_id: string | null;
+  is_hold_point: boolean;
+  predecessor_itp_item_id: string | null;
+  predecessor_passed: boolean;
+  blocked: boolean;
+  blocking_reason: string | null;
+  released: boolean;
+}
+
+export interface InspectionAttachment {
+  id: string;
+  inspection_id: string;
+  document_id: string;
+  caption: string | null;
+  file_hash_sha256: string | null;
+  uploaded_by: string | null;
+  attached_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HoldPointRelease {
+  id: string;
+  inspection_id: string;
+  released_by: string | null;
+  released_at: string | null;
+  justification: string | null;
+  approval_route_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -81,6 +120,7 @@ export interface Inspection {
   drawing_ref: string | null;
   notes: string | null;
   photos_json: Array<Record<string, unknown>>;
+  attachment_document_ids: string[];
   created_at: string;
   updated_at: string;
 }
@@ -93,6 +133,9 @@ export interface InspectionSignature {
   signed_at: string | null;
   signature_method: 'electronic' | 'wet' | 'biometric';
   comments: string | null;
+  timestamp_utc: string | null;
+  signer_ip: string | null;
+  signer_user_agent: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -218,6 +261,30 @@ export interface CreateITPItemPayload {
   hold_witness_point?: 'hold' | 'witness' | 'review';
   responsible_role?: string;
   signatories_required?: number;
+  boq_position_id?: string;
+  csi_section_ref?: string;
+  spec_drawing_ref?: string;
+  bim_element_id?: string;
+  predecessor_itp_item_id?: string;
+}
+
+export interface LinkITPItemSpecPayload {
+  boq_position_id?: string | null;
+  csi_section_ref?: string | null;
+  spec_drawing_ref?: string | null;
+  bim_element_id?: string | null;
+  predecessor_itp_item_id?: string | null;
+}
+
+export interface AttachEvidencePayload {
+  document_id: string;
+  caption?: string;
+  file_hash_sha256?: string;
+}
+
+export interface ReleaseHoldPointPayload {
+  justification: string;
+  approval_route_id?: string;
 }
 
 export interface CreateInspectionPayload {
@@ -339,6 +406,17 @@ export function addITPItem(
   return apiPost<ITPItem>(`/v1/qms/itp-plans/${planId}/items`, data);
 }
 
+export function linkITPItemToSpec(
+  planId: string,
+  itemId: string,
+  data: LinkITPItemSpecPayload,
+): Promise<ITPItem> {
+  return apiPatch<ITPItem>(
+    `/v1/qms/itp-plans/${planId}/items/${itemId}/link-spec`,
+    data,
+  );
+}
+
 export function activateITPPlan(planId: string): Promise<ITPPlan> {
   return apiPost<ITPPlan>(`/v1/qms/itp-plans/${planId}/activate`, {});
 }
@@ -401,6 +479,52 @@ export function updateInspection(
   data: Partial<CreateInspectionPayload> & { status?: InspectionStatus },
 ): Promise<Inspection> {
   return apiPatch<Inspection>(`/v1/qms/inspections/${inspectionId}`, data);
+}
+
+/* ── Hold points + evidence (item 12) ──────────────────────────────────── */
+
+export function checkHoldPointStatus(
+  inspectionId: string,
+): Promise<HoldPointStatus> {
+  return apiGet<HoldPointStatus>(
+    `/v1/qms/inspections/${inspectionId}/hold-point-status`,
+  );
+}
+
+export function listInspectionEvidence(
+  inspectionId: string,
+): Promise<InspectionAttachment[]> {
+  return apiGet<InspectionAttachment[]>(
+    `/v1/qms/inspections/${inspectionId}/evidence`,
+  );
+}
+
+export function attachInspectionEvidence(
+  inspectionId: string,
+  data: AttachEvidencePayload,
+): Promise<InspectionAttachment> {
+  return apiPost<InspectionAttachment>(
+    `/v1/qms/inspections/${inspectionId}/attach-evidence`,
+    data,
+  );
+}
+
+export function releaseHoldPoint(
+  inspectionId: string,
+  data: ReleaseHoldPointPayload,
+): Promise<HoldPointRelease> {
+  return apiPost<HoldPointRelease>(
+    `/v1/qms/inspections/${inspectionId}/release`,
+    data,
+  );
+}
+
+export function getHoldPointRelease(
+  inspectionId: string,
+): Promise<HoldPointRelease> {
+  return apiGet<HoldPointRelease>(
+    `/v1/qms/inspections/${inspectionId}/release`,
+  );
 }
 
 /* ── NCRs ──────────────────────────────────────────────────────────────── */

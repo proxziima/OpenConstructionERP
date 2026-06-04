@@ -45,6 +45,7 @@ import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { PipelineBanner } from './PipelineBanner';
 import { ContractStatusPipeline } from './ContractStatusPipeline';
 import { ContractExpiryBadge } from './ContractExpiryBadge';
+import { ComplianceGate } from './ComplianceGate';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useAuthStore } from '@/stores/useAuthStore';
@@ -56,7 +57,6 @@ import {
   listContractLines,
   createContract,
   createProgressClaim,
-  signContract,
   suspendContract,
   resumeContract,
   terminateContract,
@@ -1047,6 +1047,10 @@ function ContractDetailDrawer({
   const qc = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
   const contract = contracts.find((c) => c.id === contractId);
+  // Item #27 — signing goes through the compliance gate modal, which runs
+  // the project's compliance rule packs against the SoV and only lets the
+  // user sign once there are no blocking errors.
+  const [gateOpen, setGateOpen] = useState(false);
 
   const linesQ = useQuery({
     queryKey: ['contracts', 'lines', contractId],
@@ -1068,18 +1072,6 @@ function ContractDetailDrawer({
     qc.invalidateQueries({ queryKey: ['contracts', 'list'] });
     qc.invalidateQueries({ queryKey: ['contracts', 'dashboard', contractId] });
   };
-
-  const signMut = useMutation({
-    mutationFn: () => signContract(contractId),
-    onSuccess: () => {
-      invalidate();
-      addToast({
-        type: 'success',
-        title: t('contracts.signed_ok', { defaultValue: 'Contract signed' }),
-      });
-    },
-    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
-  });
 
   const suspendMut = useMutation({
     mutationFn: () => suspendContract(contractId),
@@ -1256,8 +1248,7 @@ function ContractDetailDrawer({
               <Button
                 variant="primary"
                 icon={<PenLine size={14} />}
-                onClick={() => signMut.mutate()}
-                loading={signMut.isPending}
+                onClick={() => setGateOpen(true)}
               >
                 {t('contracts.sign', { defaultValue: 'Sign' })}
               </Button>
@@ -1567,6 +1558,21 @@ function ContractDetailDrawer({
           )}
         </div>
       </div>
+
+      {/* Compliance gate (Item #27) — runs the project rule packs before
+          allowing the draft → active signature. Rendered via a portal so it
+          stacks above the detail drawer. */}
+      {gateOpen && (
+        <ComplianceGate
+          contractId={contractId}
+          contractCode={contract.code}
+          onSigned={() => {
+            setGateOpen(false);
+            invalidate();
+          }}
+          onClose={() => setGateOpen(false)}
+        />
+      )}
     </div>
   );
 }

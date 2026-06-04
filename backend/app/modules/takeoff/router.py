@@ -66,6 +66,7 @@ from app.modules.takeoff.manifest_verifier import (
 from app.modules.takeoff.models import CadExtractionSession
 from app.modules.takeoff.schemas import (
     LinkToBoqRequest,
+    TakeoffCompareResponse,
     TakeoffMeasurementBulkCreate,
     TakeoffMeasurementCreate,
     TakeoffMeasurementResponse,
@@ -4467,6 +4468,37 @@ def _measurement_to_response(item: object) -> TakeoffMeasurementResponse:
         created_at=item.created_at,  # type: ignore[attr-defined]
         updated_at=item.updated_at,  # type: ignore[attr-defined]
     )
+
+
+# ── Revision compare (Item 17) ─────────────────────────────────────────
+
+
+@router.post(
+    "/measurements/compare/",
+    response_model=TakeoffCompareResponse,
+    dependencies=[Depends(RequirePermission("takeoff.read"))],
+)
+async def compare_takeoff_documents(
+    project_id: _uuid.UUID = Query(...),
+    from_document_id: str = Query(..., description="Baseline document id ('before')."),
+    to_document_id: str = Query(..., description="Target document id ('after')."),
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    service: TakeoffService = Depends(_get_service),
+    session: SessionDep = None,  # type: ignore[assignment]
+) -> TakeoffCompareResponse:
+    """Compare the measurements of two takeoff documents in one project.
+
+    PDF takeoffs have no version table, so a revision compare runs
+    between two uploaded documents. Returns added / removed / modified /
+    unchanged measurement rows plus a money cost impact for any
+    linked-to-BOQ measurement whose value changed.
+
+    Gated by ``verify_project_access`` so a foreign-tenant ``project_id``
+    404s the same way a missing one does.
+    """
+    await verify_project_access(project_id, str(user_id), session)
+    payload = await service.compare_documents(project_id, from_document_id, to_document_id)
+    return TakeoffCompareResponse(**payload)
 
 
 # ── Summary (must be before /{measurement_id} to avoid route collision) ──

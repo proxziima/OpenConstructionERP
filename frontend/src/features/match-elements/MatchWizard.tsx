@@ -37,6 +37,7 @@ import {
   FileText,
   FileType,
   Hammer,
+  Image as ImageIcon,
   Layers,
   Loader2,
   Mountain,
@@ -61,6 +62,7 @@ import {
 import { useToastStore } from '@/stores/useToastStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { unwrapCataloguesPayload } from './catalogues-payload';
+import ImageSourceSelector from './ImageSourceSelector';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -68,6 +70,7 @@ type Source =
   | { kind: 'bim'; modelId: string; modelName: string }
   | { kind: 'excel'; file: File }
   | { kind: 'pdf'; file: File }
+  | { kind: 'image'; file: File }
   | { kind: 'text'; lines: string[] };
 
 interface CatalogueRow {
@@ -920,7 +923,9 @@ function SourceStep({
   onPick: (s: Source | null) => void;
 }) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<'bim' | 'excel' | 'pdf' | 'text'>(selected?.kind ?? 'bim');
+  const [tab, setTab] = useState<'bim' | 'excel' | 'pdf' | 'image' | 'text'>(
+    selected?.kind ?? 'bim',
+  );
   const [textValue, setTextValue] = useState(
     selected?.kind === 'text' ? selected.lines.join('\n') : '',
   );
@@ -935,6 +940,11 @@ function SourceStep({
     { id: 'bim' as const, icon: Building2, label: t('match_wizard.tab_bim', 'BIM model') },
     { id: 'excel' as const, icon: FileSpreadsheet, label: t('match_wizard.tab_excel', 'Excel BoQ') },
     { id: 'pdf' as const, icon: FileType, label: t('match_wizard.tab_pdf', { defaultValue: 'PDF BoQ' }) },
+    {
+      id: 'image' as const,
+      icon: ImageIcon,
+      label: t('match_wizard.tab_image', { defaultValue: 'Photo / Drawing' }),
+    },
     { id: 'text' as const, icon: FileText, label: t('match_wizard.tab_text', 'Pasted text') },
   ];
 
@@ -1106,6 +1116,13 @@ function SourceStep({
         </div>
       )}
 
+      {tab === 'image' && (
+        <ImageSourceSelector
+          file={selected?.kind === 'image' ? selected.file : null}
+          onPick={(f) => onPick(f ? { kind: 'image', file: f } : null)}
+        />
+      )}
+
       {tab === 'text' && (
         <div>
           <label className="block">
@@ -1162,7 +1179,8 @@ function ReviewStep({
   const sourceLabel = (() => {
     if (!source) return t('match_wizard.review_no_source', 'No source picked');
     if (source.kind === 'bim') return source.modelName;
-    if (source.kind === 'excel' || source.kind === 'pdf') return source.file.name;
+    if (source.kind === 'excel' || source.kind === 'pdf' || source.kind === 'image')
+      return source.file.name;
     return t('match_wizard.review_text_lines', '{{n}} lines pasted', {
       n: source.lines.length,
     });
@@ -1187,6 +1205,8 @@ function ReviewStep({
           ? FileSpreadsheet
           : source?.kind === 'pdf'
           ? FileType
+          : source?.kind === 'image'
+          ? ImageIcon
           : source?.kind === 'text'
           ? FileText
           : Building2,
@@ -1272,6 +1292,15 @@ export function MatchWizard({
       }
       if (source.kind === 'pdf') {
         const session = await matchElementsApi.createSessionFromPdf({
+          project_id: projectId,
+          file: source.file,
+          catalogue_id: catalogueId,
+          construction_stage: stagePayload,
+        });
+        return session.id;
+      }
+      if (source.kind === 'image') {
+        const session = await matchElementsApi.createSessionFromImage({
           project_id: projectId,
           file: source.file,
           catalogue_id: catalogueId,

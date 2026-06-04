@@ -6,6 +6,7 @@ import math
 import os
 import re
 import uuid
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -711,6 +712,71 @@ def _count_pdf_pages(content: bytes, *, filename: str | None = None) -> int:
                 input_fp,
             )
             return 0
+
+
+# ── Revision compare (Item 17) ──────────────────────────────────────────────
+
+
+def _measurement_compare_key(m: Any) -> str:
+    """Stable match key for a measurement across two takeoff documents.
+
+    Prefers ``metadata.compare_key`` (a key an importer can stamp so the
+    same logical measurement matches across re-uploads), otherwise falls
+    back to the natural tuple ``(page, type, group_name, annotation)``.
+    Two distinct measurements that happen to share that tuple still match
+    — which is the correct behaviour for a single logical takeoff item
+    that was re-measured on the new revision.
+    """
+    meta = getattr(m, "metadata_", None) or {}
+    if isinstance(meta, dict):
+        ck = meta.get("compare_key")
+        if ck:
+            return f"ck:{str(ck).strip()}"
+    page = getattr(m, "page", None)
+    mtype = (getattr(m, "type", None) or "").strip().lower()
+    group = (getattr(m, "group_name", None) or "").strip().lower()
+    annotation = (getattr(m, "annotation", None) or "").strip().lower()
+    return f"nat:{page}|{mtype}|{group}|{annotation}"
+
+
+def _measure_to_float(value: Any) -> float | None:
+    """Coerce a ``Decimal``/number measurement to ``float`` or ``None``."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError, InvalidOperation):
+        return None
+
+
+def _compute_cost_impact(
+    *,
+    old_value: float | None,
+    new_value: float | None,
+    unit_rate: str | int | float | Decimal | None,
+) -> str | None:
+    """Signed money delta ``(new - old) * unit_rate`` as a Decimal string.
+
+    Returns ``None`` when the impact cannot be computed (either value
+    missing, or the rate is unparseable / zero). Quantised to 2dp with
+    commercial rounding (ROUND_HALF_UP), expressed in the project base
+    currency — a BOQ position's ``unit_rate`` is already stored in base,
+    so no currency blending occurs.
+    """
+    if old_value is None or new_value is None:
+        return None
+    try:
+        rate = Decimal(str(unit_rate).strip()) if unit_rate not in (None, "") else Decimal("0")
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not rate.is_finite() or rate == 0:
+        return None
+    try:
+        delta = Decimal(repr(float(new_value))) - Decimal(repr(float(old_value)))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    impact = (delta * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return str(impact)
 
 
 class TakeoffService:
@@ -1423,3 +1489,196 @@ class TakeoffService:
         await self.session.refresh(position)
         await boq_service._recompute_position_total(position)  # noqa: SLF001 — reuse the canonical recompute path
         logger.info("push_quantity: BOQ position %s quantity set to %s", boq_position_id, value)
+
+    # ── Revision compare (Item 17) ───────────────────────────────────────
+
+    async def compare_documents(
+        self,
+        project_id: uuid.UUID,
+        from_document_id: str,
+        to_document_id: str,
+    ) -> dict[str, Any]:
+        """Compare the measurements of two takeoff documents in one project.
+
+        PDF takeoffs have no version table, so a revision compare is run
+        between two uploaded documents (the user uploads revision A and
+        revision B as separate PDFs). Measurements are matched by
+        :func:`_measurement_compare_key` and classified
+        added / removed / modified / unchanged. A linked-to-BOQ
+        measurement whose value changed carries a money cost impact in
+        the project's base currency.
+
+        Both document ids must reference documents the project owns; an
+        empty result set is returned rather than an error when a document
+        has no measurements (a freshly uploaded, not-yet-measured PDF).
+        """
+        from_measurements = await self.measurement_repo.list_for_project(
+            project_id,
+            document_id=from_document_id,
+            limit=500,
+        )
+        to_measurements = await self.measurement_repo.list_for_project(
+            project_id,
+            document_id=to_document_id,
+            limit=500,
+        )
+
+        from_by_key = {_measurement_compare_key(m): m for m in from_measurements}
+        to_by_key = {_measurement_compare_key(m): m for m in to_measurements}
+
+        rate_cache: dict[str, tuple[str | None, str | None]] = {}
+
+        async def _rate_and_currency(position_id: str | None) -> tuple[str | None, str | None]:
+            if not position_id:
+                return None, None
+            if position_id in rate_cache:
+                return rate_cache[position_id]
+            result = await self._resolve_position_rate(position_id, project_id)
+            rate_cache[position_id] = result
+            return result
+
+        rows: list[dict[str, Any]] = []
+        for key in sorted(set(from_by_key) | set(to_by_key)):
+            old_m = from_by_key.get(key)
+            new_m = to_by_key.get(key)
+
+            if old_m is not None and new_m is None:
+                rows.append(
+                    {
+                        "change_type": "removed",
+                        "measurement_id": str(old_m.id),
+                        "type": old_m.type,
+                        "group_name": old_m.group_name,
+                        "page": old_m.page,
+                        "label": old_m.annotation,
+                        "old_value": _measure_to_float(_pick_takeoff_value(old_m)),
+                        "new_value": None,
+                        "measurement_unit": old_m.measurement_unit,
+                        "linked_boq_position_id": old_m.linked_boq_position_id,
+                        "cost_impact": None,
+                        "cost_currency": None,
+                    }
+                )
+                continue
+
+            if old_m is None and new_m is not None:
+                rows.append(
+                    {
+                        "change_type": "added",
+                        "measurement_id": str(new_m.id),
+                        "type": new_m.type,
+                        "group_name": new_m.group_name,
+                        "page": new_m.page,
+                        "label": new_m.annotation,
+                        "old_value": None,
+                        "new_value": _measure_to_float(_pick_takeoff_value(new_m)),
+                        "measurement_unit": new_m.measurement_unit,
+                        "linked_boq_position_id": new_m.linked_boq_position_id,
+                        "cost_impact": None,
+                        "cost_currency": None,
+                    }
+                )
+                continue
+
+            assert old_m is not None and new_m is not None  # noqa: S101
+            old_val = _measure_to_float(_pick_takeoff_value(old_m))
+            new_val = _measure_to_float(_pick_takeoff_value(new_m))
+            changed = old_val != new_val
+            position_id = new_m.linked_boq_position_id or old_m.linked_boq_position_id
+            cost_impact: str | None = None
+            cost_currency: str | None = None
+            if changed and position_id:
+                rate, cost_currency = await _rate_and_currency(position_id)
+                cost_impact = _compute_cost_impact(
+                    old_value=old_val,
+                    new_value=new_val,
+                    unit_rate=rate,
+                )
+            rows.append(
+                {
+                    "change_type": "modified" if changed else "unchanged",
+                    "measurement_id": str(new_m.id),
+                    "type": new_m.type,
+                    "group_name": new_m.group_name,
+                    "page": new_m.page,
+                    "label": new_m.annotation,
+                    "old_value": old_val,
+                    "new_value": new_val,
+                    "measurement_unit": new_m.measurement_unit or old_m.measurement_unit,
+                    "linked_boq_position_id": position_id,
+                    "cost_impact": cost_impact,
+                    "cost_currency": cost_currency if cost_impact is not None else None,
+                }
+            )
+
+        def _tally(diff_rows: list[dict[str, Any]]) -> dict[str, int]:
+            tally = {"added": 0, "removed": 0, "modified": 0, "unchanged": 0}
+            for row in diff_rows:
+                tally[row["change_type"]] = tally.get(row["change_type"], 0) + 1
+            return tally
+
+        net_impact = Decimal("0")
+        cost_currency_out: str | None = None
+        has_cost = False
+        for row in rows:
+            if row.get("cost_impact") is not None:
+                has_cost = True
+                cost_currency_out = row.get("cost_currency") or cost_currency_out
+                try:
+                    net_impact += Decimal(str(row["cost_impact"]))
+                except (InvalidOperation, ValueError, TypeError):
+                    continue
+
+        summary = {
+            "measurements": _tally(rows),
+            "net_cost_impact": str(net_impact.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            if has_cost
+            else None,
+            "cost_currency": cost_currency_out,
+            "from_measurement_count": len(from_measurements),
+            "to_measurement_count": len(to_measurements),
+        }
+
+        return {
+            "project_id": project_id,
+            "from_document_id": from_document_id,
+            "to_document_id": to_document_id,
+            "measurement_rows": rows,
+            "summary": summary,
+        }
+
+    async def _resolve_position_rate(
+        self,
+        position_id: str,
+        project_id: uuid.UUID,
+    ) -> tuple[str | None, str | None]:
+        """Resolve ``(unit_rate, base_currency)`` for a BOQ position.
+
+        The position must belong to ``project_id`` (a foreign-project
+        position is treated as "no rate" so a compare never prices a
+        measurement against another tenant's estimate). Best-effort: any
+        lookup failure returns ``(None, None)`` so the compare degrades to
+        "no cost shown" rather than a 500.
+        """
+        try:
+            position_uuid = uuid.UUID(str(position_id))
+        except (ValueError, TypeError, AttributeError):
+            return None, None
+
+        try:
+            from app.modules.boq.service import BOQService  # noqa: PLC0415 — avoid import cycle
+
+            boq_service = BOQService(self.session)
+            position = await boq_service.position_repo.get_by_id(position_uuid)
+            if position is None:
+                return None, None
+            boq = await boq_service.get_boq(position.boq_id)
+            if str(boq.project_id) != str(project_id):
+                return None, None
+            base_currency = await boq_service._resolve_project_currency(position.boq_id)  # noqa: SLF001
+            return str(position.unit_rate), (base_currency or None)
+        except HTTPException:
+            return None, None
+        except Exception:  # noqa: BLE001 — pricing is advisory, never break the compare
+            logger.debug("Cost-impact rate lookup failed for position %s", position_id, exc_info=True)
+            return None, None

@@ -49,9 +49,14 @@ from app.modules.clash.schemas import (
     ClashCategoryItem,
     ClashClusterRead,
     ClashCompareResponse,
+    ClashGroupedSummary,
     ClashIssuePage,
     ClashIssueRead,
     ClashKpiResponse,
+    ClashProfileApplyRequest,
+    ClashProfileCreate,
+    ClashProfileRead,
+    ClashProfileUpdate,
     ClashPropertyFacet,
     ClashResultPage,
     ClashResultResponse,
@@ -247,6 +252,147 @@ async def delete_run(
 ) -> None:
     await _require_project_access(session, project_id, user_id)
     await service.delete_run(project_id, run_id)
+
+
+# ── Persistent clash profiles (item #23) ──────────────────────────────────
+
+
+@router.get(
+    "/projects/{project_id}/profiles",
+    response_model=list[ClashProfileRead],
+    dependencies=[Depends(RequirePermission("clash.read"))],
+)
+async def list_profiles(
+    project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: ClashService = Depends(_get_service),
+) -> list[ClashProfileRead]:
+    """The project's reusable clash-run profile library (newest first)."""
+    await _require_project_access(session, project_id, user_id)
+    profiles = await service.list_profiles(project_id)
+    return [ClashProfileRead.model_validate(p) for p in profiles]
+
+
+@router.post(
+    "/projects/{project_id}/profiles",
+    response_model=ClashProfileRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequirePermission("clash.create"))],
+)
+async def create_profile(
+    project_id: uuid.UUID,
+    data: ClashProfileCreate,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: ClashService = Depends(_get_service),
+) -> ClashProfileRead:
+    """Save a run configuration as a named profile (409 on a duplicate name)."""
+    await _require_project_access(session, project_id, user_id)
+    profile = await service.create_profile(project_id, data, str(user_id))
+    return ClashProfileRead.model_validate(profile)
+
+
+@router.get(
+    "/projects/{project_id}/profiles/{profile_id}",
+    response_model=ClashProfileRead,
+    dependencies=[Depends(RequirePermission("clash.read"))],
+)
+async def get_profile(
+    project_id: uuid.UUID,
+    profile_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: ClashService = Depends(_get_service),
+) -> ClashProfileRead:
+    await _require_project_access(session, project_id, user_id)
+    profile = await service.get_profile(project_id, profile_id)
+    return ClashProfileRead.model_validate(profile)
+
+
+@router.patch(
+    "/projects/{project_id}/profiles/{profile_id}",
+    response_model=ClashProfileRead,
+    dependencies=[Depends(RequirePermission("clash.update"))],
+)
+async def update_profile(
+    project_id: uuid.UUID,
+    profile_id: uuid.UUID,
+    data: ClashProfileUpdate,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: ClashService = Depends(_get_service),
+) -> ClashProfileRead:
+    """Patch a profile in place (only supplied fields change)."""
+    await _require_project_access(session, project_id, user_id)
+    profile = await service.update_profile(project_id, profile_id, data, str(user_id))
+    return ClashProfileRead.model_validate(profile)
+
+
+@router.delete(
+    "/projects/{project_id}/profiles/{profile_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(RequirePermission("clash.delete"))],
+)
+async def delete_profile(
+    project_id: uuid.UUID,
+    profile_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: ClashService = Depends(_get_service),
+) -> None:
+    await _require_project_access(session, project_id, user_id)
+    await service.delete_profile(project_id, profile_id)
+
+
+@router.post(
+    "/projects/{project_id}/profiles/{profile_id}/apply",
+    response_model=ClashRunResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequirePermission("clash.create"))],
+)
+async def apply_profile(
+    project_id: uuid.UUID,
+    profile_id: uuid.UUID,
+    data: ClashProfileApplyRequest,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: ClashService = Depends(_get_service),
+) -> ClashRunResponse:
+    """Launch + execute a fresh clash run using the profile as a template."""
+    await _require_project_access(session, project_id, user_id)
+    run = await service.apply_profile_to_new_run(project_id, profile_id, data, str(user_id))
+    return ClashRunResponse.model_validate(run)
+
+
+@router.get(
+    "/projects/{project_id}/runs/{run_id}/summary",
+    response_model=ClashGroupedSummary,
+    dependencies=[Depends(RequirePermission("clash.read"))],
+)
+async def grouped_summary(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: ClashService = Depends(_get_service),
+    dimension: str = Query(
+        default="discipline_pair",
+        description=(
+            "Grouping axis: discipline_pair | level | level_discipline | "
+            "discipline_system. An unknown value degrades to discipline_pair."
+        ),
+    ),
+) -> ClashGroupedSummary:
+    """Multi-dimensional grouping of the run's clashes for the review table.
+
+    Exactly one payload is populated for the requested ``dimension``;
+    ``has_system_data`` reports whether the ``discipline_system`` axis has
+    anything to show (so the UI hides it otherwise). IDOR-guarded.
+    """
+    await _require_project_access(session, project_id, user_id)
+    payload = await service.grouped_summary(project_id, run_id, dimension)
+    return ClashGroupedSummary.model_validate(payload)
 
 
 @router.get(

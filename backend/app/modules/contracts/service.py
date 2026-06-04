@@ -22,7 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import event_bus
 from app.core.i18n import get_locale
+from app.core.validation.engine import ValidationReport, validation_engine
 from app.core.validation.messages import translate
+from app.modules.contracts.compliance_packs import (
+    DEFAULT_PACK_ID,
+    WORKFLOW_CONTRACT_SIGNATURE,
+    resolve_rule_sets,
+)
 from app.modules.contracts.models import (
     Contract,
     ContractLine,
@@ -877,13 +883,190 @@ class ContractsService:
         )
         return clone
 
+    # ── Compliance gate (draft → active) ─────────────────────────────────
+
+    async def _resolve_compliance_rule_packs(
+        self,
+        project_id: uuid.UUID,
+    ) -> list[str]:
+        """Resolve the compliance rule-pack ids enforced for a project.
+
+        Reads ``Project.compliance_rule_packs`` (a JSON list). Falls back to
+        the single default pack when the project row, the column, or the
+        value is missing — so the gate always has at least one pack to run
+        and never silently no-ops. Best-effort: a lookup failure degrades to
+        the default pack rather than blocking the transition on infra error.
+        """
+        try:
+            from app.modules.projects.models import Project  # noqa: PLC0415
+
+            project = await self.session.get(Project, project_id)
+        except Exception:
+            logger.debug("Compliance gate: project lookup failed for %s", project_id)
+            project = None
+        packs = list(getattr(project, "compliance_rule_packs", None) or [])
+        # Keep only string ids; guard against a malformed JSON payload.
+        packs = [p for p in packs if isinstance(p, str) and p]
+        return packs or [DEFAULT_PACK_ID]
+
+    def _contract_lines_as_positions(
+        self,
+        lines: list[ContractLine],
+    ) -> list[dict[str, Any]]:
+        """Map SoV ``ContractLine`` rows onto the BOQ-position shape the
+        validation engine's ``boq_quality`` / classification rules consume.
+
+        The engine reads ``{"positions": [{id, ordinal, description, unit,
+        quantity, unit_rate, total, classification, parent_id, type}]}``.
+        Schedule-of-values lines carry exactly that data, so the contract's
+        commercial breakdown is validated with the same battle-tested rules
+        the BOQ uses — no parallel rule implementation. Parent (roll-up)
+        rows are tagged ``type="section"`` via the parent graph so the
+        leaf-only rules don't false-positive on header rows.
+        """
+        parent_ids = {ln.parent_line_id for ln in lines if ln.parent_line_id is not None}
+        positions: list[dict[str, Any]] = []
+        for ln in lines:
+            classification = {}
+            meta = getattr(ln, "metadata_", None) or {}
+            if isinstance(meta, dict) and isinstance(meta.get("classification"), dict):
+                classification = meta["classification"]
+            positions.append(
+                {
+                    "id": str(ln.id),
+                    "ordinal": ln.code or "",
+                    "description": ln.description or "",
+                    "unit": ln.unit,
+                    "quantity": str(ln.quantity if ln.quantity is not None else 0),
+                    "unit_rate": str(ln.unit_rate if ln.unit_rate is not None else 0),
+                    "total": str(ln.total_value if ln.total_value is not None else 0),
+                    "classification": classification,
+                    "parent_id": str(ln.parent_line_id) if ln.parent_line_id else None,
+                    "type": "section" if ln.id in parent_ids else "position",
+                }
+            )
+        return positions
+
+    async def run_compliance_gate(
+        self,
+        contract: Contract,
+        *,
+        workflow: str = WORKFLOW_CONTRACT_SIGNATURE,
+    ) -> tuple[ValidationReport, list[str]]:
+        """Run the compliance validation gate for a contract.
+
+        Resolves the project's rule packs → the union of their validation
+        rule sets → runs the :class:`ValidationEngine` against the contract's
+        schedule of values. Returns ``(report, pack_ids)``. Deterministic and
+        side-effect free: callers decide whether to block or persist based on
+        ``report.has_errors``.
+        """
+        pack_ids = await self._resolve_compliance_rule_packs(contract.project_id)
+        rule_sets = resolve_rule_sets(pack_ids, workflow=workflow)
+        lines = await self.line_repo.list_for_contract(contract.id)
+        positions = self._contract_lines_as_positions(lines)
+        report = await validation_engine.validate(
+            data={"positions": positions},
+            rule_sets=rule_sets,
+            target_type="contract",
+            target_id=str(contract.id),
+            project_id=str(contract.project_id),
+            metadata={"locale": get_locale(), "workflow": workflow},
+        )
+        return report, pack_ids
+
+    @staticmethod
+    def _compliance_audit_entry(
+        report: ValidationReport,
+        pack_ids: list[str],
+        *,
+        actor_id: str | None,
+        blocked: bool,
+    ) -> dict[str, Any]:
+        """Build the audit-trail block stored on ``contract.metadata_``."""
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        def _serialise(r: Any) -> dict[str, Any]:
+            return {
+                "rule_id": r.rule_id,
+                "rule_name": r.rule_name,
+                "severity": r.severity.value,
+                "message": r.message,
+                "element_ref": r.element_ref,
+                "suggestion": r.suggestion,
+            }
+
+        return {
+            "checked_at": _dt.now(UTC).isoformat(),
+            "checked_by": actor_id,
+            "workflow": WORKFLOW_CONTRACT_SIGNATURE,
+            "rule_packs": pack_ids,
+            "rule_sets": report.rule_sets_applied,
+            "status": report.status.value,
+            "score": report.score,
+            "blocked": blocked,
+            "counts": {
+                "errors": len(report.errors),
+                "warnings": len(report.warnings),
+                "passed": len(report.passed_rules),
+            },
+            "errors": [_serialise(r) for r in report.errors],
+            "warnings": [_serialise(r) for r in report.warnings],
+        }
+
+    def _compliance_http_detail(
+        self,
+        report: ValidationReport,
+        pack_ids: list[str],
+    ) -> dict[str, Any]:
+        """Structured 422 body the ComplianceGate UI renders verbatim."""
+
+        def _serialise(r: Any) -> dict[str, Any]:
+            return {
+                "rule_id": r.rule_id,
+                "rule_name": r.rule_name,
+                "severity": r.severity.value,
+                "message": r.message,
+                "element_ref": r.element_ref,
+                "suggestion": r.suggestion,
+            }
+
+        return {
+            "error": "compliance_gate_failed",
+            "message": (
+                "Compliance gate failed: resolve the blocking issues below "
+                "before signing this contract."
+            ),
+            "rule_packs": pack_ids,
+            "rule_sets": report.rule_sets_applied,
+            "status": report.status.value,
+            "score": report.score,
+            "counts": {
+                "errors": len(report.errors),
+                "warnings": len(report.warnings),
+                "passed": len(report.passed_rules),
+            },
+            "errors": [_serialise(r) for r in report.errors],
+            "warnings": [_serialise(r) for r in report.warnings],
+        }
+
     async def transition_contract(
         self,
         contract_id: uuid.UUID,
         target_status: str,
         actor_id: str | None = None,
     ) -> Contract:
-        """Apply a status transition with state-machine validation."""
+        """Apply a status transition with state-machine + compliance validation.
+
+        Signing a contract (``draft → active``) first runs the compliance
+        gate: the project's rule packs are resolved to validation rule sets
+        and the engine evaluates the contract's schedule of values. Any
+        blocking ERROR raises HTTP 422 with a structured violation list and
+        the transition does not happen. The validation outcome (pass or
+        block) is always recorded on ``contract.metadata_["compliance_validation"]``
+        so the gate decision is auditable.
+        """
         contract = await self.get_contract(contract_id)
         try:
             assert_contract_transition(contract.status, target_status)
@@ -896,6 +1079,39 @@ class ContractsService:
         if target_status == "active" and contract.status == "draft":
             from datetime import UTC, datetime
 
+            # ── Compliance gate ──────────────────────────────────────
+            report, pack_ids = await self.run_compliance_gate(contract)
+            blocked = report.has_errors
+            audit_entry = self._compliance_audit_entry(
+                report,
+                pack_ids,
+                actor_id=actor_id,
+                blocked=blocked,
+            )
+            if blocked:
+                # Persist the blocking outcome BEFORE raising so the failed
+                # attempt is auditable (the request session commits on the
+                # 422 response path's rollback? — no; we flush+commit the
+                # audit explicitly so the trail survives the raised error).
+                meta = dict(contract.metadata_ or {})
+                meta["compliance_validation"] = audit_entry
+                await self.contract_repo.update_fields(contract_id, metadata_=meta)
+                await self.session.commit()
+                logger.info(
+                    "Compliance gate BLOCKED contract %s (%d errors, packs=%s)",
+                    contract.code,
+                    len(report.errors),
+                    pack_ids,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=self._compliance_http_detail(report, pack_ids),
+                )
+
+            # Gate passed — stamp the audit trail onto the contract metadata.
+            meta = dict(contract.metadata_ or {})
+            meta["compliance_validation"] = audit_entry
+            fields["metadata_"] = meta
             fields["signed_at"] = datetime.now(UTC).isoformat()
             event_bus.publish_detached(
                 "contracts.contract.signed",
@@ -904,6 +1120,8 @@ class ContractsService:
                     "code": contract.code,
                     "project_id": str(contract.project_id),
                     "signed_by": actor_id,
+                    "compliance_score": report.score,
+                    "compliance_rule_packs": pack_ids,
                 },
                 source_module="contracts",
             )

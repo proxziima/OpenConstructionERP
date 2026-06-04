@@ -82,6 +82,51 @@ class ProgressRepository:
         rows = (await self.session.execute(stmt)).all()
         return {row[0]: float(row[1]) for row in rows}
 
+    async def get_latest_project_entry(self, project_id: uuid.UUID) -> ProgressEntry | None:
+        """Return the most recent *project-level* progress entry.
+
+        A project-level entry is one with ``boq_position_id IS NULL`` — a
+        manual overall-completion reading recorded against the whole
+        project rather than a single BOQ position. The reporting module
+        uses this as the headline "overall % complete" figure on the
+        progress report. Returns ``None`` when no project-level entry has
+        been recorded yet (the reporting layer then falls back to the
+        cumulative series).
+        """
+        stmt = (
+            select(ProgressEntry)
+            .where(
+                ProgressEntry.project_id == project_id,
+                ProgressEntry.boq_position_id.is_(None),
+            )
+            .order_by(ProgressEntry.recorded_at.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_entries_for_period(
+        self,
+        project_id: uuid.UUID,
+        period_label: str,
+    ) -> list[ProgressEntry]:
+        """Return every progress entry recorded in a given period, newest first.
+
+        Used by the reporting module to summarise a reporting window
+        (e.g. ``2026-W22``) on the progress report: the number of
+        observations and the latest reading inside that window.
+        """
+        stmt = (
+            select(ProgressEntry)
+            .where(
+                ProgressEntry.project_id == project_id,
+                ProgressEntry.period_label == period_label,
+            )
+            .order_by(ProgressEntry.recorded_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def entries_grouped_by_period(
         self,
         project_id: uuid.UUID,

@@ -143,7 +143,7 @@ class ReportTemplateCreate(BaseModel):
     name_translations: dict[str, str] | None = None
     report_type: str = Field(
         ...,
-        pattern=r"^(project_status|cost_report|schedule_status|safety_report|inspection_report|portfolio_summary)$",
+        pattern=r"^(project_status|cost_report|schedule_status|safety_report|inspection_report|portfolio_summary|progress_report)$",
     )
     description: str | None = None
     template_data: dict[str, Any] = Field(default_factory=dict)
@@ -234,7 +234,7 @@ class GenerateReportRequest(BaseModel):
     template_id: UUID | None = None
     report_type: str = Field(
         ...,
-        pattern=r"^(project_status|cost_report|schedule_status|safety_report|inspection_report|portfolio_summary)$",
+        pattern=r"^(project_status|cost_report|schedule_status|safety_report|inspection_report|portfolio_summary|progress_report)$",
     )
     title: str = Field(..., min_length=1, max_length=500)
     format: str = Field(

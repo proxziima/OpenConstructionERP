@@ -23,23 +23,29 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session_factory
-from app.dependencies import CurrentUserId, RequirePermission, SessionDep
+from app.dependencies import CurrentUserId, CurrentUserPayload, RequirePermission, SessionDep
 from app.modules.ai_agents.schemas import (
     CUSTOM_AGENT_CATEGORIES,
     AgentDescriptor,
     AgentHealthResponse,
     AgentInsightResponse,
+    AgentMetadataResponse,
     AgentRunListItem,
     AgentRunResponse,
     AgentStepResponse,
+    AgentToolsResponse,
     CreateAgentRunRequest,
     CustomAgentCreateRequest,
     CustomAgentResponse,
     CustomAgentUpdateRequest,
+    EventTriggerDescriptor,
     GuidedAgentSpec,
+    SetScheduleRequest,
+    SetToolsRequest,
     ToolDescriptor,
+    ToolWithPermission,
 )
-from app.modules.ai_agents.service import AgentService
+from app.modules.ai_agents.service import AgentService, ToolPermissionError
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +353,182 @@ async def delete_custom_agent(
     if not deleted:
         raise HTTPException(status_code=404, detail="Custom agent not found")
     await session.commit()
+
+
+# ── Automation: schedule + tools + triggers (Item 29) ──────────────────────
+
+
+@router.get(
+    "/triggers/",
+    response_model=list[EventTriggerDescriptor],
+    dependencies=[Depends(RequirePermission("ai_agents.read"))],
+)
+async def list_event_triggers_endpoint() -> list[EventTriggerDescriptor]:
+    """List the platform events a custom agent may subscribe to.
+
+    The catalogue is static (no DB). ``available`` is ``False`` for events whose
+    firing wiring is not yet live, so the builder can label them "coming soon".
+    """
+    from app.modules.ai_agents.triggers import list_event_triggers
+
+    return [EventTriggerDescriptor(**t) for t in list_event_triggers()]
+
+
+@router.get(
+    "/grantable-tools/",
+    response_model=list[ToolWithPermission],
+    dependencies=[Depends(RequirePermission("ai_agents.read"))],
+)
+async def list_grantable_tools_endpoint(
+    service: AgentService = Depends(_get_service),
+) -> list[ToolWithPermission]:
+    """List every runner tool plus the permission needed to grant it.
+
+    Powers the builder's tool picker before the agent has an id (the create
+    flow), so it does not require an ``agent_id`` like ``GET /custom/{id}/tools``.
+    """
+    return [ToolWithPermission(**t) for t in service.list_available_tools_with_permissions()]
+
+
+@router.get(
+    "/custom/{agent_id}/schedule",
+    response_model=AgentMetadataResponse,
+    dependencies=[Depends(RequirePermission("ai_agents.read"))],
+)
+async def get_schedule_endpoint(
+    agent_id: uuid.UUID,
+    user_id: CurrentUserId,
+    service: AgentService = Depends(_get_service),
+) -> AgentMetadataResponse:
+    """Fetch the schedule + tools + triggers for one of the caller's agents."""
+    uid = uuid.UUID(user_id)
+    meta = await service.get_agent_metadata(agent_id, uid)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Custom agent not found")
+    return AgentMetadataResponse(**meta)
+
+
+@router.post(
+    "/custom/{agent_id}/schedule",
+    response_model=AgentMetadataResponse,
+    dependencies=[Depends(RequirePermission("ai_agents.run"))],
+)
+async def set_schedule_endpoint(
+    agent_id: uuid.UUID,
+    request: SetScheduleRequest,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: AgentService = Depends(_get_service),
+) -> AgentMetadataResponse:
+    """Create/replace the cron schedule on one of the caller's agents.
+
+    The agent will then run automatically at the cron times (UTC). A scheduled
+    run is a normal agent run: it never auto-applies its output. 422 on a
+    malformed cron; 404 unless the agent is owned by the caller.
+    """
+    uid = uuid.UUID(user_id)
+    try:
+        meta = await service.set_schedule(
+            agent_id=agent_id,
+            user_id=uid,
+            cron_expr=request.cron_expr,
+            enabled=request.enabled,
+            schedule_input=request.schedule_input,
+            triggers=request.triggers,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Custom agent not found")
+    await session.commit()
+    return AgentMetadataResponse(**meta)
+
+
+@router.delete(
+    "/custom/{agent_id}/schedule",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(RequirePermission("ai_agents.run"))],
+)
+async def delete_schedule_endpoint(
+    agent_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: AgentService = Depends(_get_service),
+) -> None:
+    """Remove the schedule (the agent stops running automatically). Tools kept."""
+    uid = uuid.UUID(user_id)
+    removed = await service.delete_schedule(agent_id, uid)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Custom agent not found")
+    await session.commit()
+
+
+@router.get(
+    "/custom/{agent_id}/tools",
+    response_model=AgentToolsResponse,
+    dependencies=[Depends(RequirePermission("ai_agents.read"))],
+)
+async def get_tools_endpoint(
+    agent_id: uuid.UUID,
+    user_id: CurrentUserId,
+    service: AgentService = Depends(_get_service),
+) -> AgentToolsResponse:
+    """Return the full tool catalogue + the agent's current grant.
+
+    The catalogue carries each tool's ``required_permission`` so the picker can
+    grey out tools the operator cannot grant.
+    """
+    uid = uuid.UUID(user_id)
+    meta = await service.get_agent_metadata(agent_id, uid)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Custom agent not found")
+    available = [ToolWithPermission(**t) for t in service.list_available_tools_with_permissions()]
+    return AgentToolsResponse(available=available, selected=meta["allowed_tools"])
+
+
+@router.post(
+    "/custom/{agent_id}/tools",
+    response_model=AgentMetadataResponse,
+    dependencies=[Depends(RequirePermission("ai_agents.run"))],
+)
+async def set_tools_endpoint(
+    agent_id: uuid.UUID,
+    request: SetToolsRequest,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: AgentService = Depends(_get_service),
+) -> AgentMetadataResponse:
+    """Grant a vetted set of tools to one of the caller's agents.
+
+    Each tool the caller selects must be one they already have permission to
+    use (the agent never widens its creator's reach). 403 with the offending
+    tool + missing permission otherwise; 404 unless owned by the caller.
+    """
+    uid = uuid.UUID(str(payload.get("sub")))
+    role = str(payload.get("role", ""))
+    try:
+        meta = await service.set_tools(
+            agent_id=agent_id,
+            user_id=uid,
+            tool_names=request.allowed_tools,
+            user_role=role,
+        )
+    except ToolPermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "message": f"You do not have permission to grant the tool '{exc.tool_name}'.",
+                "tool": exc.tool_name,
+                "required_permission": exc.permission,
+            },
+        ) from exc
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Custom agent not found")
+    await session.commit()
+    return AgentMetadataResponse(**meta)
 
 
 @router.get(

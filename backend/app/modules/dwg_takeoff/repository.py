@@ -153,6 +153,21 @@ class DwgAnnotationRepository:
 
         return items, total
 
+    async def list_for_version(self, drawing_version_id: uuid.UUID) -> list[DwgAnnotation]:
+        """List all annotations attached to a specific drawing version.
+
+        Used by the revision-compare flow (Item 17) to diff the
+        annotation set of two versions. Ordered by creation time so the
+        diff output is deterministic across calls.
+        """
+        stmt = (
+            select(DwgAnnotation)
+            .where(DwgAnnotation.drawing_version_id == drawing_version_id)
+            .order_by(DwgAnnotation.created_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_pins_for_drawing(self, drawing_id: uuid.UUID) -> list[DwgAnnotation]:
         """List annotations that are linked to tasks or punchlist items."""
         stmt = (

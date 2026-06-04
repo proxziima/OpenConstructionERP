@@ -36,6 +36,7 @@ interface DocItem {
   tags: string[];
   created_at: string;
   cde_state?: 'wip' | 'shared' | 'published' | 'archived' | null;
+  suitability_code?: string | null;
   metadata?: {
     source_module?: string;
     source_id?: string;
@@ -1250,6 +1251,18 @@ export function DocumentsPage() {
                         <Badge variant={CDE_STATE_COLORS[doc.cde_state] ?? 'neutral'} size="sm">
                           {doc.cde_state.toUpperCase()}
                         </Badge>
+                      )}
+                      {doc.suitability_code && (
+                        <span
+                          className="inline-flex"
+                          title={t('documents.suitability_code_label', {
+                            defaultValue: 'ISO 19650 suitability code',
+                          })}
+                        >
+                          <Badge variant="neutral" size="sm">
+                            {doc.suitability_code}
+                          </Badge>
+                        </span>
                       )}
                       {previewKind && (
                         <span className="flex items-center gap-0.5 text-[10px] text-oe-blue opacity-0 group-hover:opacity-100 transition-opacity">

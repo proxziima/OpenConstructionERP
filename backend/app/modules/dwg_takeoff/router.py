@@ -42,6 +42,7 @@ from app.modules.dwg_takeoff.schemas import (
     DwgAnnotationCreate,
     DwgAnnotationResponse,
     DwgAnnotationUpdate,
+    DwgDrawingDiffResponse,
     DwgDrawingFromDocument,
     DwgDrawingResponse,
     DwgDrawingScaleUpdate,
@@ -416,6 +417,66 @@ async def get_thumbnail(
             detail="Thumbnail not available",
         )
     return Response(content=svg_content, media_type="image/svg+xml")
+
+
+# ── Revision compare (Item 17) ───────────────────────────────────────────────
+
+
+@router.get(
+    "/drawings/{drawing_id}/versions/",
+    response_model=list[DwgDrawingVersionResponse],
+)
+async def list_drawing_versions(
+    drawing_id: uuid.UUID,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    session: SessionDep = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("dwg_takeoff.read")),
+    service: DwgTakeoffService = Depends(_get_service),
+) -> list[DwgDrawingVersionResponse]:
+    """List every parsed version of a drawing (newest first).
+
+    Powers the revision-compare version picker. Gated on the drawing's
+    owning project — a foreign-tenant or missing drawing both 404.
+    """
+    await _gate_by_drawing(drawing_id, user_id, service, session)
+    versions = await service.list_drawing_versions(drawing_id)
+    return [_version_to_response(v) for v in versions]
+
+
+@router.post(
+    "/drawings/{drawing_id}/compare/{other_version_id}",
+    response_model=DwgDrawingDiffResponse,
+)
+async def compare_drawing_versions(
+    drawing_id: uuid.UUID,
+    other_version_id: uuid.UUID,
+    from_version_id: uuid.UUID = Query(
+        ...,
+        description="Baseline version id (the 'before' side of the diff).",
+    ),
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    session: SessionDep = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("dwg_takeoff.read")),
+    service: DwgTakeoffService = Depends(_get_service),
+) -> DwgDrawingDiffResponse:
+    """Compare two versions of a drawing and return the entity/annotation diff.
+
+    ``from_version_id`` is the baseline ("before") and the path
+    ``other_version_id`` is the target ("after"). Both must belong to
+    ``drawing_id`` (404 otherwise). Linked-to-BOQ annotations whose
+    measured value changed carry a money cost impact in the project's
+    base currency.
+
+    Access is gated on the drawing's owning project, mirroring the IDOR
+    policy on every other read in this module.
+    """
+    await _gate_by_drawing(drawing_id, user_id, service, session)
+    payload = await service.compare_drawing_versions(
+        drawing_id,
+        from_version_id,
+        other_version_id,
+    )
+    return DwgDrawingDiffResponse(**payload)
 
 
 # ── Layer Visibility ────────────────────────────────────────────────────────

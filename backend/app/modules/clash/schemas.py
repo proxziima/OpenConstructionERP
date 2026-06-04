@@ -345,6 +345,12 @@ class ClashResultResponse(BaseModel):
     b_discipline: str
     a_element_type: str = ""
     b_element_type: str = ""
+    # Building-system snapshot (MEP system / family / type name) powering
+    # the ``discipline_system`` grouping dimension. Empty when the source
+    # element carried no system metadata; default keeps older payloads /
+    # backends type-checking.
+    a_element_system: str = ""
+    b_element_system: str = ""
     a_model_id: uuid.UUID
     b_model_id: uuid.UUID
     a_storey: int | None = None
@@ -453,6 +459,61 @@ class ClashLevelMatrixCell(BaseModel):
     b: int
     count: int
     open_count: int
+
+
+# Multi-dimensional grouping dimensions the summary endpoint can produce.
+#   * ``discipline_pair`` — discipline×discipline matrix (the default, the
+#     historical ``matrix``).
+#   * ``level`` — count of clashes per storey index (1-D breakdown).
+#   * ``level_discipline`` — discipline×discipline matrix *per* storey.
+#   * ``discipline_system`` — discipline·system × discipline·system matrix
+#     (only meaningful when elements carry building-system metadata).
+CLASH_GROUPING_DIMENSIONS = (
+    "discipline_pair",
+    "level",
+    "level_discipline",
+    "discipline_system",
+)
+
+
+class ClashGroupCount(BaseModel):
+    """One labelled bucket in a 1-D grouping (e.g. clashes per level)."""
+
+    key: str
+    count: int
+    open_count: int
+
+
+class ClashLevelDisciplineGroup(BaseModel):
+    """The discipline×discipline matrix scoped to a single storey level."""
+
+    level: int
+    cells: list[ClashMatrixCell] = Field(default_factory=list)
+
+
+class ClashGroupedSummary(BaseModel):
+    """Multi-dimensional grouping of a run's clashes for the review table.
+
+    Exactly one of the optional payloads is populated for the requested
+    ``dimension``; the rest stay empty. ``dimension`` echoes back the
+    requested grouping so the UI can render the matching component without
+    re-deriving it.
+    """
+
+    dimension: str = "discipline_pair"
+    # ``discipline_pair`` (default) — the flat discipline×discipline grid.
+    disciplines: list[str] = Field(default_factory=list)
+    matrix: list[ClashMatrixCell] = Field(default_factory=list)
+    # ``level`` — one bucket per storey index (key is the int as a string).
+    levels: list[ClashGroupCount] = Field(default_factory=list)
+    # ``level_discipline`` — a discipline matrix per storey.
+    level_disciplines: list[ClashLevelDisciplineGroup] = Field(default_factory=list)
+    # ``discipline_system`` — discipline·system × discipline·system grid.
+    systems: list[str] = Field(default_factory=list)
+    system_matrix: list[ClashMatrixCell] = Field(default_factory=list)
+    # Whether any clash in the run resolved a building system — lets the UI
+    # hide the ``discipline_system`` option when there is no data for it.
+    has_system_data: bool = False
 
 
 class ClashRunSummary(BaseModel):
@@ -756,3 +817,83 @@ class ClashKpiResponse(BaseModel):
     by_discipline_pair: list[ClashDisciplinePairStat] = Field(default_factory=list)
     mttr_hours: float | None = None
     top_clashing_pairs: list[ClashDisciplinePairStat] = Field(default_factory=list)
+
+
+# ── Persistent clash profiles (item #23) ────────────────────────────────
+
+
+class ClashProfileBase(BaseModel):
+    """Shared run-configuration fields for a clash profile.
+
+    A *profile* snapshots every run parameter a coordinator tunes (minus
+    the model selection) so the same coordination policy can be relaunched
+    on a fresh model set. Bounds mirror :class:`ClashRunCreate` so a
+    profile can always be applied to a real run without re-validation.
+    """
+
+    clash_type: str = Field(default="both", description="hard | clearance | both")
+    ignore_same_model: bool = Field(default=False)
+    tolerance_m: float = Field(default=0.01, ge=0.0, le=10.0)
+    clearance_m: float = Field(default=0.0, ge=0.0, le=50.0)
+    mode: str = Field(default="cross_discipline", description="cross_discipline | all | selected | selection_sets")
+    discipline_filter: list[list[str]] | None = Field(default=None)
+    set_a: ClashSelectionSet | None = Field(default=None)
+    set_b: ClashSelectionSet | None = Field(default=None)
+    rules: list[ClashRule] = Field(default_factory=list, max_length=500)
+    spatial_grid_mm: int = Field(default=500, ge=100, le=5000)
+
+
+class ClashProfileCreate(ClashProfileBase):
+    """Create a named clash profile (template library entry)."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class ClashProfileUpdate(BaseModel):
+    """Patch a clash profile — every field optional (partial update).
+
+    Only the fields actually supplied are written; ``None`` means "leave
+    untouched" (so ``description=None`` cannot blank an existing note via
+    this path — clearing is out of scope for the MVP).
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    clash_type: str | None = Field(default=None)
+    ignore_same_model: bool | None = Field(default=None)
+    tolerance_m: float | None = Field(default=None, ge=0.0, le=10.0)
+    clearance_m: float | None = Field(default=None, ge=0.0, le=50.0)
+    mode: str | None = Field(default=None)
+    discipline_filter: list[list[str]] | None = Field(default=None)
+    set_a: ClashSelectionSet | None = Field(default=None)
+    set_b: ClashSelectionSet | None = Field(default=None)
+    rules: list[ClashRule] | None = Field(default=None, max_length=500)
+    spatial_grid_mm: int | None = Field(default=None, ge=100, le=5000)
+
+
+class ClashProfileRead(ClashProfileBase):
+    """A persisted clash profile."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    project_id: uuid.UUID
+    name: str
+    description: str | None = None
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ClashProfileApplyRequest(BaseModel):
+    """Launch a new clash run from a profile.
+
+    The profile supplies every engine parameter; the caller supplies the
+    models to test plus an optional run name. Carry-forward defaults on so
+    triage state continues across re-runs (same as a normal run).
+    """
+
+    model_ids: list[uuid.UUID] = Field(..., min_length=1)
+    name: str | None = Field(default=None, max_length=255)
+    carry_forward: bool = Field(default=True)

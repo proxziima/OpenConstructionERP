@@ -10,6 +10,7 @@ import {
   Plus,
   Ruler,
   Save,
+  ShieldCheck,
   SlidersHorizontal,
   Trash2,
   X,
@@ -25,10 +26,15 @@ import {
   Skeleton,
 } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
+import { getErrorMessage } from '@/shared/lib/api';
 import { projectsApi, type Project, type ProjectFxRate } from './api';
 import { CURRENCY_GROUPS, CreateProjectModal } from './CreateProjectPage';
 import { getVatRate } from '../boq/boqHelpers';
 import { TranslationSettingsTab } from '../translation';
+import {
+  listComplianceRulePacks,
+  type ComplianceRulePack,
+} from '../contracts/api';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -308,6 +314,150 @@ function FxRateModal({
         </form>
       </div>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compliance rule packs (Item #27)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Lets the project owner choose which jurisdiction compliance rule packs the
+ * contract-signature gate enforces. Toggling a pack and hitting Save calls the
+ * dedicated PATCH /{id}/compliance-rule-packs endpoint (validated server-side
+ * against the pack catalogue).
+ */
+function ComplianceRulePacksCard({ project }: { project: Project }) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
+
+  const packsQ = useQuery<ComplianceRulePack[]>({
+    queryKey: ['compliance-rule-packs'],
+    queryFn: listComplianceRulePacks,
+    staleTime: 60 * 60 * 1000,
+  });
+
+  const [selected, setSelected] = useState<string[]>(
+    project.compliance_rule_packs ?? ['universal'],
+  );
+
+  useEffect(() => {
+    setSelected(project.compliance_rule_packs ?? ['universal']);
+  }, [project.compliance_rule_packs]);
+
+  const saveMut = useMutation({
+    mutationFn: (ids: string[]) =>
+      projectsApi.setComplianceRulePacks(project.id, ids),
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: ['project', project.id] });
+      setSelected(updated.compliance_rule_packs ?? ['universal']);
+      addToast({
+        type: 'success',
+        title: t('project.settings.compliance.saved', {
+          defaultValue: 'Compliance rule packs saved',
+        }),
+      });
+    },
+    onError: (err) =>
+      addToast({ type: 'error', title: getErrorMessage(err) }),
+  });
+
+  const toggle = (id: string) => {
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id],
+    );
+  };
+
+  const current = project.compliance_rule_packs ?? ['universal'];
+  const dirty =
+    selected.length !== current.length ||
+    selected.some((p) => !current.includes(p));
+
+  return (
+    <Card padding="lg" id="compliance-rule-packs">
+      <CardHeader
+        title={t('project.settings.compliance.title', {
+          defaultValue: 'Compliance rule packs',
+        })}
+        subtitle={t('project.settings.compliance.subtitle', {
+          defaultValue:
+            'Jurisdiction rule bundles enforced when a contract is signed (draft → active). A contract cannot be signed while a selected pack reports a blocking error.',
+        })}
+      />
+      <div className="mt-3 space-y-3">
+        {packsQ.isLoading ? (
+          <Skeleton className="h-20 w-full" />
+        ) : (packsQ.data ?? []).length === 0 ? (
+          <p className="text-sm text-content-tertiary italic">
+            {t('project.settings.compliance.empty', {
+              defaultValue: 'No compliance rule packs are available.',
+            })}
+          </p>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {(packsQ.data ?? []).map((pack) => {
+              const on = selected.includes(pack.id);
+              return (
+                <button
+                  key={pack.id}
+                  type="button"
+                  onClick={() => toggle(pack.id)}
+                  aria-pressed={on}
+                  className={
+                    'flex items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ' +
+                    (on
+                      ? 'border-oe-blue bg-oe-blue/5 ring-1 ring-inset ring-oe-blue/30'
+                      : 'border-border-light hover:bg-surface-secondary')
+                  }
+                >
+                  <ShieldCheck
+                    size={16}
+                    className={
+                      'mt-0.5 shrink-0 ' +
+                      (on ? 'text-oe-blue' : 'text-content-tertiary')
+                    }
+                  />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-content-primary">
+                        {pack.name}
+                      </span>
+                      {pack.jurisdiction && (
+                        <Badge variant="neutral">{pack.jurisdiction}</Badge>
+                      )}
+                    </div>
+                    {pack.description && (
+                      <p className="mt-0.5 text-xs text-content-secondary">
+                        {pack.description}
+                      </p>
+                    )}
+                    {pack.rule_sets.length > 0 && (
+                      <p className="mt-1 font-mono text-[11px] text-content-tertiary">
+                        {pack.rule_sets.join(' · ')}
+                      </p>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="flex items-center justify-end">
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Save size={14} />}
+            disabled={!dirty}
+            loading={saveMut.isPending}
+            onClick={() => saveMut.mutate(selected)}
+          >
+            {t('common.save', { defaultValue: 'Save' })}
+          </Button>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -796,6 +946,9 @@ export function ProjectSettingsPage() {
           </form>
         </div>
       </Card>
+
+      {/* ── Compliance rule packs (Item #27) ───────────────────────────── */}
+      <ComplianceRulePacksCard project={project} />
 
       {/* ── Translation (#translation deep-link) ─────────────────────────
           Mounted as a Card section so the existing hash-pulse effect in

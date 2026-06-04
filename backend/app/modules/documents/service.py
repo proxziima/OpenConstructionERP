@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cde_states import CDEState, CDEStateMachine
 from app.core.i18n import get_locale
 from app.core.validation.messages import translate
 from app.modules.bim_hub.models import BIMElement
@@ -39,6 +40,57 @@ from app.modules.documents.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ── ISO 19650 CDE state machine (shared, stateless) ───────────────────────
+#
+# The Documents PATCH path enforces the SAME ISO 19650 lifecycle rules the
+# CDE-container service uses, so a document promoted via ``PATCH /documents``
+# obeys the identical forward-only transitions and role gates. The machine is
+# stateless (encodes only rules) so a single module-level instance is safe.
+_state_machine = CDEStateMachine()
+
+# Mapping from canonical app roles (admin / manager / editor / viewer, see
+# app.core.permissions.Role) onto the ISO 19650 role names the CDEStateMachine
+# gates are keyed by (viewer / editor / task_team_manager / lead_ap / admin).
+# The JWT payload only ever carries an app role, so without this translation a
+# project ``manager`` resolved to rank -1 and could never cross any gate.
+#
+# Gate ranks: Gate A needs task_team_manager(2), Gate B needs lead_ap(3),
+# Gate C needs admin(4). The ``documents.update`` permission is EDITOR-level
+# and the CDE-document promotions are MANAGER-level, so a manager must clear
+# Gate A and Gate B (→ lead_ap) while archiving (Gate C) stays admin-only.
+_APP_ROLE_TO_ISO: dict[str, str] = {
+    "admin": "admin",
+    "manager": "lead_ap",
+    "editor": "editor",
+    "viewer": "viewer",
+}
+
+# Industry-title aliases that behave like one of the canonical four roles
+# (mirrors app.core.permissions.ROLE_ALIASES so a "quantity_surveyor" maps to
+# editor, "owner" to admin, etc.). Kept local to avoid importing the alias
+# table at module import time.
+_ROLE_ALIASES: dict[str, str] = {
+    "estimator": "editor",
+    "quantity_surveyor": "editor",
+    "qs": "editor",
+    "user": "editor",
+    "superuser": "admin",
+    "owner": "admin",
+    "readonly": "viewer",
+    "guest": "viewer",
+}
+
+
+def _iso_role_for(app_role: str | None) -> str:
+    """Translate an app/JWT role into the ISO 19650 role the gates use.
+
+    Unknown roles fall through to ``viewer`` (least authority) so an
+    unrecognised role can never accidentally pass a gate.
+    """
+    role = (app_role or "viewer").strip().lower()
+    role = _ROLE_ALIASES.get(role, role)
+    return _APP_ROLE_TO_ISO.get(role, role)
 
 
 async def _register_version_safely(
@@ -614,12 +666,23 @@ class DocumentService:
 
     # ── Update ─────────────────────────────────────────────────────────────
 
-    # Valid CDE state transitions (ISO 19650 workflow)
+    # Valid CDE state transitions (ISO 19650 workflow).
+    #
+    # ISO 19650 is a FORWARD-ONLY lifecycle: WIP -> SHARED -> PUBLISHED ->
+    # ARCHIVED. Backtracking (e.g. SHARED -> WIP) is NOT permitted — a
+    # superseded document is archived and a fresh revision starts a new
+    # chain, it never demotes its suitability state. The previous map
+    # allowed every state to drop back to ``wip``, which let a published
+    # (and therefore construction-issued) document silently revert to a
+    # work-in-progress state, breaking the audit trail. ``archived`` is
+    # terminal. These rules mirror ``CDEStateMachine`` in
+    # ``app.core.cde_states`` exactly so the Documents PATCH path and the
+    # CDE-container service stay unified.
     VALID_CDE_TRANSITIONS: dict[str, list[str]] = {
         "wip": ["shared"],
-        "shared": ["published", "wip"],
-        "published": ["archived", "wip"],
-        "archived": ["wip"],
+        "shared": ["published"],
+        "published": ["archived"],
+        "archived": [],
     }
 
     async def update_document(
@@ -627,19 +690,38 @@ class DocumentService:
         document_id: uuid.UUID,
         data: DocumentUpdate,
         user_id: str | None = None,
+        user_role: str | None = None,
     ) -> Document:
         """Update document metadata fields.
 
-        Validates CDE state transitions if cde_state is being changed.
+        Validates CDE state transitions if cde_state is being changed and,
+        when ``user_role`` is supplied, enforces the ISO 19650 role gates
+        (Gate A: WIP→SHARED needs a task team manager; Gate B:
+        SHARED→PUBLISHED needs a lead appointed party + an approver
+        signature; Gate C: PUBLISHED→ARCHIVED needs an admin). It also
+        validates the suitability code against the resulting CDE state so
+        an invalid combination (e.g. ``A1`` while ``shared``) is rejected.
 
         ``user_id`` is passed through to the activity log so the timeline
         attributes the rename / CDE-state-change to the right operator.
+        ``user_role`` is the canonical app role from the JWT (admin /
+        manager / editor / viewer). When it is ``None`` the role gates are
+        skipped and only the structural forward-only transition rules
+        apply — this keeps internal / unauthenticated service callers
+        working while every HTTP caller (which always carries a role) is
+        gated.
         """
         document = await self.get_document(document_id)
 
         fields = data.model_dump(exclude_unset=True)
         if "metadata" in fields:
             fields["metadata_"] = fields.pop("metadata")
+
+        # The approver signature is a Gate-B precondition, never a column —
+        # pop it out of the persisted field set so it isn't passed to
+        # ``update_fields`` (the Document model has no such attribute). It is
+        # captured into the document metadata's compliance block below.
+        approver_signature = fields.pop("approver_signature", None)
 
         if not fields:
             return document
@@ -659,9 +741,10 @@ class DocumentService:
         # arbitrary jump) was accepted on a stateless document. Re-asserting
         # the same state (``wip -> wip``) is allowed so a client can
         # explicitly initialise the field without a spurious 400.
+        current_state = document.cde_state or "wip"
+        new_state = current_state
         if "cde_state" in fields and fields["cde_state"] is not None:
             new_state = fields["cde_state"]
-            current_state = document.cde_state or "wip"
             if new_state != current_state:
                 allowed = self.VALID_CDE_TRANSITIONS.get(current_state, [])
                 if new_state not in allowed:
@@ -671,6 +754,73 @@ class DocumentService:
                             f"Invalid CDE state transition: '{current_state}' -> '{new_state}'. Allowed: {allowed}"
                         ),
                     )
+
+                # Role-gate enforcement — only when the caller's role is
+                # known. ``validate_transition`` re-checks the structural
+                # transition (belt-and-braces) AND the role gate keyed by
+                # ISO 19650 role names, so an editor cannot publish and a
+                # manager cannot archive. The app role is translated to the
+                # ISO role first; an unknown role falls through to ``viewer``
+                # (least authority) so it can never accidentally pass a gate.
+                if user_role is not None:
+                    iso_role = _iso_role_for(user_role)
+                    ok, reason = _state_machine.validate_transition(
+                        current_state,
+                        new_state,
+                        user_role=iso_role,
+                    )
+                    if not ok:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=reason,
+                        )
+
+                    # Gate B (SHARED → PUBLISHED) additionally requires a
+                    # non-empty approver signature in the request. Reuse the
+                    # shared gate registry so the precondition stays unified
+                    # with the CDE-container service (Epic H).
+                    gate_meta = _state_machine.get_gate_requirements(current_state, new_state)
+                    gate_code = gate_meta.get("gate")
+                    if gate_code:
+                        from app.core.audit_gates import gate_registry as _gate_registry
+
+                        _gate_registry.enforce(gate_code, {"approver_signature": approver_signature})
+
+                    # Capture the Gate-B approval block in the document
+                    # metadata for the compliance trail (scoped key so it
+                    # never collides with caller-supplied metadata).
+                    is_gate_b = (
+                        new_state == CDEState.PUBLISHED.value and current_state == CDEState.SHARED.value
+                    )
+                    if is_gate_b:
+                        md = dict(fields.get("metadata_", document.metadata_) or {})
+                        md["cde_last_approval"] = {
+                            "by": user_id,
+                            "at": datetime.now(UTC).isoformat(),
+                            "signature": approver_signature,
+                            "from_state": current_state,
+                            "to_state": new_state,
+                        }
+                        fields["metadata_"] = md
+
+        # Validate the suitability code against the resulting CDE state.
+        #
+        # This covers BOTH the combined PATCH (cde_state + suitability_code
+        # in one body — also pre-checked by the schema validator) AND the
+        # suitability-only PATCH against an already-stateful document (which
+        # the schema validator cannot see). A blank / None code is always
+        # accepted because suitability is optional. ISO 19650 codes are
+        # state-scoped (S0 only in wip, S1-S7 in shared, A1-A5 in published,
+        # AR in archived) so an out-of-state code is a 400.
+        if "suitability_code" in fields and fields["suitability_code"]:
+            from app.modules.cde.suitability import validate_suitability_for_state
+
+            ok, reason = validate_suitability_for_state(fields["suitability_code"], new_state)
+            if not ok:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=reason,
+                )
 
         # P1 — revision-conflict guard. Two concurrent updates that both
         # set ``is_current_revision=True`` under the same parent

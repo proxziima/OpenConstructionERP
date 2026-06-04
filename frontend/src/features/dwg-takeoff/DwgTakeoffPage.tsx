@@ -53,6 +53,7 @@ import {
   Ruler,
   FileDown,
   RotateCcw,
+  GitCompare,
 } from 'lucide-react';
 import { Badge, ConfirmDialog, ElementInfoPopover, type DWGElementPayload } from '@/shared/ui';
 import { useConfirm } from '@/shared/hooks/useConfirm';
@@ -98,6 +99,10 @@ import { exportCanvasToPdf } from './lib/pdf-export';
 import { ToolPalette, type DwgTool } from './components/ToolPalette';
 import { CalibrationDialog, type CalibrationStep } from './components/CalibrationDialog';
 import { SheetStrip } from './components/SheetStrip';
+import {
+  DwgDrawingCompareDrawer,
+  type DwgCompareOverlayState,
+} from './DwgDrawingCompareDrawer';
 import {
   deriveScale as deriveCalibration,
   type CalibrationState,
@@ -663,6 +668,12 @@ export function DwgTakeoffPage() {
 
   // State
   const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
+  // Revision compare (Item 17) — drawer visibility + onion-skin overlay hint.
+  const [showCompare, setShowCompare] = useState(false);
+  const [compareOverlay, setCompareOverlay] = useState<DwgCompareOverlayState>({
+    enabled: false,
+    opacity: 0.5,
+  });
   const [activeTool, setActiveTool] = useState<DwgTool>('select');
   const [activeColor, setActiveColor] = useState('#ef4444');
 
@@ -2887,6 +2898,20 @@ export function DwgTakeoffPage() {
                 }}
               />
 
+              {/* Onion-skin overlay (Item 17) — a dim wash over the current
+                  revision while the compare drawer's overlay toggle is on,
+                  so the user gets a visual "what changed" hint without us
+                  reaching into the canvas render loop. Pointer-events none so
+                  it never steals clicks from the viewer. */}
+              {compareOverlay.enabled && (
+                <div
+                  aria-hidden="true"
+                  data-testid="dwg-onion-skin"
+                  className="pointer-events-none absolute inset-0 z-[5] bg-oe-blue/20 mix-blend-multiply transition-opacity"
+                  style={{ opacity: compareOverlay.opacity }}
+                />
+              )}
+
               {/* Two-click calibration dialog. Step 0 = hidden. Steps 1/2
                   render a non-blocking banner; step 3 is a centered modal. */}
               <CalibrationDialog
@@ -3033,6 +3058,26 @@ export function DwgTakeoffPage() {
                   glancing at converter status without stealing real estate
                   from the drawing. */}
               <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCompare(true)}
+                  disabled={!selectedDrawingId}
+                  className={clsx(
+                    'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold',
+                    'border border-white/60 bg-white/85 dark:bg-white/90 backdrop-blur-md',
+                    'shadow-xl shadow-black/30 ring-1 ring-black/5 transition-colors',
+                    selectedDrawingId
+                      ? 'text-slate-800 hover:bg-white'
+                      : 'text-slate-400 cursor-not-allowed',
+                  )}
+                  title={t('dwg_compare.compare_revisions', {
+                    defaultValue: 'Compare revisions with cost delta',
+                  })}
+                  data-testid="dwg-compare-button"
+                >
+                  <GitCompare size={14} />
+                  <span>{t('dwg_compare.compare_short', { defaultValue: 'Compare' })}</span>
+                </button>
                 <button
                   type="button"
                   onClick={handleDownloadCanvasPdf}
@@ -4283,6 +4328,19 @@ export function DwgTakeoffPage() {
 
       {/* Delete annotation confirmation */}
       <ConfirmDialog {...annotDeleteConfirmProps} />
+
+      {/* Revision compare with cost delta (Item 17) */}
+      {selectedDrawingId && (
+        <DwgDrawingCompareDrawer
+          open={showCompare}
+          onClose={() => setShowCompare(false)}
+          drawingId={selectedDrawingId}
+          drawingName={
+            selectedDrawingFromList?.name || selectedDrawingFromList?.filename || ''
+          }
+          onOverlayChange={setCompareOverlay}
+        />
+      )}
 
       {/* Inline cross-module link modals — mirror the BIM page pattern.
           Each one POSTs/PATCHes the relevant module and invalidates

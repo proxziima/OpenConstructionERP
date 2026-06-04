@@ -42,10 +42,15 @@ from app.modules.project_intelligence.schemas import (
     ChatRequest,
     CriticalGapResponse,
     ExplainGapRequest,
+    ForecastAlertRow,
+    ForecastSnapshotPoint,
+    ForecastsResponse,
+    LatestForecast,
     ProjectScoreResponse,
     ProjectStateResponse,
     ProjectSummaryResponse,
     RecommendationRequest,
+    SnoozeForecastRequest,
 )
 from app.modules.project_intelligence.scorer import compute_score
 
@@ -413,3 +418,243 @@ async def list_actions(
     actions_data = get_available_actions(action_ids)
 
     return [ActionDefinitionResponse(**a) for a in actions_data]
+
+
+# ── Predictive forecast alerts (TOP-30 #19) ───────────────────────────────
+#
+# These endpoints surface the EVM forecast + threshold-based alerts on the
+# Estimation Dashboard's Forecasts tab. The forecast computation + alert
+# evaluation live in the full_evm module's EVMService; this router is the
+# project-scoped, IDOR-guarded read/acknowledge/snooze surface for the UI.
+
+
+def _to_float(value: object, default: float = 0.0) -> float:
+    """Best-effort string→float for the sparkline points (never raises)."""
+    if value is None:
+        return default
+    try:
+        return float(str(value))
+    except (ValueError, TypeError):
+        return default
+
+
+def _breach_summary(forecast: object) -> tuple[str, str]:
+    """Pull (severity, human summary) out of a forecast's alert metadata."""
+    meta = getattr(forecast, "metadata_", None) or {}
+    severity = "warning"
+    summary = ""
+    breaches = meta.get("alert_breaches") if isinstance(meta, dict) else None
+    if isinstance(breaches, list) and breaches:
+        first = breaches[0]
+        if isinstance(first, dict):
+            severity = str(first.get("severity") or severity)
+            kpi = str(first.get("kpi_code") or "").upper()
+            observed = first.get("observed")
+            threshold = first.get("threshold")
+            extra = f" (+{len(breaches) - 1})" if len(breaches) > 1 else ""
+            summary = f"{kpi} {observed} vs threshold {threshold}{extra}".strip()
+    return severity, summary
+
+
+@router.get(
+    "/forecasts/",
+    response_model=ForecastsResponse,
+    dependencies=[Depends(RequirePermission("project_intelligence.read"))],
+)
+async def get_forecasts(
+    project_id: uuid.UUID = Query(...),
+    session: SessionDep = None,  # type: ignore[assignment]
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+) -> ForecastsResponse:
+    """Return the latest forecast, active alerts, and sparkline series.
+
+    Drives the Forecasts tab: SPI/CPI chips with a small history sparkline,
+    the Forecast-to-Completion card (EAC vs BAC), and the Active Alerts table.
+    """
+    await _verify_project_access(session, project_id, user_id)
+
+    from app.modules.full_evm.repository import EVMForecastRepository
+    from app.modules.full_evm.service import EVMService
+
+    repo = EVMForecastRepository(session)
+    service = EVMService(session)
+
+    latest = await repo.get_latest(project_id)
+    latest_payload: LatestForecast | None = None
+    if latest is not None:
+        meta = latest.metadata_ or {}
+        bac = _to_float(meta.get("bac"))
+        eac_f = _to_float(latest.eac)
+        latest_payload = LatestForecast(
+            forecast_id=str(latest.id),
+            forecast_date=latest.forecast_date,
+            method=latest.forecast_method,
+            etc=latest.etc_,
+            eac=latest.eac,
+            vac=latest.vac,
+            tcpi=latest.tcpi,
+            bac=str(meta.get("bac", "0")),
+            spi=str(meta.get("spi", "0")),
+            cpi=str(meta.get("cpi", "0")),
+            eac_over_bac=round(eac_f / bac, 4) if bac else 0.0,
+            alert_status=latest.alert_status,
+        )
+
+    alert_rows = await repo.list_active_alerts(project_id)
+    active_alerts: list[ForecastAlertRow] = []
+    for row in alert_rows:
+        severity, summary = _breach_summary(row)
+        meta = row.metadata_ or {}
+        active_alerts.append(
+            ForecastAlertRow(
+                forecast_id=str(row.id),
+                forecast_date=row.forecast_date,
+                alert_status=row.alert_status or "triggered",
+                triggered_at=row.triggered_at.isoformat() if row.triggered_at else None,
+                snoozed_until=meta.get("snoozed_until") if isinstance(meta, dict) else None,
+                severity=severity,
+                eac=row.eac,
+                vac=row.vac,
+                tcpi=row.tcpi,
+                summary=summary,
+            )
+        )
+
+    # Sparkline: the EVM snapshot history (oldest→newest) for SPI/CPI/EAC.
+    s_curve = await service.get_s_curve_data(project_id)
+
+    sparkline: list[ForecastSnapshotPoint] = []
+    for snap in s_curve.get("snapshots", []):
+        ev = _to_float(snap.get("ev"))
+        ac = _to_float(snap.get("ac"))
+        bac = _to_float(snap.get("bac"))
+        pv = _to_float(snap.get("pv"))
+        cpi = (ev / ac) if ac else 0.0
+        spi = (ev / pv) if pv else 0.0
+        eac = (ac + (bac - ev) / cpi) if cpi else bac
+        sparkline.append(
+            ForecastSnapshotPoint(
+                date=str(snap.get("date") or ""),
+                spi=round(spi, 4),
+                cpi=round(cpi, 4),
+                eac=round(eac, 2),
+                ev=round(ev, 2),
+                ac=round(ac, 2),
+            )
+        )
+
+    currency = ""
+    try:
+        state = await _get_state(session, user_id, str(project_id))
+        currency = getattr(state, "currency", "") or ""
+    except Exception:  # noqa: BLE001 — currency is cosmetic
+        currency = ""
+
+    return ForecastsResponse(
+        project_id=str(project_id),
+        currency=currency,
+        latest_forecast=latest_payload,
+        active_alerts=active_alerts,
+        sparkline=sparkline,
+    )
+
+
+async def _load_forecast_for_write(
+    session: AsyncSession,
+    forecast_id: uuid.UUID,
+    user_id: str | None,
+) -> Any:
+    """Load a forecast, verifying the caller owns its project (IDOR guard).
+
+    Returns the forecast row. Raises 404 when absent so a cross-tenant probe
+    cannot distinguish "not found" from "not yours".
+    """
+    from app.modules.full_evm.repository import EVMForecastRepository
+
+    repo = EVMForecastRepository(session)
+    forecast = await repo.get(forecast_id)
+    if forecast is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Forecast {forecast_id} not found",
+        )
+    await _verify_project_access(session, forecast.project_id, user_id)
+    return forecast
+
+
+@router.post(
+    "/forecasts/{forecast_id}/acknowledge/",
+    response_model=ForecastAlertRow,
+    dependencies=[Depends(RequirePermission("project_intelligence.create"))],
+)
+async def acknowledge_forecast_alert(
+    forecast_id: uuid.UUID,
+    session: SessionDep = None,  # type: ignore[assignment]
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+) -> ForecastAlertRow:
+    """Acknowledge a forecast alert — removes it from the active list."""
+    forecast = await _load_forecast_for_write(session, forecast_id, user_id)
+
+    from app.modules.full_evm.service import EVMService
+
+    service = EVMService(session)
+    updated = await service.acknowledge_alert(forecast_id)
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Forecast {forecast_id} not found",
+        )
+    _invalidate_cache(user_id, str(forecast.project_id))
+    severity, summary = _breach_summary(updated)
+    return ForecastAlertRow(
+        forecast_id=str(updated.id),
+        forecast_date=updated.forecast_date,
+        alert_status=updated.alert_status or "acknowledged",
+        triggered_at=updated.triggered_at.isoformat() if updated.triggered_at else None,
+        severity=severity,
+        eac=updated.eac,
+        vac=updated.vac,
+        tcpi=updated.tcpi,
+        summary=summary,
+    )
+
+
+@router.post(
+    "/forecasts/{forecast_id}/snooze/",
+    response_model=ForecastAlertRow,
+    dependencies=[Depends(RequirePermission("project_intelligence.create"))],
+)
+async def snooze_forecast_alert(
+    forecast_id: uuid.UUID,
+    body: SnoozeForecastRequest | None = None,
+    session: SessionDep = None,  # type: ignore[assignment]
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+) -> ForecastAlertRow:
+    """Snooze a forecast alert for N hours (default 24)."""
+    forecast = await _load_forecast_for_write(session, forecast_id, user_id)
+    hours = body.hours if body is not None else 24
+
+    from app.modules.full_evm.service import EVMService
+
+    service = EVMService(session)
+    updated = await service.snooze_alert(forecast_id, hours)
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Forecast {forecast_id} not found",
+        )
+    _invalidate_cache(user_id, str(forecast.project_id))
+    severity, summary = _breach_summary(updated)
+    meta = updated.metadata_ or {}
+    return ForecastAlertRow(
+        forecast_id=str(updated.id),
+        forecast_date=updated.forecast_date,
+        alert_status=updated.alert_status or "snoozed",
+        triggered_at=updated.triggered_at.isoformat() if updated.triggered_at else None,
+        snoozed_until=meta.get("snoozed_until") if isinstance(meta, dict) else None,
+        severity=severity,
+        eac=updated.eac,
+        vac=updated.vac,
+        tcpi=updated.tcpi,
+        summary=summary,
+    )

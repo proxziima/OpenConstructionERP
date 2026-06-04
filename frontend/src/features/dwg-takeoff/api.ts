@@ -429,6 +429,87 @@ export async function deleteEntityGroup(groupId: string): Promise<void> {
   return apiDelete(`/v1/dwg_takeoff/groups/${groupId}`);
 }
 
+/* ── Revision compare (Item 17) ────────────────────────────────────────── */
+
+/** A parsed version of a drawing — the unit a revision compare diffs. */
+export interface DwgDrawingVersion {
+  id: string;
+  drawing_id: string;
+  version_number: number;
+  entity_count: number;
+  units: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One layer-level entity change between two drawing versions. */
+export interface DwgEntityDiffRow {
+  change_type: 'added' | 'removed' | 'modified' | 'unchanged';
+  entity_id: string;
+  entity_type: string;
+  layer: string;
+  old_count: number;
+  new_count: number;
+  delta: number;
+}
+
+/** One annotation-level change between two drawing versions. */
+export interface DwgAnnotationDiffRow {
+  change_type: 'added' | 'removed' | 'modified' | 'unchanged';
+  annotation_id: string;
+  annotation_type: string;
+  label: string | null;
+  layer_name: string;
+  old_measurement: number | null;
+  new_measurement: number | null;
+  measurement_unit: string | null;
+  linked_boq_position_id: string | null;
+  /** Signed Decimal string in the project base currency, or null when the
+   *  annotation is unlinked / unpriced. */
+  cost_impact: string | null;
+  cost_currency: string | null;
+}
+
+export interface DwgDrawingDiffResponse {
+  drawing_id: string;
+  from_version_id: string;
+  from_version_number: number;
+  to_version_id: string;
+  to_version_number: number;
+  entity_rows: DwgEntityDiffRow[];
+  annotation_rows: DwgAnnotationDiffRow[];
+  summary: {
+    entities: Record<'added' | 'removed' | 'modified' | 'unchanged', number>;
+    annotations: Record<'added' | 'removed' | 'modified' | 'unchanged', number>;
+    net_cost_impact: string | null;
+    cost_currency: string | null;
+    from_entity_count: number;
+    to_entity_count: number;
+  };
+}
+
+/** List every parsed version of a drawing (newest first) for the compare picker. */
+export async function fetchDrawingVersions(
+  drawingId: string,
+): Promise<DwgDrawingVersion[]> {
+  return apiGet<DwgDrawingVersion[]>(
+    `/v1/dwg_takeoff/drawings/${drawingId}/versions/`,
+  );
+}
+
+/** Compare two versions of a drawing. ``fromVersionId`` is the baseline
+ *  ('before'); ``toVersionId`` is the target ('after'). */
+export async function compareDrawings(
+  drawingId: string,
+  fromVersionId: string,
+  toVersionId: string,
+): Promise<DwgDrawingDiffResponse> {
+  return apiPost<DwgDrawingDiffResponse>(
+    `/v1/dwg_takeoff/drawings/${drawingId}/compare/${toVersionId}?from_version_id=${encodeURIComponent(fromVersionId)}`,
+  );
+}
+
 /* ── Offline Readiness (R3 #9) ─────────────────────────────────────────── */
 
 export interface DwgOfflineReadiness {

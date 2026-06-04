@@ -14,6 +14,21 @@ from app.modules.correspondence.schemas import CorrespondenceCreate, Corresponde
 logger = logging.getLogger(__name__)
 
 
+async def _safe_publish(name: str, data: dict, source_module: str = "oe_correspondence") -> None:
+    """‌⁠‍Publish an event, swallowing errors so business logic continues.
+
+    Used to drive the ``oe_correspondence_correspondence`` vector indexer
+    (item 16) on create / update / delete without ever letting an
+    event-bus hiccup break the CRUD path.
+    """
+    try:
+        from app.core.events import event_bus
+
+        event_bus.publish_detached(name, data, source_module=source_module)
+    except Exception as exc:
+        logger.debug("Event publish failed for %s: %s", name, exc)
+
+
 class CorrespondenceService:
     """‌⁠‍Business logic for correspondence operations."""
 
@@ -57,6 +72,17 @@ class CorrespondenceService:
             data.direction,
             data.correspondence_type,
             data.project_id,
+        )
+        # Publish correspondence.created so the vector indexer embeds the
+        # new row for semantic search / the floating-chat assistant
+        # (item 16).
+        await _safe_publish(
+            "correspondence.created",
+            {
+                "project_id": str(data.project_id),
+                "correspondence_id": str(correspondence.id),
+                "reference_number": reference_number,
+            },
         )
         return correspondence
 
@@ -107,12 +133,32 @@ class CorrespondenceService:
             correspondence_id,
             list(fields.keys()),
         )
+        # Publish correspondence.updated so the vector indexer re-embeds the
+        # edited row (subject / notes may have changed) — item 16.
+        await _safe_publish(
+            "correspondence.updated",
+            {
+                "project_id": str(correspondence.project_id) if correspondence.project_id is not None else "",
+                "correspondence_id": str(correspondence_id),
+                "reference_number": getattr(correspondence, "reference_number", None),
+            },
+        )
         return correspondence
 
     async def delete_correspondence(self, correspondence_id: uuid.UUID) -> None:
-        await self.get_correspondence(correspondence_id)
+        correspondence = await self.get_correspondence(correspondence_id)
+        project_id_s = str(correspondence.project_id) if correspondence.project_id is not None else ""
         await self.repo.delete(correspondence_id)
         logger.info("Correspondence deleted: %s", correspondence_id)
+        # Publish correspondence.deleted so the vector indexer drops the
+        # embedding for the removed row (item 16).
+        await _safe_publish(
+            "correspondence.deleted",
+            {
+                "project_id": project_id_s,
+                "correspondence_id": str(correspondence_id),
+            },
+        )
 
     async def add_attachment(
         self,

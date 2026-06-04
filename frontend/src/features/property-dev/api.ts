@@ -222,6 +222,41 @@ export interface Handover {
   updated_at: string;
 }
 
+export type HandoverDocType =
+  | 'warranty'
+  | 'manual'
+  | 'key_receipt'
+  | 'hs_file'
+  | 'epc'
+  | 'nhbc'
+  | 'inspection_cert'
+  | 'certificate_completion'
+  | 'insurance'
+  | 'other';
+
+export interface HandoverDoc {
+  id: string;
+  handover_id: string;
+  doc_type: HandoverDocType;
+  title: string;
+  file_url: string | null;
+  is_required: boolean;
+  is_delivered: boolean;
+  delivered_at: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HandoverBundle {
+  handover_id: string;
+  docs: HandoverDoc[];
+  delivered_count: number;
+  required_count: number;
+  missing_required: HandoverDocType[];
+  ready_for_handover: boolean;
+}
+
 export type SnagCategory =
   | 'cosmetic'
   | 'functional'
@@ -786,6 +821,82 @@ export function completeHandover(
   },
 ): Promise<Handover> {
   return apiPost<Handover>(`${BASE}/handovers/${id}/complete`, data);
+}
+
+/* ── Handover documents / closeout package (item #25) ─────────────────── */
+
+export function getHandoverBundle(handoverId: string): Promise<HandoverBundle> {
+  return apiGet<HandoverBundle>(`${BASE}/handovers/${handoverId}/docs`);
+}
+
+export interface CreateHandoverDocPayload {
+  handover_id: string;
+  doc_type: HandoverDocType;
+  title?: string;
+  file_url?: string | null;
+  is_required?: boolean;
+  is_delivered?: boolean;
+}
+
+export function createHandoverDoc(
+  data: CreateHandoverDocPayload,
+): Promise<HandoverDoc> {
+  return apiPost<HandoverDoc>(`${BASE}/handover-docs/`, data);
+}
+
+export interface UpdateHandoverDocPayload {
+  title?: string;
+  file_url?: string | null;
+  is_required?: boolean;
+  is_delivered?: boolean;
+}
+
+export function updateHandoverDoc(
+  id: string,
+  data: UpdateHandoverDocPayload,
+): Promise<HandoverDoc> {
+  return apiPatch<HandoverDoc>(`${BASE}/handover-docs/${id}`, data);
+}
+
+export function deleteHandoverDoc(id: string): Promise<void> {
+  return apiDelete(`${BASE}/handover-docs/${id}`);
+}
+
+/**
+ * Stream-download the closeout-package ZIP for a handover.
+ *
+ * The endpoint is HTTPBearer-guarded, so a plain ``<a href>`` would 401.
+ * Mirrors {@link downloadWarrantyClaimPdf}: authenticated ``fetch`` →
+ * Blob for the ``URL.createObjectURL`` + temp ``<a download>`` flow.
+ * Returns the Blob and the server-suggested filename.
+ */
+export async function exportHandoverPackage(
+  handoverId: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const token = (() => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+      const { useAuthStore } = require('@/stores/useAuthStore');
+      return useAuthStore.getState().accessToken as string | null;
+    } catch {
+      return null;
+    }
+  })();
+  const headers: Record<string, string> = { Accept: 'application/zip' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`/api${BASE}/handovers/${handoverId}/export`, {
+    method: 'GET',
+    headers,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const match = /filename="?([^"]+)"?/.exec(disposition);
+  const filename = match?.[1] ?? `handover_${handoverId}.zip`;
+  const blob = await res.blob();
+  return { blob, filename };
 }
 
 /* ── Snags ────────────────────────────────────────────────────────────── */

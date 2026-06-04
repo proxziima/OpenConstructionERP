@@ -42,8 +42,25 @@ from app.modules.ai_agents.repository import (
     AgentStepRepository,
     CustomAgentRepository,
 )
+from app.modules.ai_agents.triggers import (
+    normalise_triggers,
+    required_permission_for_tool,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class ToolPermissionError(Exception):
+    """Raised when an operator selects a tool they lack the permission for.
+
+    Carries the offending tool + the permission required so the router can
+    return a precise 403 the UI can render ("you lack ``boq.create``").
+    """
+
+    def __init__(self, tool_name: str, permission: str) -> None:
+        self.tool_name = tool_name
+        self.permission = permission
+        super().__init__(f"Missing permission '{permission}' for tool '{tool_name}'")
 
 
 # Conservative caps for user-authored agents. They are prompt-only (no tools),
@@ -115,14 +132,36 @@ def _resolve_system_prompt(
     raise ValueError(msg)
 
 
+def _runtime_allowed_tools(row: CustomAgent) -> list[str]:
+    """Resolve the custom agent's vetted tool slugs to ones the runner knows.
+
+    The operator's saved selection is intersected with the live tool registry
+    so a tool that has since been removed from the platform is silently dropped
+    (the runner would reject it anyway). An agent with no tools selected stays
+    prompt-only.
+    """
+    selected = row.allowed_tools
+    if not selected:
+        return []
+    available = set(global_tool_registry.names())
+    return [name for name in selected if name in available]
+
+
 def custom_agent_to_runtime(row: CustomAgent) -> Agent:
     """Project a DB :class:`CustomAgent` row into a runnable :class:`Agent`.
 
-    The runner only ever sees a declarative :class:`Agent`; custom agents are
-    prompt-only (``allowed_tools=[]``) so the loop returns the model's first
-    answer. The runtime ``name`` is the ``custom:<id>`` slug so the run path
-    and persisted ``AgentRun.agent_name`` round-trip unambiguously.
+    The runner only ever sees a declarative :class:`Agent`. Custom agents are
+    prompt-only by default, but an operator may grant the agent a vetted set of
+    tools (Item 29) stored in ``automation.allowed_tools``; those are surfaced
+    here so the ReAct loop can dispatch to them. Granting a tool already
+    required the operator to hold that tool's permission (enforced in
+    :meth:`AgentService.set_tools`), and the runner still re-verifies the
+    invoking user's permission inside each privileged tool — so an agent never
+    widens its creator's reach. When no tools are granted the loop returns the
+    model's first answer. The runtime ``name`` is the ``custom:<id>`` slug so
+    the run path and persisted ``AgentRun.agent_name`` round-trip unambiguously.
     """
+    tools = _runtime_allowed_tools(row)
     return Agent(
         name=row.agent_name,
         display_name=row.display_name,
@@ -132,8 +171,11 @@ def custom_agent_to_runtime(row: CustomAgent) -> Agent:
         icon=row.icon or "sparkles",
         example_prompts=list(row.example_prompts or []),
         system_prompt=row.system_prompt,
-        allowed_tools=[],
-        max_iterations=CUSTOM_AGENT_MAX_ITERATIONS,
+        allowed_tools=tools,
+        # A tool-using custom agent needs room for a few ReAct turns; a
+        # prompt-only one still returns on the first answer. Give tool-backed
+        # agents the standard built-in budget, prompt-only ones the tight cap.
+        max_iterations=8 if tools else CUSTOM_AGENT_MAX_ITERATIONS,
     )
 
 
@@ -348,6 +390,162 @@ class AgentService:
         await self.custom_repo.delete(row)
         return True
 
+    # ── Automation: schedule + tools + triggers (Item 29) ────────────────────
+
+    @staticmethod
+    def validate_cron(expr: str) -> str:
+        """Validate (and normalise whitespace in) a 5-field POSIX cron string.
+
+        Returns the normalised expression. Raises :class:`ValueError` on a
+        malformed expression (the router maps this to a 422). Reuses the
+        reporting module's parser so the supported grammar is identical to the
+        scheduled-reports feature — no new dependency.
+        """
+        from app.modules.reporting.cron import CronParseError, parse_cron
+
+        normalised = " ".join((expr or "").split())
+        if not normalised:
+            msg = "Cron expression is required."
+            raise ValueError(msg)
+        try:
+            parse_cron(normalised)
+        except CronParseError as exc:
+            raise ValueError(str(exc)) from exc
+        return normalised
+
+    @staticmethod
+    def _automation_dict(row: CustomAgent) -> dict[str, Any]:
+        """Return a mutable copy of the agent's automation envelope."""
+        return dict(row.automation) if isinstance(row.automation, dict) else {}
+
+    async def get_agent_metadata(self, agent_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, Any] | None:
+        """Return the current schedule/tools/triggers for an owned agent, or None.
+
+        The shape mirrors :class:`schemas.AgentMetadataResponse`. Returns
+        ``None`` when the agent is not found / not owned by the caller.
+        """
+        row = await self.custom_repo.get_for_user(agent_id, user_id)
+        if row is None:
+            return None
+        auto = self._automation_dict(row)
+        return {
+            "cron": row.cron_expr,
+            "schedule_enabled": row.schedule_enabled,
+            "next_run_at": auto.get("next_run_at") if isinstance(auto.get("next_run_at"), str) else None,
+            "schedule_input": auto.get("schedule_input") if isinstance(auto.get("schedule_input"), str) else "",
+            "triggers": [str(t) for t in auto.get("triggers", []) if isinstance(t, str)],
+            "allowed_tools": row.allowed_tools,
+        }
+
+    async def set_schedule(
+        self,
+        *,
+        agent_id: uuid.UUID,
+        user_id: uuid.UUID,
+        cron_expr: str,
+        enabled: bool = True,
+        schedule_input: str = "",
+        triggers: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Create/replace the schedule on an owned agent. Returns metadata or None.
+
+        Validates the cron, computes ``next_run_at`` from now, and persists the
+        merged automation envelope. ``None`` when the agent is not owned/found;
+        raises :class:`ValueError` on a bad cron.
+        """
+        row = await self.custom_repo.get_for_user(agent_id, user_id)
+        if row is None:
+            return None
+        normalised = self.validate_cron(cron_expr)
+        from app.modules.ai_agents.scheduler import compute_next_run_at
+
+        auto = self._automation_dict(row)
+        auto["cron"] = normalised
+        auto["schedule_enabled"] = bool(enabled)
+        auto["schedule_input"] = (schedule_input or "").strip()
+        if triggers is not None:
+            auto["triggers"] = normalise_triggers(triggers)
+        # Only schedule a future fire when enabled; a paused schedule keeps its
+        # cron but has no pending occurrence.
+        auto["next_run_at"] = compute_next_run_at(normalised) if enabled else None
+        await self.custom_repo.update_metadata(agent_id, auto)
+        return await self.get_agent_metadata(agent_id, user_id)
+
+    async def delete_schedule(self, agent_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        """Remove the schedule (cron + next_run_at) from an owned agent.
+
+        Leaves any tool grant intact. Returns False when not found/owned.
+        """
+        row = await self.custom_repo.get_for_user(agent_id, user_id)
+        if row is None:
+            return False
+        auto = self._automation_dict(row)
+        auto.pop("cron", None)
+        auto.pop("next_run_at", None)
+        auto.pop("schedule_enabled", None)
+        auto.pop("schedule_input", None)
+        await self.custom_repo.update_metadata(agent_id, auto)
+        return True
+
+    async def set_tools(
+        self,
+        *,
+        agent_id: uuid.UUID,
+        user_id: uuid.UUID,
+        tool_names: list[str],
+        user_role: str,
+    ) -> dict[str, Any] | None:
+        """Grant a vetted set of tools to an owned agent. Returns metadata or None.
+
+        Each requested tool must (a) exist in the live tool registry and (b) be
+        one the operator already has permission to use — otherwise a
+        :class:`ToolPermissionError` is raised (router → 403). Unknown tools are
+        dropped silently. ``None`` when the agent is not owned/found.
+
+        Permission is checked against the live registry using the operator's
+        role, mirroring ``RequirePermission``'s stale-JWT fallback — so the
+        grant honours the operator's CURRENT role, not a cached token.
+        """
+        row = await self.custom_repo.get_for_user(agent_id, user_id)
+        if row is None:
+            return None
+
+        from app.core.permissions import permission_registry
+
+        available = set(global_tool_registry.names())
+        vetted: list[str] = []
+        seen: set[str] = set()
+        for raw in tool_names:
+            name = (raw or "").strip()
+            if not name or name in seen or name not in available:
+                continue
+            seen.add(name)
+            required = required_permission_for_tool(name)
+            if not permission_registry.role_has_permission(user_role, required):
+                raise ToolPermissionError(name, required)
+            vetted.append(name)
+
+        auto = self._automation_dict(row)
+        auto["allowed_tools"] = vetted
+        await self.custom_repo.update_metadata(agent_id, auto)
+        return await self.get_agent_metadata(agent_id, user_id)
+
+    def list_available_tools_with_permissions(self) -> list[dict[str, Any]]:
+        """List every runner tool plus the permission needed to grant it.
+
+        Powers the builder's tool picker: the frontend shows each tool with its
+        required permission so it can grey out tools the operator cannot grant.
+        """
+        return [
+            {
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.input_schema,
+                "required_permission": required_permission_for_tool(t.name),
+            }
+            for t in global_tool_registry.all()
+        ]
+
     def list_registered_tools(self) -> list[dict[str, Any]]:
         return [
             {
@@ -375,8 +573,15 @@ class AgentService:
         "Background task" wiring (``BackgroundTasks.add_task``) lives in
         the router — here we just run the loop. The router can choose to
         ``await`` us inline (tests do) or schedule us for later.
+
+        Resolves built-ins from the in-memory registry AND the caller's own
+        custom agents (``custom:<id>`` slugs) from the DB, so the scheduler can
+        fire a scheduled custom agent through this same path. Ownership for
+        custom slugs is enforced in :meth:`resolve_agent`.
         """
         agent = get_agent(agent_name)
+        if agent is None:
+            agent = await self.resolve_agent(agent_name, user_id)
         if agent is None:
             msg = f"Unknown agent: {agent_name}"
             raise ValueError(msg)

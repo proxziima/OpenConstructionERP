@@ -13,6 +13,7 @@ from app.modules.bim_hub.models import BIMElement, BIMModel
 from app.modules.clash.models import (
     ClashCluster,
     ClashIssue,
+    ClashProfile,
     ClashResult,
     ClashRun,
     ClashSuppression,
@@ -293,6 +294,40 @@ class ClashRepository:
 
     async def delete_run(self, run: ClashRun) -> None:
         await self.session.delete(run)
+        await self.session.flush()
+
+    # ── ClashProfile (reusable run-config templates, item #23) ─────────
+
+    def add_profile(self, profile: ClashProfile) -> None:
+        self.session.add(profile)
+
+    async def list_profiles(self, project_id: uuid.UUID) -> list[ClashProfile]:
+        """Every profile in a project's library (newest first)."""
+        stmt = (
+            select(ClashProfile)
+            .where(ClashProfile.project_id == project_id)
+            .order_by(ClashProfile.created_at.desc())
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def get_profile(self, project_id: uuid.UUID, profile_id: uuid.UUID) -> ClashProfile | None:
+        """One project-scoped profile (IDOR-safe), or ``None``."""
+        stmt = select(ClashProfile).where(
+            ClashProfile.id == profile_id,
+            ClashProfile.project_id == project_id,
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def get_profile_by_name(self, project_id: uuid.UUID, name: str) -> ClashProfile | None:
+        """Find a profile by its (project-unique) name — duplicate guard."""
+        stmt = select(ClashProfile).where(
+            ClashProfile.project_id == project_id,
+            ClashProfile.name == name,
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def delete_profile(self, profile: ClashProfile) -> None:
+        await self.session.delete(profile)
         await self.session.flush()
 
     # ── ClashResult ────────────────────────────────────────────────────

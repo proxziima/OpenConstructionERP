@@ -35,6 +35,7 @@ from app.dependencies import (
     SessionDep,
     verify_project_access,
 )
+from app.modules.contracts.compliance_packs import list_rule_packs
 from app.modules.contracts.models import (
     Contract,
     ContractLine,
@@ -297,6 +298,67 @@ async def sign_contract(
     service = ContractsService(session)
     contract = await service.transition_contract(contract_id, "active", user_id)
     return _contract_to_response(contract)
+
+
+@router.get("/contracts/{contract_id}/compliance-gate")
+async def preview_compliance_gate(
+    contract_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("contracts.read")),
+) -> dict:
+    """Read-only preview of the compliance gate for a contract.
+
+    Runs the same validation the ``draft → active`` (sign) transition runs,
+    without mutating anything, so the ComplianceGate UI can show the user
+    whether signing will be blocked and exactly which rules fail. Returns the
+    resolved rule packs/sets, the overall status/score, and the grouped
+    error / warning lists.
+    """
+    contract = await _verify_contract_access(session, contract_id, user_id)
+    service = ContractsService(session)
+    report, pack_ids = await service.run_compliance_gate(contract)
+
+    def _serialise(r: object) -> dict:
+        return {
+            "rule_id": r.rule_id,
+            "rule_name": r.rule_name,
+            "severity": r.severity.value,
+            "message": r.message,
+            "element_ref": r.element_ref,
+            "suggestion": r.suggestion,
+        }
+
+    return {
+        "contract_id": str(contract.id),
+        "contract_status": contract.status,
+        "rule_packs": pack_ids,
+        "rule_sets": report.rule_sets_applied,
+        "status": report.status.value,
+        "score": report.score,
+        "blocked": report.has_errors,
+        "counts": {
+            "errors": len(report.errors),
+            "warnings": len(report.warnings),
+            "passed": len(report.passed_rules),
+        },
+        "errors": [_serialise(r) for r in report.errors],
+        "warnings": [_serialise(r) for r in report.warnings],
+    }
+
+
+@router.get("/compliance-rule-packs/")
+async def list_compliance_rule_packs(
+    _user: CurrentUserId,
+) -> list[dict]:
+    """List the available jurisdiction compliance rule packs.
+
+    Tenant-wide read-only catalogue metadata (id, name, description,
+    jurisdiction, the workflow gates they enforce and the validation rule
+    sets they bundle). The projects settings UI uses this to let a user pick
+    which packs a project enforces at the contract-signature gate.
+    """
+    return list_rule_packs()
 
 
 @router.post("/contracts/{contract_id}/suspend", response_model=ContractResponse)

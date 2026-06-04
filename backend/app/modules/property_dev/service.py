@@ -729,6 +729,77 @@ def _today_iso() -> str:
     return datetime.now(UTC).date().isoformat()
 
 
+# ── Handover closeout-package assembly (item #25) ───────────────────────
+
+
+def _safe_zip_name(raw: str, *, fallback: str = "file") -> str:
+    """Sanitise an arbitrary string into a safe ZIP entry leaf name.
+
+    Strips path separators + parent refs so a hostile ``file_url`` /
+    photo path can never write outside its folder inside the archive
+    (Zip-Slip). Keeps only the basename, collapses whitespace, and falls
+    back to ``fallback`` when nothing usable survives.
+    """
+    leaf = str(raw or "").replace("\\", "/").split("/")[-1].strip()
+    leaf = leaf.replace("..", "").strip(". ")
+    # Allow a conservative leaf charset; anything else → underscore.
+    leaf = re.sub(r"[^A-Za-z0-9._ +()\-]", "_", leaf)
+    return leaf or fallback
+
+
+def build_handover_package_zip(
+    *,
+    plot_number: str,
+    date_iso: str,
+    manifest_text: str,
+    certificates: list[tuple[str, bytes]],
+    documents: list[tuple[str, bytes]],
+    snag_photos: list[tuple[str, bytes]],
+) -> bytes:
+    """Assemble the closeout-package ZIP from already-resolved bytes.
+
+    Pure (no DB / no network) so it can be unit-tested directly. Lays out:
+
+        MANIFEST.txt
+        certificates/<name>.pdf
+        docs/<name>
+        snags/<name>
+
+    Entry names are de-duplicated (``name``, ``name (2)``, …) and sanitised
+    against Zip-Slip. ``plot_number`` / ``date_iso`` are only used by the
+    caller for the download filename; they are echoed into the manifest.
+    """
+    import zipfile
+    from io import BytesIO
+
+    buf = BytesIO()
+    seen: set[str] = set()
+
+    def _unique(folder: str, name: str) -> str:
+        base = f"{folder}/{name}" if folder else name
+        candidate = base
+        stem, dot, ext = name.rpartition(".")
+        n = 2
+        while candidate in seen:
+            if dot:
+                candidate = f"{folder}/{stem} ({n}).{ext}" if folder else f"{stem} ({n}).{ext}"
+            else:
+                candidate = f"{folder}/{name} ({n})" if folder else f"{name} ({n})"
+            n += 1
+        seen.add(candidate)
+        return candidate
+
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("MANIFEST.txt", manifest_text)
+        for name, data in certificates:
+            zf.writestr(_unique("certificates", _safe_zip_name(name, fallback="certificate.pdf")), data)
+        for name, data in documents:
+            zf.writestr(_unique("docs", _safe_zip_name(name, fallback="document")), data)
+        for name, data in snag_photos:
+            zf.writestr(_unique("snags", _safe_zip_name(name, fallback="photo")), data)
+    return buf.getvalue()
+
+
 # ── Payment-schedule milestone templates ────────────────────────────────
 #
 # Pure data — no DB, no I/O. Each template is a sequence of milestone
@@ -1864,6 +1935,24 @@ class PropertyDevService:
         handover = await self.get_handover(h_id)
         if handover.completed_at:
             return handover
+
+        # Closeout gate (item #25): a handover cannot be signed off while a
+        # required document is still undelivered. The bundle's
+        # ``ready_for_handover`` flag is False iff any ``is_required`` doc is
+        # not yet delivered; surface the missing doc-types so the UI can list
+        # them. 409 (conflict) — the request is well-formed but the resource
+        # state forbids completion.
+        bundle = await self.handover_bundle(h_id)
+        if not bundle["ready_for_handover"]:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "handover_docs_incomplete",
+                    "message": translate("errors.handover_docs_incomplete", locale=get_locale()),
+                    "missing_required": bundle["missing_required"],
+                },
+            )
+
         await self.handovers.update_fields(
             h_id,
             completed_at=data.completed_at,
@@ -2306,6 +2395,159 @@ class PropertyDevService:
             "missing_required": missing,
             "ready_for_handover": not missing,
         }
+
+    async def export_handover_package(
+        self,
+        handover_id: uuid.UUID,
+        *,
+        locale: str = "en",
+    ) -> tuple[str, bytes]:
+        """Assemble the digital closeout package for a handover (item #25).
+
+        Returns ``(download_filename, zip_bytes)``. The ZIP bundles:
+
+        * ``MANIFEST.txt`` — a human-readable index of everything inside,
+          plus the required-doc compliance summary.
+        * ``certificates/`` — freshly rendered handover + warranty
+          certificate PDFs (best-effort; a render failure is recorded in
+          the manifest instead of aborting the export).
+        * ``docs/`` — every *delivered* handover document whose ``file_url``
+          points at a local upload. External URLs are listed as references
+          in the manifest (we never make an outbound request inside the
+          handler so a slow/hostile host can't hang the export).
+        * ``snags/`` — all snag photos for the handover, copied from the
+          local upload store. Invalid / traversal paths are skipped.
+
+        Deterministic + degrades gracefully: a handover with no docs/snags
+        still yields a valid ZIP containing the manifest + certificates.
+        """
+        from pathlib import Path
+
+        handover = await self.get_handover(handover_id)
+        plot = await self.plots.get_by_id(handover.plot_id)
+        plot_number = plot.plot_number if plot is not None else str(handover.plot_id)
+
+        bundle = await self.handover_bundle(handover_id)
+        docs: list[HandoverDoc] = bundle["docs"]
+        delivered = [d for d in docs if d.is_delivered]
+
+        date_iso = _today_iso()
+        manifest: list[str] = [
+            "DIGITAL HANDOVER / CLOSEOUT PACKAGE",
+            "=" * 40,
+            f"Plot:            {plot_number}",
+            f"Handover ID:     {handover_id}",
+            f"Generated:       {date_iso}",
+            f"Completed at:    {handover.completed_at or '(not completed)'}",
+            f"Keys handed:     {handover.keys_handed_over_at or '—'}",
+            f"Final check:     {'PASSED' if handover.final_check_passed else 'not passed'}",
+            "",
+            "DOCUMENT COMPLIANCE",
+            "-" * 40,
+            f"Delivered docs:  {bundle['delivered_count']}",
+            f"Required docs:   {bundle['required_count']}",
+            f"Missing reqd:    {', '.join(bundle['missing_required']) or 'none'}",
+            f"Ready:           {'YES' if bundle['ready_for_handover'] else 'NO'}",
+            "",
+        ]
+
+        # ── Certificates (best-effort render) ──────────────────────────
+        certificates: list[tuple[str, bytes]] = []
+        manifest.append("CERTIFICATES")
+        manifest.append("-" * 40)
+        for cert_type, leaf in (
+            ("handover_certificate", "handover_certificate.pdf"),
+            ("warranty_certificate", "warranty_certificate.pdf"),
+        ):
+            try:
+                pdf_bytes = await self.generate_document(  # type: ignore[attr-defined]
+                    doc_type=cert_type,
+                    handover_id=handover_id,
+                    locale=locale,
+                )
+                certificates.append((leaf, pdf_bytes))
+                manifest.append(f"  certificates/{leaf}  ({len(pdf_bytes)} bytes)")
+            except Exception as exc:  # noqa: BLE001 — never abort the export
+                logger.warning("Handover %s: could not render %s: %s", handover_id, cert_type, exc)
+                manifest.append(f"  {leaf}  — NOT GENERATED ({exc.__class__.__name__})")
+        manifest.append("")
+
+        # ── Delivered documents (local uploads only) ───────────────────
+        documents: list[tuple[str, bytes]] = []
+        uploads_root = Path("uploads").resolve()
+        manifest.append("DOCUMENTS")
+        manifest.append("-" * 40)
+        if not delivered:
+            manifest.append("  (no delivered documents)")
+        for d in delivered:
+            label = d.title or d.doc_type
+            url = (d.file_url or "").strip()
+            if not url:
+                manifest.append(f"  {label} [{d.doc_type}] — no file attached")
+                continue
+            if url.lower().startswith(("http://", "https://")):
+                # External reference — listed, never fetched in-request.
+                manifest.append(f"  {label} [{d.doc_type}] — external: {url}")
+                continue
+            # Local upload path. Resolve under uploads/ and reject traversal.
+            rel = url.lstrip("/")
+            if rel.startswith("uploads/"):
+                rel = rel[len("uploads/") :]
+            candidate = (uploads_root / rel).resolve()
+            try:
+                inside = candidate.is_relative_to(uploads_root)
+            except AttributeError:  # pragma: no cover — py<3.9 guard
+                inside = str(candidate).startswith(str(uploads_root))
+            if not inside or not candidate.is_file():
+                manifest.append(f"  {label} [{d.doc_type}] — file missing: {url}")
+                continue
+            try:
+                data = candidate.read_bytes()
+            except OSError as exc:
+                manifest.append(f"  {label} [{d.doc_type}] — unreadable ({exc.__class__.__name__})")
+                continue
+            leaf = f"{_safe_zip_name(d.doc_type, fallback='document')}_{_safe_zip_name(candidate.name)}"
+            documents.append((leaf, data))
+            manifest.append(f"  docs/{leaf}  ({len(data)} bytes)")
+        manifest.append("")
+
+        # ── Snag photos (local uploads only) ───────────────────────────
+        snag_photos: list[tuple[str, bytes]] = []
+        snags = await self.snags.list_for_handover(handover_id)
+        manifest.append("SNAGS")
+        manifest.append("-" * 40)
+        manifest.append(f"  Total snags: {len(snags)}")
+        for snag in snags:
+            paths = snag.photos or []
+            for raw in paths:
+                rel = str(raw or "").lstrip("/")
+                if rel.startswith("uploads/"):
+                    rel = rel[len("uploads/") :]
+                candidate = (uploads_root / rel).resolve()
+                try:
+                    inside = candidate.is_relative_to(uploads_root)
+                except AttributeError:  # pragma: no cover
+                    inside = str(candidate).startswith(str(uploads_root))
+                if not inside or not candidate.is_file():
+                    continue
+                try:
+                    data = candidate.read_bytes()
+                except OSError:
+                    continue
+                leaf = f"{_safe_zip_name(str(snag.id)[:8])}_{_safe_zip_name(candidate.name)}"
+                snag_photos.append((leaf, data))
+        manifest.append(f"  Photos included: {len(snag_photos)}")
+
+        zip_bytes = build_handover_package_zip(
+            plot_number=plot_number,
+            date_iso=date_iso,
+            manifest_text="\n".join(manifest) + "\n",
+            certificates=certificates,
+            documents=documents,
+            snag_photos=snag_photos,
+        )
+        filename = f"handover_{_safe_zip_name(plot_number, fallback='plot')}_{date_iso}.zip"
+        return filename, zip_bytes
 
     # ── Sales pipeline kanban + reservation calendar ────────────────────
 

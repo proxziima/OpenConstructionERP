@@ -548,13 +548,67 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "search_rfis",
+        "description": (
+            "Semantic search across RFIs (Requests for Information) — finds "
+            "RFIs by meaning across subject, question and official response.  "
+            "Use for 'structural rebar clash on level 2', 'delivery delay for "
+            "curtain wall', 'fire rating query for partition'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Free-text search query"},
+                "project_id": {"type": "string", "description": "Optional project UUID filter"},
+                "limit": {"type": "integer", "description": "Max hits (1..20)", "default": 10},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_submittals",
+        "description": (
+            "Semantic search across submittals (shop drawings, product data, "
+            "samples, certificates) by title, spec section and type.  Use for "
+            "'concrete mix design', 'fire-rated door shop drawings', "
+            "'waterproofing membrane product data'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Free-text search query"},
+                "project_id": {"type": "string", "description": "Optional project UUID filter"},
+                "limit": {"type": "integer", "description": "Max hits (1..20)", "default": 10},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_correspondence",
+        "description": (
+            "Semantic search across project correspondence (letters, emails, "
+            "notices) by subject, direction, type and notes.  Use for 'notice "
+            "of delay', 'claim for extension of time', 'instruction to proceed'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Free-text search query"},
+                "project_id": {"type": "string", "description": "Optional project UUID filter"},
+                "limit": {"type": "integer", "description": "Max hits (1..20)", "default": 10},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "search_anything",
         "description": (
             "Cross-collection semantic search — fans out to BOQ, documents, "
-            "tasks, risks and BIM elements at once and merges the results.  "
-            "Use this when the user asks an open-ended question and you don't "
-            "know which module the answer lives in (e.g. 'tell me everything "
-            "about the basement waterproofing scope')."
+            "tasks, risks, BIM elements, RFIs, submittals and correspondence "
+            "at once and merges the results.  Use this when the user asks an "
+            "open-ended question and you don't know which module the answer "
+            "lives in (e.g. 'tell me everything about the basement "
+            "waterproofing scope')."
         ),
         "input_schema": {
             "type": "object",
@@ -1138,7 +1192,7 @@ async def _generic_collection_search(
     """
     from app.modules.search.service import unified_search_service
 
-    query = _parse_str(args, "query", required=True, max_len=500) or ""
+    query = _parse_str(args.get("query"), "query", required=True, max_length=500) or ""
     project_id = args.get("project_id")
     if isinstance(project_id, str) and not project_id.strip():
         project_id = None
@@ -1210,12 +1264,27 @@ async def handle_search_bim_elements(session: AsyncSession, args: dict[str, Any]
     return await _generic_collection_search(args, short_type="bim", summary_label="BIM elements search")
 
 
+async def handle_search_rfis(session: AsyncSession, args: dict[str, Any], user_id: str) -> dict[str, Any]:
+    _ = (session, user_id)
+    return await _generic_collection_search(args, short_type="rfi", summary_label="RFI search")
+
+
+async def handle_search_submittals(session: AsyncSession, args: dict[str, Any], user_id: str) -> dict[str, Any]:
+    _ = (session, user_id)
+    return await _generic_collection_search(args, short_type="submittals", summary_label="Submittals search")
+
+
+async def handle_search_correspondence(session: AsyncSession, args: dict[str, Any], user_id: str) -> dict[str, Any]:
+    _ = (session, user_id)
+    return await _generic_collection_search(args, short_type="correspondence", summary_label="Correspondence search")
+
+
 async def handle_search_anything(session: AsyncSession, args: dict[str, Any], user_id: str) -> dict[str, Any]:
     """Cross-collection unified search."""
     _ = (session, user_id)
     from app.modules.search.service import unified_search_service
 
-    query = _parse_str(args, "query", required=True, max_len=500) or ""
+    query = _parse_str(args.get("query"), "query", required=True, max_length=500) or ""
     project_id = args.get("project_id")
     if isinstance(project_id, str) and not project_id.strip():
         project_id = None
@@ -1293,6 +1362,9 @@ TOOL_PERMISSIONS: dict[str, ToolPermission] = {
     "search_tasks": "read",
     "search_risks": "read",
     "search_bim_elements": "read",
+    "search_rfis": "read",
+    "search_submittals": "read",
+    "search_correspondence": "read",
     "search_anything": "read",
 }
 
@@ -1314,5 +1386,8 @@ TOOL_HANDLER_MAP: dict[str, Any] = {
     "search_tasks": handle_search_tasks,
     "search_risks": handle_search_risks,
     "search_bim_elements": handle_search_bim_elements,
+    "search_rfis": handle_search_rfis,
+    "search_submittals": handle_search_submittals,
+    "search_correspondence": handle_search_correspondence,
     "search_anything": handle_search_anything,
 }

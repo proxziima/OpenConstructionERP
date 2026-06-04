@@ -2703,6 +2703,7 @@ const resource = {
     "nav.pin": "Pin {{label}}",
     "nav.unpin": "Unpin {{label}}",
     "nav.schedule_advanced": "Advanced Schedule",
+    "nav.takt": "Takt Planning",
     "schedule_advanced.master_hint": "Select a master schedule to make it the working plan for the Phases, Look-Ahead, Weekly and Constraints tabs. Use the row actions to rename it, change its planned dates and status, or delete it.",
     "schedule_advanced.no_master_yet_desc": "The master schedule is the top-level plan that every phase plan, look-ahead and weekly work plan rolls up to. Create one to start pull-planning — you can rename it, change its dates, or delete it at any time.",
     "schedule_advanced.active_selection": "Working plan",

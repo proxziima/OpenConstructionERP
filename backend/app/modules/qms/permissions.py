@@ -13,6 +13,10 @@ def register_qms_permissions() -> None:
             "qms.inspection.read": Role.VIEWER,
             "qms.inspection.write": Role.EDITOR,
             "qms.inspection.sign": Role.EDITOR,
+            # Item 12: releasing a passed hold point unblocks downstream work
+            # and must not be a routine editor action — gate it to MANAGER+,
+            # matching the other gate-keeping QMS calls (escalate, audit).
+            "qms.inspection.release_hold": Role.MANAGER,
             "qms.ncr.read": Role.VIEWER,
             "qms.ncr.write": Role.EDITOR,
             "qms.ncr.escalate": Role.MANAGER,

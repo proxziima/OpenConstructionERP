@@ -72,11 +72,12 @@ import { useToastStore } from '@/stores/useToastStore';
 import { usePreferencesStore } from '@/stores/usePreferencesStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
-import { getErrorMessage } from '@/shared/lib/api';
+import { getErrorMessage, ApiError } from '@/shared/lib/api';
 import { EditBuyerModal } from './EditBuyerModal';
 import { BuyerAccessLinkPanel } from '@/features/buyer-portal/BuyerAccessLinkPanel';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { SnagsBlock } from './SnagsBlock';
+import { HandoverDocumentsSection } from './HandoverDocumentsSection';
 import type { PropDevDocType } from './api';
 import {
   listDevelopments,
@@ -4317,17 +4318,16 @@ function HandoverPlotRow({ plot, buyer }: { plot: Plot; buyer: Buyer | undefined
           </Button>
         </div>
       )}
-      {/* Snags block — one per handover. Buyer is implicit (the plot's
-          buyer). Drives the snag → warranty promote flow on completed
-          handovers; on scheduled handovers we still allow adding snags
-          so site engineers can log defects ahead of completion. */}
+      {/* Per-handover blocks: the digital closeout package (item #25 —
+          warranty / manuals / key receipt + ZIP export) sits above the
+          snags block. Snags drive the snag → warranty promote flow on
+          completed handovers; on scheduled handovers we still allow
+          adding both so site engineers can prepare ahead of completion. */}
       {handovers.map((h: Handover) => (
-        <SnagsBlock
-          key={`snags-${h.id}`}
-          handover={h}
-          buyer={buyer}
-          plotId={plot.id}
-        />
+        <div key={`handover-blocks-${h.id}`}>
+          <HandoverDocumentsSection handover={h} />
+          <SnagsBlock handover={h} buyer={buyer} plotId={plot.id} />
+        </div>
       ))}
       {scheduleOpen && (
         <WideModal
@@ -4450,7 +4450,31 @@ function CompleteHandoverModal({
       qc.invalidateQueries({ queryKey: ['propdev', 'buyers'] });
       onClose();
     },
-    onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
+    onError: (err) => {
+      // The closeout gate (item #25) blocks completion with a 409 when a
+      // required handover document is still undelivered. Surface the
+      // missing-doc list so the user knows exactly what to deliver first.
+      if (err instanceof ApiError && err.status === 409) {
+        const detail = (err.body as { detail?: { missing_required?: string[] } })
+          ?.detail;
+        const missing = detail?.missing_required ?? [];
+        addToast({
+          type: 'error',
+          title: t('propdev.handover_blocked_docs', {
+            defaultValue: 'Required documents missing',
+          }),
+          message:
+            missing.length > 0
+              ? t('propdev.handover_blocked_docs_list', {
+                  defaultValue: 'Deliver these first: {{docs}}',
+                  docs: missing.join(', '),
+                })
+              : getErrorMessage(err),
+        });
+        return;
+      }
+      addToast({ type: 'error', title: getErrorMessage(err) });
+    },
   });
   const canSubmit =
     !!form.completed_at && form.customer_signature_ref.trim().length > 0;

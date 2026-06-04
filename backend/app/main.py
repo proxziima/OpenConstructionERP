@@ -2570,6 +2570,16 @@ def create_app() -> FastAPI:
 
         asyncio.create_task(_reports_scheduler())
 
+        # No-code agent builder: fire scheduled custom agents (item #29). The
+        # loop lives in the ai_agents module and self-schedules via asyncio;
+        # fail-soft so a scheduler hiccup never blocks startup.
+        try:
+            from app.modules.ai_agents.scheduler import start_scheduler
+
+            start_scheduler()
+        except Exception:  # noqa: BLE001 - never block startup on the scheduler
+            logger.exception("AI agent scheduler failed to start")
+
         _section("Ready")
         # Friendly multi-line ready banner. The CLI (`openestimate serve`)
         # exposes OE_CLI_HOST / OE_CLI_PORT / OE_CLI_DATA_DIR so we can show

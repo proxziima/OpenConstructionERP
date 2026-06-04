@@ -202,6 +202,55 @@ async def _on_ncr_raised_fanout(event: Event) -> None:
         logger.debug("qms: kpi_recompute emit failed", exc_info=True)
 
 
+async def _on_hold_point_failed(event: Event) -> None:
+    """``qms.inspection.hold_point_failed`` → notify + flag for follow-up (item 12).
+
+    Infrastructure-only this phase: we fan out a ``notifications.dispatch``
+    event so the notifications module can alert the inspector / GC, and a
+    ``bi_dashboards.kpi_recompute`` so the first-pass-yield gauge refreshes.
+    A failed hold point is the strongest quality signal on a project, so the
+    hook is wired now even though the punchlist auto-raise lands in Phase 2.
+    The subscriber is fail-soft — any error is logged at debug.
+    """
+    data = event.data or {}
+    inspection_id = data.get("inspection_id")
+    project_id = data.get("project_id")
+    if not (inspection_id and project_id):
+        return
+    try:
+        event_bus.publish_detached(
+            "notifications.dispatch",
+            {
+                "source_module": "qms",
+                "source_event": "qms.inspection.hold_point_failed",
+                "project_id": str(project_id),
+                "inspection_id": str(inspection_id),
+                "itp_item_id": data.get("itp_item_id") or "",
+                "control_point_name": data.get("control_point_name") or "",
+                "severity": "high",
+                "title": "Hold point failed",
+            },
+            source_module="qms",
+        )
+    except Exception:
+        logger.debug("qms: hold_point_failed notify emit failed", exc_info=True)
+
+    try:
+        event_bus.publish_detached(
+            "bi_dashboards.kpi_recompute",
+            {
+                "source_module": "qms",
+                "source_event": "qms.inspection.hold_point_failed",
+                "project_id": str(project_id),
+                "kpi_codes": ["first_pass_yield", "ncr_open_count"],
+                "reason": "hold_point_failed",
+            },
+            source_module="qms",
+        )
+    except Exception:
+        logger.debug("qms: hold_point_failed kpi emit failed", exc_info=True)
+
+
 def register_subscribers() -> None:
     """Idempotently subscribe QMS handlers to upstream events."""
     if getattr(event_bus, _SUBSCRIBED_FLAG, False):
@@ -212,4 +261,8 @@ def register_subscribers() -> None:
         _on_hse_incident_root_cause,
     )
     event_bus.subscribe("qms.ncr.raised", _on_ncr_raised_fanout)
+    event_bus.subscribe(
+        "qms.inspection.hold_point_failed",
+        _on_hold_point_failed,
+    )
     setattr(event_bus, _SUBSCRIBED_FLAG, True)

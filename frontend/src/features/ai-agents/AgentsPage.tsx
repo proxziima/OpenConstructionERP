@@ -25,10 +25,13 @@ import {
   type AgentDescriptor,
   type AgentRun,
   type CustomAgent,
-  type CustomAgentInput,
 } from './api';
 import { AgentGallery } from './components/AgentGallery';
-import { CustomAgentBuilder } from './components/CustomAgentBuilder';
+import {
+  CustomAgentBuilder,
+  type BuilderSchedule,
+  type BuilderSubmit,
+} from './components/CustomAgentBuilder';
 import { RunTimeline } from './components/RunTimeline';
 import { RecentRunsList } from './components/RecentRunsList';
 import {
@@ -50,6 +53,11 @@ export function AgentsPage(): JSX.Element {
   // Custom-agent builder modal state. `builderEditing` null + open = create.
   const [builderOpen, setBuilderOpen] = useState(false);
   const [builderEditing, setBuilderEditing] = useState<CustomAgent | null>(null);
+  // Automation (Item 29) pre-load for the builder when editing an agent.
+  const [builderSchedule, setBuilderSchedule] = useState<BuilderSchedule | null>(null);
+  const [builderNextRunAt, setBuilderNextRunAt] = useState<string | null>(null);
+  const [builderTools, setBuilderTools] = useState<string[]>([]);
+  const [loadingAutomation, setLoadingAutomation] = useState(false);
 
   const [selected, setSelected] = useState<AgentDescriptor | null>(null);
   const [userInput, setUserInput] = useState('');
@@ -74,6 +82,15 @@ export function AgentsPage(): JSX.Element {
   const agentsQuery = useQuery({
     queryKey: ['ai-agents', 'list'],
     queryFn: () => aiAgentsApi.listAgents(),
+  });
+
+  // Tool catalogue (with required permissions) for the builder's Tools panel.
+  // Only fetched while the builder is open to keep the page lean.
+  const toolsCatalogueQuery = useQuery({
+    queryKey: ['ai-agents', 'grantable-tools'],
+    queryFn: () => aiAgentsApi.listGrantableTools(),
+    enabled: builderOpen,
+    staleTime: 60_000,
   });
 
   const runsQuery = useQuery({
@@ -124,11 +141,34 @@ export function AgentsPage(): JSX.Element {
   };
 
   // ── Custom-agent builder ────────────────────────────────────────────────
+  // Save orchestration: create/update the agent, then persist its automation
+  // (schedule + tools) against the resulting id. Schedule/tools live behind
+  // dedicated endpoints keyed by agent id, so they can only be set once the
+  // agent exists. A schedule/tool failure is surfaced but does not lose the
+  // saved agent — the user can reopen and retry that section.
   const saveMutation = useMutation({
-    mutationFn: (input: CustomAgentInput) =>
-      builderEditing
-        ? aiAgentsApi.updateCustomAgent(builderEditing.id, input)
-        : aiAgentsApi.createCustomAgent(input),
+    mutationFn: async (submit: BuilderSubmit) => {
+      const saved = builderEditing
+        ? await aiAgentsApi.updateCustomAgent(builderEditing.id, submit.agent)
+        : await aiAgentsApi.createCustomAgent(submit.agent);
+
+      // Schedule: set when a cron is present + enabled, otherwise clear it.
+      if (submit.schedule.cron && submit.schedule.enabled) {
+        await aiAgentsApi.setAgentSchedule(saved.id, {
+          cron_expr: submit.schedule.cron,
+          enabled: true,
+          schedule_input: submit.schedule.scheduleInput,
+        });
+      } else if (builderEditing) {
+        // Editing an agent that previously had a schedule but the user turned
+        // it off — remove it (ignore 404 when there was none).
+        await aiAgentsApi.deleteAgentSchedule(saved.id).catch(() => undefined);
+      }
+
+      // Tools: always persist the (possibly empty) selection on save.
+      await aiAgentsApi.setAgentTools(saved.id, { allowed_tools: submit.allowedTools });
+      return saved;
+    },
     onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ['ai-agents', 'list'] });
       setBuilderOpen(false);
@@ -145,28 +185,43 @@ export function AgentsPage(): JSX.Element {
 
   const openCreate = () => {
     setBuilderEditing(null);
+    setBuilderSchedule(null);
+    setBuilderNextRunAt(null);
+    setBuilderTools([]);
     setBuilderOpen(true);
   };
 
   const openEdit = (agent: AgentDescriptor) => {
     if (!agent.custom_id) return;
+    const customId = agent.custom_id;
     // The catalogue descriptor lacks the guided spec / raw prompt needed to
-    // re-hydrate the form, so fetch the full custom-agent row first.
-    aiAgentsApi
-      .listCustomAgents()
-      .then((rows) => {
-        const row = rows.find((r) => r.id === agent.custom_id);
-        if (row) {
-          setBuilderEditing(row);
-          setBuilderOpen(true);
-        }
+    // re-hydrate the form, so fetch the full custom-agent row first, then its
+    // automation envelope (schedule + tools) in parallel.
+    setLoadingAutomation(true);
+    setBuilderSchedule(null);
+    setBuilderNextRunAt(null);
+    setBuilderTools([]);
+    Promise.all([aiAgentsApi.listCustomAgents(), aiAgentsApi.getAgentSchedule(customId)])
+      .then(([rows, meta]) => {
+        const row = rows.find((r) => r.id === customId);
+        if (!row) throw new Error('not found');
+        setBuilderSchedule({
+          cron: meta.cron,
+          enabled: meta.schedule_enabled,
+          scheduleInput: meta.schedule_input,
+        });
+        setBuilderNextRunAt(meta.next_run_at);
+        setBuilderTools(meta.allowed_tools);
+        setBuilderEditing(row);
+        setBuilderOpen(true);
       })
       .catch(() => {
         addToast({
           type: 'error',
           title: t('agents.builder.load_error', { defaultValue: 'Could not open the agent' }),
         });
-      });
+      })
+      .finally(() => setLoadingAutomation(false));
   };
 
   const handleDelete = async (agent: AgentDescriptor) => {
@@ -500,6 +555,11 @@ export function AgentsPage(): JSX.Element {
         open={builderOpen}
         editing={builderEditing}
         saving={saveMutation.isPending}
+        tools={toolsCatalogueQuery.data ?? []}
+        initialSchedule={builderSchedule}
+        initialNextRunAt={builderNextRunAt}
+        initialTools={builderTools}
+        loadingAutomation={loadingAutomation || toolsCatalogueQuery.isLoading}
         error={
           saveMutation.isError
             ? ((saveMutation.error as Error)?.message ??
@@ -510,7 +570,7 @@ export function AgentsPage(): JSX.Element {
           setBuilderOpen(false);
           setBuilderEditing(null);
         }}
-        onSubmit={(input) => saveMutation.mutate(input)}
+        onSubmit={(submit) => saveMutation.mutate(submit)}
       />
       <ConfirmDialog {...confirmProps} />
     </div>

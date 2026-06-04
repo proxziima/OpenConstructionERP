@@ -81,6 +81,19 @@ class Project(Base):
         default=lambda: ["boq_quality"],
         server_default='["boq_quality"]',
     )
+    # ── Item #27 — compliance rule packs enforced at workflow gates ──────
+    # Jurisdiction-scoped bundles of validation rule sets (see
+    # app.modules.contracts.compliance_packs.RULE_PACKS) that the contract
+    # signature gate enforces on a draft → active transition. Defaults to the
+    # cross-market ``universal`` pack so every project has a meaningful gate
+    # out of the box; a project can override via PATCH
+    # /{id}/compliance-rule-packs.
+    compliance_rule_packs: Mapped[list] = mapped_column(  # type: ignore[assignment]
+        JSON,
+        nullable=False,
+        default=lambda: ["universal"],
+        server_default='["universal"]',
+    )
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
     owner_id: Mapped[uuid.UUID] = mapped_column(
         GUID(),

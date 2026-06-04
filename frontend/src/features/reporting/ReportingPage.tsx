@@ -160,6 +160,16 @@ function fmt(v: string | number | null | undefined, suffix = ''): string {
   return `${v}${suffix}`;
 }
 
+// Humanise a report_type enum token ("progress_report" → "Progress
+// Report") for display. Report types are seeded server-side, so the list
+// is open-ended; rather than maintaining a closed label map we Title-Case
+// the snake_case token. Keeps the new progress_report type readable
+// without a frontend code change per new type.
+function humanizeReportType(reportType: string): string {
+  if (!reportType) return '';
+  return reportType.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function fmtNum(v: number | null | undefined, decimals = 0): string {
   if (v === null || v === undefined) return 'N/A';
   return v.toLocaleString(undefined, {
@@ -1373,7 +1383,7 @@ function ReportsTab({ project }: { project?: Project }) {
                   {templates.map((tpl) => (
                     <tr key={tpl.id} className="border-b border-border-light last:border-0 hover:bg-surface-secondary/50">
                       <td className="px-4 py-3 font-medium text-content-primary">{tpl.name}</td>
-                      <td className="px-4 py-3 text-content-secondary">{tpl.report_type}</td>
+                      <td className="px-4 py-3 text-content-secondary">{humanizeReportType(tpl.report_type)}</td>
                       <td className="px-4 py-3 text-content-secondary">
                         {tpl.is_system
                           ? t('reporting.scope_system', { defaultValue: 'System' })
@@ -1454,7 +1464,7 @@ function ReportsTab({ project }: { project?: Project }) {
                     return (
                       <tr key={r.id} className="border-b border-border-light last:border-0 hover:bg-surface-secondary/50">
                         <td className="px-4 py-3 font-medium text-content-primary">{r.title}</td>
-                        <td className="px-4 py-3 text-content-secondary">{r.report_type}</td>
+                        <td className="px-4 py-3 text-content-secondary">{humanizeReportType(r.report_type)}</td>
                         <td className="px-4 py-3 text-content-secondary uppercase">{r.format}</td>
                         <td className="px-4 py-3 text-content-secondary">{ts}</td>
                         <td className="px-4 py-3 text-right">
@@ -1610,7 +1620,7 @@ function ReportViewerModal({
               {report.title}
             </h2>
             <p className="truncate text-xs text-content-secondary">
-              {report.report_type} · {report.format?.toUpperCase()}
+              {humanizeReportType(report.report_type)} · {report.format?.toUpperCase()}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">

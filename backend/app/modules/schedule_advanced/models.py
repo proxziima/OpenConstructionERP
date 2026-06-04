@@ -587,3 +587,178 @@ class WeeklyCommitment(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debug only
         return f"<WeeklyCommitment activity={self.activity_id} week={self.week_start} ppc={self.ppc}>"
+
+
+# ── Takt / line-of-balance scheduling ──────────────────────────────────────
+#
+# Takt scheduling (a.k.a. line-of-balance / takt-time planning) models
+# repetitive work that cycles a fixed crew through a sequence of locations
+# (levels, blocks, zones) at a steady rhythm. It is parallel to the LPS and
+# CPM hierarchies above — it does NOT merge with MasterSchedule's task tree;
+# instead a TaktSchedule hangs off a MasterSchedule as an alternative planning
+# lens for the repetitive portion of a project.
+
+
+class TaktSchedule(Base):
+    """Container for one takt / line-of-balance planning workflow.
+
+    A takt schedule cycles a crew through an ordered list of
+    :class:`Location` rows (the "location sequence") performing each
+    :class:`TaktActivity` in turn. ``target_cycle_days`` is the planned
+    rhythm — how long the crew spends in each location before handing
+    off to the next trade. ``takt_rhythm_tolerance_days`` is the skew
+    threshold above which an observed cycle is flagged as a rhythm break.
+    """
+
+    __tablename__ = "oe_schedule_advanced_takt_schedule"
+
+    master_schedule_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey(
+            "oe_schedule_advanced_master_schedule.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    target_cycle_days: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=7,
+        server_default="7",
+    )
+    takt_rhythm_tolerance_days: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    location_sequence_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="draft",
+        server_default="draft",
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(),
+        ForeignKey("oe_users_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debug only
+        return f"<TaktSchedule {self.name} ({self.status})>"
+
+
+class Location(Base):
+    """One zone / phase in the takt location sequence.
+
+    ``sequence_order`` (1-based) drives both the y-axis ordering of the
+    line-of-balance chart and the staggered start of each crew cycle.
+    """
+
+    __tablename__ = "oe_schedule_advanced_takt_location"
+
+    takt_schedule_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey(
+            "oe_schedule_advanced_takt_schedule.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+    sequence_order: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    work_area_sqm: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+
+    def __repr__(self) -> str:  # pragma: no cover - debug only
+        return f"<Location #{self.sequence_order} {self.name}>"
+
+
+class TaktActivity(Base):
+    """A trade activity in a takt schedule.
+
+    Each activity repeats once per location, cycling top-to-bottom through
+    the location sequence at the planned rhythm. ``planned_cycle_duration_days``
+    is the crew working duration per location; ``actual_cycle_duration_days``
+    captures the observed duration used for rhythm-break detection.
+
+    ``sequence_predecessor_activity_id`` is a self-referential FK encoding
+    the trade hand-off order (Formwork → Concrete → Finishes). It is a
+    plain ORM FK with ``ON DELETE SET NULL`` so deleting a predecessor does
+    not cascade-delete its successors.
+    """
+
+    __tablename__ = "oe_schedule_advanced_takt_activity"
+
+    takt_schedule_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey(
+            "oe_schedule_advanced_takt_schedule.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    activity_code: Mapped[str] = mapped_column(String(50), nullable=False, default="", server_default="")
+    sequence_order: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    planned_cycle_duration_days: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    crew_size: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    crew_skill_codes: Mapped[list] = mapped_column(  # type: ignore[assignment]
+        JSON,
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    buffer_days_before: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    sequence_predecessor_activity_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(),
+        ForeignKey(
+            "oe_schedule_advanced_takt_activity.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="planned",
+        server_default="planned",
+    )
+    actual_cycle_duration_days: Mapped[Decimal | None] = mapped_column(
+        Numeric(6, 2),
+        nullable=True,
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debug only
+        return f"<TaktActivity {self.name} ({self.status})>"

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import uuid
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
@@ -345,6 +346,139 @@ def _process_dxf_sync(file_path: str, entities_key: str, thumbnail_key: str) -> 
         f.write(svg_content)
 
     return result
+
+
+# ── Revision compare (Item 17) ──────────────────────────────────────────────
+
+
+def _layer_count_map(layers: Any) -> dict[str, int]:
+    """Reduce a stored ``layers`` blob to ``{layer_name: entity_count}``.
+
+    Accepts both the canonical list-of-dicts shape and the legacy
+    dict-keyed-by-name shape (mirrors
+    ``DwgDrawingVersionResponse._normalize_layers``). A layer missing an
+    ``entity_count`` contributes 0 so a count-less layer still appears in
+    the diff as present. Never raises — a malformed blob yields ``{}`` so
+    the compare degrades to "no entity changes" rather than a 500.
+    """
+    rows: list[Any]
+    if isinstance(layers, dict):
+        rows = list(layers.values())
+    elif isinstance(layers, list):
+        rows = layers
+    else:
+        return {}
+
+    out: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            count = int(row.get("entity_count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        # Sum duplicates defensively (some parsers emit one row per layout).
+        out[name] = out.get(name, 0) + count
+    return out
+
+
+def _compute_entity_diff(
+    from_layers: Any,
+    to_layers: Any,
+) -> list[dict[str, Any]]:
+    """Diff two versions' layer profiles into entity-diff rows.
+
+    Entities carry no stable cross-parse identity, so we compare the
+    per-layer entity count. A layer present only in the new version is
+    ``added``; only in the old version ``removed``; present in both with
+    a different count ``modified``; identical count ``unchanged``. Rows
+    are returned sorted by layer name for deterministic output.
+    """
+    from_map = _layer_count_map(from_layers)
+    to_map = _layer_count_map(to_layers)
+
+    rows: list[dict[str, Any]] = []
+    for layer in sorted(set(from_map) | set(to_map)):
+        old_count = from_map.get(layer, 0)
+        new_count = to_map.get(layer, 0)
+        if layer not in from_map:
+            change_type = "added"
+        elif layer not in to_map:
+            change_type = "removed"
+        elif old_count != new_count:
+            change_type = "modified"
+        else:
+            change_type = "unchanged"
+        rows.append(
+            {
+                "change_type": change_type,
+                "entity_id": layer,
+                "entity_type": "layer",
+                "layer": layer,
+                "old_count": old_count,
+                "new_count": new_count,
+                "delta": new_count - old_count,
+            }
+        )
+    return rows
+
+
+def _to_float(value: Any) -> float | None:
+    """Coerce a ``Decimal``/number/string measurement to ``float`` or None.
+
+    ``DwgAnnotation.measurement_value`` round-trips as ``Decimal`` (the
+    Numeric(18,6) column); the diff response exposes plain floats. A
+    ``None`` or unparseable value collapses to ``None`` so a value-less
+    annotation never reads as ``0`` in the diff.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError, InvalidOperation):
+        return None
+
+
+def _annotation_label(ann: "DwgAnnotation") -> str | None:
+    """Short human label for an annotation row in the diff table."""
+    text = (ann.text or "").strip()
+    if text:
+        return text[:120]
+    return ann.annotation_type
+
+
+def _calculate_cost_impact(
+    *,
+    old_value: float | None,
+    new_value: float | None,
+    unit_rate: str | int | float | Decimal | None,
+) -> str | None:
+    """Signed money delta ``(new - old) * unit_rate`` as a Decimal string.
+
+    Returns ``None`` when the impact cannot be computed (either value
+    missing, or the rate is unparseable / zero). The result is quantised
+    to 2 fractional digits with commercial rounding (ROUND_HALF_UP), the
+    same boundary the BOQ rollups use, and is expressed in the project's
+    base currency — the caller never blends currencies because a BOQ
+    position's ``unit_rate`` is already stored in that base currency.
+    """
+    if old_value is None or new_value is None:
+        return None
+    try:
+        rate = Decimal(str(unit_rate).strip()) if unit_rate not in (None, "") else Decimal("0")
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not rate.is_finite() or rate == 0:
+        return None
+    try:
+        delta = Decimal(repr(float(new_value))) - Decimal(repr(float(old_value)))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    impact = (delta * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return str(impact)
 
 
 class DwgTakeoffService:
@@ -1122,6 +1256,256 @@ class DwgTakeoffService:
     async def get_latest_version(self, drawing_id: uuid.UUID) -> DwgDrawingVersion | None:
         """Get the latest version for a drawing."""
         return await self.version_repo.get_latest_for_drawing(drawing_id)
+
+    # ── Revision compare (Item 17) ──────────────────────────────────────
+
+    async def list_drawing_versions(self, drawing_id: uuid.UUID) -> list[DwgDrawingVersion]:
+        """List all parsed versions for a drawing (newest first).
+
+        Raises 404 if the drawing does not exist so the router can gate
+        access on the resolved drawing before exposing the version list.
+        """
+        await self.get_drawing(drawing_id)
+        return await self.version_repo.list_for_drawing(drawing_id)
+
+    async def compare_drawing_versions(
+        self,
+        drawing_id: uuid.UUID,
+        from_version_id: uuid.UUID,
+        to_version_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        """Compare two versions of a drawing and return the diff payload.
+
+        Computes:
+
+        * **Entity diff** — per-layer entity-count changes between the two
+          versions' stored layer profiles (entities carry no stable
+          cross-parse identity).
+        * **Annotation delta** — added / removed / modified annotations
+          keyed by ``drawing_version_id``, with a money cost impact for
+          any linked-to-BOQ annotation whose measured value changed.
+
+        Both versions must belong to ``drawing_id`` (404 otherwise) so a
+        caller cannot diff a version that lives under a foreign drawing.
+        """
+        drawing = await self.get_drawing(drawing_id)
+
+        from_version = await self.version_repo.get_by_id(from_version_id)
+        to_version = await self.version_repo.get_by_id(to_version_id)
+        for version in (from_version, to_version):
+            if version is None or version.drawing_id != drawing_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Drawing version not found",
+                )
+        assert from_version is not None  # noqa: S101 — narrowed by the loop above
+        assert to_version is not None  # noqa: S101
+
+        entity_rows = _compute_entity_diff(from_version.layers, to_version.layers)
+        annotation_rows = await self._compute_annotation_delta(
+            drawing.project_id,
+            from_version_id,
+            to_version_id,
+        )
+
+        # Summary counts — split entity vs annotation so the UI can show
+        # two traffic-light rows. ``unchanged`` is excluded from the headline
+        # change tallies but still returned in the rows for the "show all" view.
+        def _tally(rows: list[dict[str, Any]]) -> dict[str, int]:
+            tally = {"added": 0, "removed": 0, "modified": 0, "unchanged": 0}
+            for row in rows:
+                tally[row["change_type"]] = tally.get(row["change_type"], 0) + 1
+            return tally
+
+        # Net cost impact across all linked annotations whose value changed.
+        net_impact = Decimal("0")
+        cost_currency: str | None = None
+        has_cost = False
+        for row in annotation_rows:
+            if row.get("cost_impact") is not None:
+                has_cost = True
+                cost_currency = row.get("cost_currency") or cost_currency
+                try:
+                    net_impact += Decimal(str(row["cost_impact"]))
+                except (InvalidOperation, ValueError, TypeError):
+                    continue
+
+        summary = {
+            "entities": _tally(entity_rows),
+            "annotations": _tally(annotation_rows),
+            "net_cost_impact": str(net_impact.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            if has_cost
+            else None,
+            "cost_currency": cost_currency,
+            "from_entity_count": from_version.entity_count,
+            "to_entity_count": to_version.entity_count,
+        }
+
+        return {
+            "drawing_id": drawing_id,
+            "from_version_id": from_version.id,
+            "from_version_number": from_version.version_number,
+            "to_version_id": to_version.id,
+            "to_version_number": to_version.version_number,
+            "entity_rows": entity_rows,
+            "annotation_rows": annotation_rows,
+            "summary": summary,
+        }
+
+    async def _compute_annotation_delta(
+        self,
+        project_id: uuid.UUID,
+        from_version_id: uuid.UUID,
+        to_version_id: uuid.UUID,
+    ) -> list[dict[str, Any]]:
+        """Diff annotations across two versions, with BOQ cost impact.
+
+        Annotations are matched by ``metadata.compare_key`` when present
+        (a stable user/import key carried across re-draws), otherwise by
+        their own id within each version. Because a re-uploaded drawing
+        gets fresh annotation rows, the realistic match key is the
+        ``compare_key`` an importer stamps; absent that, an annotation
+        present only in one version is reported as added/removed.
+
+        For an annotation that exists in BOTH versions and is linked to a
+        BOQ position, the money impact ``(new - old) * unit_rate`` is
+        resolved in the project's base currency via the BOQ service.
+        """
+        from_annos = await self.annotation_repo.list_for_version(from_version_id)
+        to_annos = await self.annotation_repo.list_for_version(to_version_id)
+
+        def _key(ann: "DwgAnnotation") -> str:
+            meta = ann.metadata_ or {}
+            ck = meta.get("compare_key") if isinstance(meta, dict) else None
+            return str(ck).strip() if ck else f"id:{ann.id}"
+
+        from_by_key = {_key(a): a for a in from_annos}
+        to_by_key = {_key(a): a for a in to_annos}
+
+        # Lazy per-position currency/rate cache so we never re-resolve the
+        # same BOQ position (and its project FX) twice within one compare.
+        rate_cache: dict[str, tuple[str | None, str | None]] = {}
+
+        async def _rate_and_currency(position_id: str | None) -> tuple[str | None, str | None]:
+            if not position_id:
+                return None, None
+            if position_id in rate_cache:
+                return rate_cache[position_id]
+            result = await self._resolve_position_rate(position_id, project_id)
+            rate_cache[position_id] = result
+            return result
+
+        rows: list[dict[str, Any]] = []
+
+        for key in sorted(set(from_by_key) | set(to_by_key)):
+            old_ann = from_by_key.get(key)
+            new_ann = to_by_key.get(key)
+
+            if old_ann is not None and new_ann is None:
+                rows.append(
+                    {
+                        "change_type": "removed",
+                        "annotation_id": str(old_ann.id),
+                        "annotation_type": old_ann.annotation_type,
+                        "label": _annotation_label(old_ann),
+                        "layer_name": old_ann.layer_name,
+                        "old_measurement": _to_float(old_ann.measurement_value),
+                        "new_measurement": None,
+                        "measurement_unit": old_ann.measurement_unit,
+                        "linked_boq_position_id": old_ann.linked_boq_position_id,
+                        "cost_impact": None,
+                        "cost_currency": None,
+                    }
+                )
+                continue
+
+            if old_ann is None and new_ann is not None:
+                rows.append(
+                    {
+                        "change_type": "added",
+                        "annotation_id": str(new_ann.id),
+                        "annotation_type": new_ann.annotation_type,
+                        "label": _annotation_label(new_ann),
+                        "layer_name": new_ann.layer_name,
+                        "old_measurement": None,
+                        "new_measurement": _to_float(new_ann.measurement_value),
+                        "measurement_unit": new_ann.measurement_unit,
+                        "linked_boq_position_id": new_ann.linked_boq_position_id,
+                        "cost_impact": None,
+                        "cost_currency": None,
+                    }
+                )
+                continue
+
+            # Present in both — detect a measurement change and price it.
+            assert old_ann is not None and new_ann is not None  # noqa: S101
+            old_val = _to_float(old_ann.measurement_value)
+            new_val = _to_float(new_ann.measurement_value)
+            changed = old_val != new_val
+            position_id = new_ann.linked_boq_position_id or old_ann.linked_boq_position_id
+            cost_impact: str | None = None
+            cost_currency: str | None = None
+            if changed and position_id:
+                rate, cost_currency = await _rate_and_currency(position_id)
+                cost_impact = _calculate_cost_impact(
+                    old_value=old_val,
+                    new_value=new_val,
+                    unit_rate=rate,
+                )
+            rows.append(
+                {
+                    "change_type": "modified" if changed else "unchanged",
+                    "annotation_id": str(new_ann.id),
+                    "annotation_type": new_ann.annotation_type,
+                    "label": _annotation_label(new_ann),
+                    "layer_name": new_ann.layer_name,
+                    "old_measurement": old_val,
+                    "new_measurement": new_val,
+                    "measurement_unit": new_ann.measurement_unit or old_ann.measurement_unit,
+                    "linked_boq_position_id": position_id,
+                    "cost_impact": cost_impact,
+                    "cost_currency": cost_currency if cost_impact is not None else None,
+                }
+            )
+
+        return rows
+
+    async def _resolve_position_rate(
+        self,
+        position_id: str,
+        project_id: uuid.UUID,
+    ) -> tuple[str | None, str | None]:
+        """Resolve ``(unit_rate, base_currency)`` for a BOQ position.
+
+        The position must belong to ``project_id`` (cross-tenant safety:
+        a foreign-project position is treated as "no rate" so a compare
+        never prices an annotation against another tenant's estimate).
+        Best-effort: any lookup failure returns ``(None, None)`` so the
+        compare degrades to "no cost shown" rather than a 500.
+        """
+        try:
+            position_uuid = uuid.UUID(str(position_id))
+        except (ValueError, TypeError, AttributeError):
+            return None, None
+
+        try:
+            from app.modules.boq.service import BOQService
+
+            boq_service = BOQService(self.session)
+            position = await boq_service.position_repo.get_by_id(position_uuid)
+            if position is None:
+                return None, None
+            boq = await boq_service.get_boq(position.boq_id)
+            if str(boq.project_id) != str(project_id):
+                # Cross-tenant link — never price against it.
+                return None, None
+            base_currency = await boq_service._resolve_project_currency(position.boq_id)  # noqa: SLF001
+            return str(position.unit_rate), (base_currency or None)
+        except HTTPException:
+            return None, None
+        except Exception:  # noqa: BLE001 — pricing is advisory, never break the compare
+            logger.debug("Cost-impact rate lookup failed for position %s", position_id, exc_info=True)
+            return None, None
 
     async def get_entities(
         self,

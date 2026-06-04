@@ -31,7 +31,13 @@ from app.core.bulk_ops import BulkDeleteRequest
 from app.core.i18n import get_locale
 from app.core.rate_limiter import upload_limiter
 from app.core.validation.messages import translate
-from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
+from app.dependencies import (
+    CurrentUserId,
+    CurrentUserPayload,
+    RequirePermission,
+    SessionDep,
+    verify_project_access,
+)
 from app.modules.documents.schemas import (
     DocumentActivityResponse,
     DocumentBIMLinkCreate,
@@ -1513,14 +1519,25 @@ async def update_document(
     document_id: uuid.UUID,
     data: DocumentUpdate,
     user_id: CurrentUserId,
+    payload: CurrentUserPayload,
     session: SessionDep,
     _perm: None = Depends(RequirePermission("documents.update")),
     service: DocumentService = Depends(_get_service),
 ) -> DocumentResponse:
-    """Update document metadata."""
+    """Update document metadata.
+
+    The caller's app role (from the JWT payload) is passed through so the
+    service can enforce the ISO 19650 CDE role gates on a state transition
+    (Gate A / B / C). A non-state PATCH (rename, retag, …) is unaffected.
+    """
     existing = await service.get_document(document_id)
     await verify_project_access(existing.project_id, user_id, session)
-    doc = await service.update_document(document_id, data, user_id=str(user_id) if user_id else None)
+    doc = await service.update_document(
+        document_id,
+        data,
+        user_id=str(user_id) if user_id else None,
+        user_role=payload.get("role"),
+    )
     return _doc_to_response(doc)
 
 

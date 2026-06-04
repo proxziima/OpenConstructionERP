@@ -25,9 +25,11 @@ import {
   Layers,
   Pin,
   PinOff,
+  GitCompare,
 } from 'lucide-react';
 
 import { Button, Card, Badge, Input, Skeleton } from '@/shared/ui';
+import { PdfCompareDrawer } from './PdfCompareDrawer';
 import { apiGet, apiPost } from '@/shared/lib/api';
 import { formatFileSize } from '@/shared/lib/formatters';
 import { useAuthStore } from '@/stores/useAuthStore';
@@ -1047,6 +1049,9 @@ export function TakeoffPage() {
   /** Currently opened document in the Measurements viewer. */
   const [viewerDoc, setViewerDoc] = useState<{ url: string; name: string } | null>(null);
 
+  /** Revision compare drawer (Item 17) — diffs two takeoff PDFs. */
+  const [showCompare, setShowCompare] = useState(false);
+
   /** Set when a deep-link references a measurement so the viewer can
    *  select + scroll-to it after the document and measurement list load. */
   const [initialMeasurementId, setInitialMeasurementId] = useState<string | null>(
@@ -1794,9 +1799,12 @@ export function TakeoffPage() {
           vertical space so the main workspace fits in one viewport. */}
 
       {/* Tabs — Measurements primary (first), AI second. Lower radius
-          for a sharper, more "tool-like" feel; no ring-halo. */}
+          for a sharper, more "tool-like" feel; no ring-halo. The Compare
+          button sits to the right so revision-diffing is reachable from
+          either tab without stealing the tablist's full width. */}
+      <div className="mb-3 flex items-stretch gap-2">
       <div
-        className="mb-3 flex gap-1 rounded-md border border-border-light/80 bg-surface-secondary/40 p-1"
+        className="flex flex-1 gap-1 rounded-md border border-border-light/80 bg-surface-secondary/40 p-1"
         role="tablist"
         aria-label={t('takeoff.tabs_aria', { defaultValue: 'Takeoff sections' })}
       >
@@ -1853,6 +1861,27 @@ export function TakeoffPage() {
             </Badge>
           )}
         </button>
+      </div>
+      <button
+        type="button"
+        onClick={() => setShowCompare(true)}
+        disabled={(serverDocuments?.length ?? 0) < 2}
+        data-testid="takeoff-compare-button"
+        title={t('takeoff_compare.compare_revisions', {
+          defaultValue: 'Compare two takeoff PDFs with cost delta',
+        })}
+        className={clsx(
+          'inline-flex items-center gap-1.5 rounded-md border border-border-light/80 px-3 text-sm font-semibold transition-colors',
+          (serverDocuments?.length ?? 0) >= 2
+            ? 'bg-surface-secondary/40 text-content-secondary hover:text-oe-blue hover:bg-surface-primary/60'
+            : 'cursor-not-allowed text-content-quaternary',
+        )}
+      >
+        <GitCompare size={15} strokeWidth={2.1} aria-hidden />
+        <span className="hidden sm:inline">
+          {t('takeoff_compare.compare_short', { defaultValue: 'Compare' })}
+        </span>
+      </button>
       </div>
 
       {/* Tab content */}
@@ -2117,6 +2146,17 @@ export function TakeoffPage() {
             }}
           />
         </div>
+      )}
+
+      {/* Revision compare with cost delta (Item 17) */}
+      {selectedProjectId && (
+        <PdfCompareDrawer
+          open={showCompare}
+          onClose={() => setShowCompare(false)}
+          projectId={selectedProjectId}
+          documents={serverDocuments ?? []}
+          currentDocumentId={activeDocId}
+        />
       )}
     </div>
   );

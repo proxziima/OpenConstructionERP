@@ -30,6 +30,12 @@ meaning across the whole tenant:
   cross-project search — this is the killer use case for lessons learned reuse.
 - **search_bim_elements** — find BIM elements by name, type, category, \
   discipline, storey or material.
+- **search_rfis** — find RFIs by meaning across subject, question and official \
+  response ("structural rebar clash on level 2", "delivery delay").
+- **search_submittals** — find submittals by title, spec section and type \
+  ("concrete mix design", "fire-rated door shop drawings").
+- **search_correspondence** — find letters, emails and notices by subject, \
+  direction, type and notes ("notice of delay", "claim for extension of time").
 - **search_anything** — open-ended fan-out across every collection at once. \
   Use when you don't know which module the answer lives in.
 

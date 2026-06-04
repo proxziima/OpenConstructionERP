@@ -1750,6 +1750,34 @@ async def delete_handover_doc(
     await service.delete_handover_doc(doc_id)
 
 
+@router.get("/handovers/{h_id}/export")
+async def export_handover_package(
+    h_id: uuid.UUID,
+    session: SessionDep,
+    user_payload: CurrentUserPayload,
+    locale: str = Query(default="en", max_length=12),
+    service: PropertyDevService = Depends(_svc),
+    _perm: None = Depends(RequirePermission("property_dev.read")),
+) -> Response:
+    """Download the digital handover / closeout package as a ZIP.
+
+    Bundles freshly rendered certificates, every delivered handover
+    document held locally, and all snag photos. IDOR-gated via the
+    handover → plot → development → project ownership chain. The archive
+    is assembled in-memory and returned with a sensible "Save As…" name.
+    """
+    await _verify_owner_via_handover(session, h_id, user_payload)
+    filename, zip_bytes = await service.export_handover_package(
+        h_id,
+        locale=_normalise_locale(locale),
+    )
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ── Sales pipeline + reservation calendar + dev P&L ────────────────────
 
 

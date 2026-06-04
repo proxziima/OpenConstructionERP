@@ -571,6 +571,51 @@ export const matchElementsApi = {
     return (await res.json()) as MatchSession;
   },
 
+  /** §3.1/§4.1.4 — upload a single photo or drawing snapshot and create
+   *  an 'image' source session in one call. The backend binds the saved
+   *  file to the session and a vision-LLM enumerates the visible
+   *  construction elements with rough quantity estimates. Extraction is
+   *  a suggestion the user reviews; the session is usable (empty) even
+   *  when no AI provider is configured. Accepts PNG / JPG / WebP up to
+   *  10 MB. */
+  createSessionFromImage: async (
+    spec: {
+      project_id: string;
+      file: File;
+      name?: string;
+      catalogue_id?: string | null;
+      construction_stage?: ConstructionStage | null;
+    },
+  ): Promise<MatchSession> => {
+    const token = useAuthStore.getState().accessToken;
+    const fd = new FormData();
+    fd.append('project_id', spec.project_id);
+    fd.append('image', spec.file);
+    if (spec.name) fd.append('name', spec.name);
+    if (spec.catalogue_id) fd.append('catalogue_id', spec.catalogue_id);
+    if (spec.construction_stage)
+      fd.append('construction_stage', spec.construction_stage);
+    const res = await fetch(`${PREFIX}/sessions/from-image`, {
+      method: 'POST',
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        Accept: 'application/json',
+      },
+      body: fd,
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json();
+        detail = formatErrorDetail(body) || res.statusText;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`${res.status} ${detail}`);
+    }
+    return (await res.json()) as MatchSession;
+  },
+
   listSessions: (
     projectId: string,
     params?: { include_archived?: boolean; limit?: number },

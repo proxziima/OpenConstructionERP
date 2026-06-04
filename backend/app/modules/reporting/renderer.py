@@ -34,7 +34,8 @@ free-text fields" block so a custom template never falls off the page.
     overview, milestones, critical, lookahead,
     incidents, near_miss, training,
     by_type, punchlist, details,
-    status, kpi_comparison, risks
+    status, kpi_comparison, risks,
+    progress, photos
 
 Each section reads a sub-dict from ``data_snapshot[section.id]``. If that
 key is missing the section is skipped (so a partially populated snapshot
@@ -182,6 +183,22 @@ class ReportRenderer:
         if isinstance(payload, dict | list) and not payload:
             return None
 
+        # ── Specialised progress-report blocks ──
+        # The progress report (item 15) introduces two section IDs the
+        # generic key-value / list renderers cannot present well: a
+        # completion block (headline % + period milestones) and a photo
+        # gallery (image thumbnails, not a table of URLs). Handle them
+        # explicitly before falling through to the generic renderers.
+        if section_id == "progress" and isinstance(payload, dict):
+            body = self._render_progress_block(payload)
+            return f'<section class="report-section"><h2>{html.escape(section_title)}</h2>{body}</section>'
+
+        if section_id == "photos":
+            body = self._render_photo_gallery(payload)
+            if not body:
+                return None
+            return f'<section class="report-section"><h2>{html.escape(section_title)}</h2>{body}</section>'
+
         body: str
         if isinstance(payload, dict):
             body = self._render_keyvalue(payload)
@@ -191,6 +208,82 @@ class ReportRenderer:
             body = f"<p>{html.escape(str(payload))}</p>"
 
         return f'<section class="report-section"><h2>{html.escape(section_title)}</h2>{body}</section>'
+
+    # ── Progress-report blocks (item 15) ─────────────────────────────────
+
+    def _render_progress_block(self, payload: dict[str, Any]) -> str:
+        """Render the field-progress completion block.
+
+        Presents the headline overall percent-complete plus the "as of"
+        timestamp / recorder, and a small table of per-period milestone
+        readings when present. All values are HTML-escaped; the percent
+        is formatted to one decimal place when it is numeric.
+        """
+        rows: list[str] = []
+
+        overall = payload.get("overall_pct")
+        if overall is not None:
+            try:
+                pct_label = f"{float(overall):.1f}%"
+            except (TypeError, ValueError):
+                pct_label = html.escape(str(overall))
+            rows.append(f"<tr><th>Overall Progress</th><td><strong>{pct_label}</strong></td></tr>")
+
+        if payload.get("as_of_date"):
+            rows.append(f"<tr><th>As Of</th><td>{html.escape(str(payload['as_of_date']))}</td></tr>")
+        if payload.get("recorded_by"):
+            rows.append(f"<tr><th>Recorded By</th><td>{html.escape(str(payload['recorded_by']))}</td></tr>")
+
+        milestones = payload.get("milestone_status")
+        if isinstance(milestones, list):
+            for ms in milestones:
+                if not isinstance(ms, dict):
+                    continue
+                period = html.escape(str(ms.get("period", "Period")))
+                try:
+                    ms_pct = f"{float(ms.get('percent', 0)):.1f}%"
+                except (TypeError, ValueError):
+                    ms_pct = html.escape(str(ms.get("percent", "")))
+                count = ms.get("entry_count")
+                count_suffix = f" ({html.escape(str(count))} entries)" if count is not None else ""
+                rows.append(f"<tr><th>{period}</th><td>{ms_pct}{count_suffix}</td></tr>")
+
+        if not rows:
+            # Defensive: a progress block with no recognised keys still
+            # renders something rather than an empty table.
+            return self._render_keyvalue(payload)
+        return f'<table class="report-table">{"".join(rows)}</table>'
+
+    def _render_photo_gallery(self, payload: Any) -> str:
+        """Render up to six site photos as inline thumbnails.
+
+        Accepts either ``{"photo_gallery": [url, ...]}`` or a bare list of
+        URLs. Each URL is HTML-attribute-escaped before it lands in the
+        ``src`` attribute. Returns an empty string when there are no
+        usable photo URLs so the caller can skip the section entirely.
+        """
+        photos: list[Any] = []
+        if isinstance(payload, dict):
+            gallery = payload.get("photo_gallery")
+            if isinstance(gallery, list):
+                photos = gallery
+        elif isinstance(payload, list):
+            photos = payload
+
+        img_tags: list[str] = []
+        for photo_url in photos[:6]:
+            if not photo_url or not isinstance(photo_url, str):
+                continue
+            safe_url = html.escape(photo_url, quote=True)
+            img_tags.append(
+                '<div style="display:inline-block;width:30%;margin:5px;vertical-align:top;">'
+                f'<img src="{safe_url}" style="max-width:100%;max-height:150px;'
+                'border:1px solid #e5e7eb;border-radius:4px;" alt="Site photo" />'
+                "</div>"
+            )
+        if not img_tags:
+            return ""
+        return f'<div style="display:flex;flex-wrap:wrap;">{"".join(img_tags)}</div>'
 
     def _render_keyvalue(self, payload: dict[str, Any]) -> str:
         """Render a dict as a definition-style table.
@@ -356,6 +449,13 @@ _DEFAULT_SECTIONS: dict[str, list[dict[str, str]]] = {
         {"id": "status", "title": "Project Statuses"},
         {"id": "kpi_comparison", "title": "KPI Comparison"},
         {"id": "risks", "title": "Portfolio Risks"},
+    ],
+    "progress_report": [
+        {"id": "header", "title": "Project Overview"},
+        {"id": "progress", "title": "Field Progress"},
+        {"id": "schedule", "title": "Schedule Status"},
+        {"id": "risk", "title": "Top Risks"},
+        {"id": "photos", "title": "Site Photos"},
     ],
 }
 

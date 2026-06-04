@@ -115,6 +115,51 @@ export interface AgentHealth {
   settings_url: string;
 }
 
+// ── Automation: schedule + tools + triggers (Item 29) ────────────────────────
+
+/** The automation envelope of a custom agent (schedule + tools + triggers). */
+export interface AgentMetadata {
+  cron: string | null;
+  schedule_enabled: boolean;
+  next_run_at: string | null;
+  schedule_input: string;
+  triggers: string[];
+  allowed_tools: string[];
+}
+
+export interface SetScheduleRequest {
+  cron_expr: string;
+  enabled?: boolean;
+  schedule_input?: string;
+  triggers?: string[];
+}
+
+/** A runner tool plus the permission an operator needs to grant it. */
+export interface ToolWithPermission {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  required_permission: string;
+}
+
+/** Tool-picker payload: full catalogue + the agent's current grant. */
+export interface AgentTools {
+  available: ToolWithPermission[];
+  selected: string[];
+}
+
+export interface SetToolsRequest {
+  allowed_tools: string[];
+}
+
+/** One subscribable platform event for the trigger picker. */
+export interface EventTriggerDescriptor {
+  name: string;
+  label: string;
+  description: string;
+  available: boolean;
+}
+
 export const aiAgentsApi = {
   listAgents: () => apiGet<AgentDescriptor[]>('/v1/ai-agents/agents/'),
   listRuns: (projectId?: string) =>
@@ -133,4 +178,18 @@ export const aiAgentsApi = {
   updateCustomAgent: (id: string, body: CustomAgentInput) =>
     apiPut<CustomAgent, CustomAgentInput>(`/v1/ai-agents/custom/${id}`, body),
   deleteCustomAgent: (id: string) => apiDelete(`/v1/ai-agents/custom/${id}`),
+
+  // Automation: schedule + tools + triggers (Item 29).
+  getAgentSchedule: (id: string) =>
+    apiGet<AgentMetadata>(`/v1/ai-agents/custom/${id}/schedule`),
+  setAgentSchedule: (id: string, body: SetScheduleRequest) =>
+    apiPost<AgentMetadata, SetScheduleRequest>(`/v1/ai-agents/custom/${id}/schedule`, body),
+  deleteAgentSchedule: (id: string) => apiDelete(`/v1/ai-agents/custom/${id}/schedule`),
+  getAgentTools: (id: string) => apiGet<AgentTools>(`/v1/ai-agents/custom/${id}/tools`),
+  listGrantableTools: () =>
+    apiGet<ToolWithPermission[]>('/v1/ai-agents/grantable-tools/'),
+  setAgentTools: (id: string, body: SetToolsRequest) =>
+    apiPost<AgentMetadata, SetToolsRequest>(`/v1/ai-agents/custom/${id}/tools`, body),
+  listEventTriggers: () =>
+    apiGet<EventTriggerDescriptor[]>('/v1/ai-agents/triggers/'),
 };

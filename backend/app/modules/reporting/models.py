@@ -98,7 +98,7 @@ class ReportTemplate(Base):
     report_type: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
-    )  # project_status / cost_report / schedule_status / safety_report / inspection_report / portfolio_summary
+    )  # project_status / cost_report / schedule_status / safety_report / inspection_report / portfolio_summary / progress_report
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     template_data: Mapped[dict] = mapped_column(  # type: ignore[assignment]
         JSON,

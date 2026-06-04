@@ -25,6 +25,7 @@ import { AIAdvisorPanel } from './AIAdvisorPanel';
 import { DomainDetails } from './DomainDetails';
 import { ProjectKPIHero } from './components/ProjectKPIHero';
 import { ProjectAnalyticsGrid } from './components/ProjectAnalyticsGrid';
+import { ForecastPanel } from './components/ForecastPanel';
 import {
   RefreshCw,
   BrainCircuit,
@@ -38,6 +39,7 @@ import {
   X,
   FileText,
   ShieldCheck,
+  TrendingUp,
 } from 'lucide-react';
 
 /** Dynamic state object from backend — each domain key (boq, validation, etc.)
@@ -137,6 +139,9 @@ export function ProjectIntelligencePage() {
   const [expandedGap, setExpandedGap] = useState<string | null>(null);
   const [showAllGaps, setShowAllGaps] = useState(false);
   const [selectedDomain, setSelectedDomain] = useState<string | null>('boq');
+  // Active predictive-forecast alert count, reported up from ForecastPanel.
+  // Drives the banner above the KPI hero and the Forecasts section badge.
+  const [forecastAlertCount, setForecastAlertCount] = useState(0);
   const [introDismissed, setIntroDismissed] = useState<boolean>(() => {
     try {
       return localStorage.getItem('oe_pi_intro_dismissed') === '1';
@@ -152,6 +157,12 @@ export function ProjectIntelligencePage() {
     } catch {
       /* ignore storage errors */
     }
+  }, []);
+
+  const scrollToForecasts = useCallback(() => {
+    document
+      .getElementById('pi-forecasts')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
   // Anomaly + line-item data used to enrich the Critical Gaps card with $ impact.
@@ -623,6 +634,43 @@ export function ProjectIntelligencePage() {
         </div>
       )}
 
+      {/* Predictive forecast alert banner — only shown when the forecast
+          engine has flagged one or more active alerts for this project. */}
+      {forecastAlertCount > 0 && (
+        <div
+          className="mt-4 rounded-xl border border-rose-300/60 dark:border-rose-900/50 bg-rose-50/70 dark:bg-rose-950/20 p-3 flex items-center gap-3"
+          data-testid="pi-forecast-alert-banner"
+        >
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-rose-500/10">
+            <AlertTriangle size={16} className="text-rose-500" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-semibold text-content-primary">
+              {t('project_intelligence.forecast.banner_title', {
+                defaultValue: '{{count}} active forecast alert',
+                defaultValue_plural: '{{count}} active forecast alerts',
+                count: forecastAlertCount,
+              })}
+            </p>
+            <p className="text-2xs text-content-secondary">
+              {t('project_intelligence.forecast.banner_body', {
+                defaultValue:
+                  'The predictive EVM forecast has breached a cost/schedule threshold. Review and acknowledge below.',
+              })}
+            </p>
+          </div>
+          <button
+            onClick={scrollToForecasts}
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-rose-500 text-white rounded-lg hover:bg-rose-600 transition-colors"
+          >
+            <TrendingUp size={13} />
+            {t('project_intelligence.forecast.banner_cta', {
+              defaultValue: 'View forecast',
+            })}
+          </button>
+        </div>
+      )}
+
       {/* Section 1 — KPI hero */}
       <div className="py-4">
         <ProjectKPIHero projectId={activeProjectId} />
@@ -726,6 +774,34 @@ export function ProjectIntelligencePage() {
       {/* Section 2b — Analytics grid (full width) */}
       <div className="pb-4">
         <ProjectAnalyticsGrid projectId={activeProjectId} />
+      </div>
+
+      {/* Section 2c — Predictive EVM forecast + alerts (TOP-30 #19) */}
+      <div id="pi-forecasts" className="pb-4 scroll-mt-20">
+        <div className="rounded-xl border border-border-light bg-white dark:bg-gray-800/60 shadow-sm p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <TrendingUp size={16} className="text-oe-blue" />
+            <h2 className="text-sm font-semibold text-content-primary">
+              {t('project_intelligence.forecast.section_title', {
+                defaultValue: 'Predictive Forecast',
+              })}
+            </h2>
+            {forecastAlertCount > 0 && (
+              <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-rose-500 text-white text-2xs font-semibold">
+                {forecastAlertCount}
+              </span>
+            )}
+            <span className="ml-auto text-2xs text-content-tertiary">
+              {t('project_intelligence.forecast.section_hint', {
+                defaultValue: 'EAC / ETC forecast with threshold alerts',
+              })}
+            </span>
+          </div>
+          <ForecastPanel
+            projectId={activeProjectId}
+            onAlertCountChange={setForecastAlertCount}
+          />
+        </div>
       </div>
 
       {/* Section 3 — Domain detail tabs (reduced to 4) */}

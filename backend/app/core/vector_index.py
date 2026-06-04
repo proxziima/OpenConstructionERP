@@ -90,6 +90,13 @@ COLLECTION_REQUIREMENTS = "oe_requirements"
 # ``cost_items`` LanceDB table (singular collection schema, all-MiniLM)
 # which is kept for backwards-compatibility with pre-built snapshots.
 COLLECTION_COSTS = "oe_cost_items"
+# Project-document collections (item 16 — semantic assistant over
+# RFI / submittals / correspondence).  Each is a thin wrapper over the
+# existing module table; the vectors live in LanceDB / Qdrant and the SQL
+# fallback in ``search.service`` covers the no-vector deploy path.
+COLLECTION_RFI = "oe_rfi_rfis"
+COLLECTION_SUBMITTALS = "oe_submittals_submittals"
+COLLECTION_CORRESPONDENCE = "oe_correspondence_correspondence"
 
 #: Ordered tuple used by :func:`unified_search` to fan out to every
 #: registered collection when the caller doesn't specify ``types``.
@@ -100,6 +107,9 @@ ALL_COLLECTIONS: tuple[str, ...] = (
     COLLECTION_RISKS,
     COLLECTION_BIM_ELEMENTS,
     COLLECTION_REQUIREMENTS,
+    COLLECTION_RFI,
+    COLLECTION_SUBMITTALS,
+    COLLECTION_CORRESPONDENCE,
     COLLECTION_VALIDATION,
     COLLECTION_CHAT,
     COLLECTION_COSTS,
@@ -114,6 +124,9 @@ COLLECTION_LABELS: dict[str, str] = {
     COLLECTION_RISKS: "Risks",
     COLLECTION_BIM_ELEMENTS: "BIM Elements",
     COLLECTION_REQUIREMENTS: "Requirements",
+    COLLECTION_RFI: "RFI",
+    COLLECTION_SUBMITTALS: "Submittals",
+    COLLECTION_CORRESPONDENCE: "Correspondence",
     COLLECTION_VALIDATION: "Validation",
     COLLECTION_CHAT: "Chat",
     COLLECTION_COSTS: "Cost Catalog",

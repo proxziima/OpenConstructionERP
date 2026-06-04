@@ -270,6 +270,11 @@ async def run_template_now(
     )
     report = await service.generate_report(gen_data, user_id=user_id)
     await service.mark_template_ran(template)
+    # Distribute to the template's recipients (emails + portal users) when
+    # any are configured. Best-effort: a notification failure never blocks
+    # the run-now response (the report is already persisted).
+    if template.recipients:
+        await service.dispatch_report_email(report, list(template.recipients))
     return GeneratedReportResponse.model_validate(report)
 
 

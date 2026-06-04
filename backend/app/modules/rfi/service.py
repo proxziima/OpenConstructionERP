@@ -190,6 +190,18 @@ class RFIService:
                 },
             )
 
+            # Publish rfi.created so the vector indexer embeds the new row
+            # for semantic search / the floating-chat assistant (item 16).
+            await _safe_publish(
+                "rfi.created",
+                {
+                    "project_id": str(data.project_id),
+                    "rfi_id": str(rfi.id),
+                    "rfi_number": rfi_number,
+                },
+                source_module="oe_rfi",
+            )
+
             # Publish rfi.assigned event so notification handlers fire
             if data.assigned_to:
                 await _safe_publish(
@@ -364,6 +376,18 @@ class RFIService:
         else:
             logger.info("rfi.updated", extra=log_extra)
 
+        # Publish rfi.updated so the vector indexer re-embeds the edited
+        # row (subject / question / response may have changed) — item 16.
+        await _safe_publish(
+            "rfi.updated",
+            {
+                "project_id": project_id_s,
+                "rfi_id": str(rfi_id),
+                "rfi_number": rfi_number_s,
+            },
+            source_module="oe_rfi",
+        )
+
         # Fire rfi.assigned when assigned_to changes to a new user
         if new_assigned is not None and str(new_assigned) != old_assigned:
             await _safe_publish(
@@ -391,6 +415,16 @@ class RFIService:
                 "project_id": project_id_s,
                 "actor": actor_id,
             },
+        )
+        # Publish rfi.deleted so the vector indexer drops the embedding for
+        # the removed row (item 16).
+        await _safe_publish(
+            "rfi.deleted",
+            {
+                "project_id": project_id_s,
+                "rfi_id": str(rfi_id),
+            },
+            source_module="oe_rfi",
         )
 
     async def respond_to_rfi(
