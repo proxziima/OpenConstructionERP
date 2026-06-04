@@ -80,7 +80,7 @@ increment, not a fake "done" on the XL items.
 | 1 | Clash + validation events into notifications/punchlist/NCR | DONE | 1 | backend events + UI origin badges (f20c333f6) |
 | 2 | Mobile time/attendance -> job cost | triaging | 4 | |
 | 3 | Event-driven live EVM/KPI | DONE | 2 | KPI freshness watermark + cost/schedule/finance events invalidate; EVM "Live" pill auto-refreshes |
-| 4 | Bi-directional ERP/accounting connectors | triaging | 3 | |
+| 4 | Bi-directional ERP/accounting connectors | DONE | 3 | transport-agnostic connector contract + registry; file connector (CSV/JSON) push invoices/payments out, pull a GL file in as balanced double-entry ledger transactions; dry-run previews and writes nothing; formula-injection guard on export; idempotent pull (one post per transaction ref); auto-push on invoice.approved/paid via background job + idempotency key; MANAGER-only, Fernet-encrypted credentials never echoed; Connectors tab UI; migration v3155; 23 unit tests + full E2E HTTP + browser pass (v3155) |
 | 5 | Cross-project resource leveling | DONE | 2 | portfolio capacity heatmap (week/month), cross-project conflict detection + UI |
 | 6 | Unify schedule dependency graph + guards | DONE | 1 | canonical store + completion guard 409 + UI hint (f20c333f6) |
 | 7 | AI photo intelligence | triaging | 4 | |
@@ -316,3 +316,26 @@ increment, not a fake "done" on the XL items.
   (title, CAD 15,000, 3 days, 45% confidence, one suggested line) and Create
   landed on the new CO-006 with its own live What-If panel - zero console
   errors. Commit c921fb805, pushed to main. NEXT: #4 (ERP connectors).
+- 2026-06-04: #4 ERP/accounting connectors DONE (last Wave 3 item). Built a
+  transport-agnostic connector contract + registry so a later SFTP/REST/DATEV/SAP
+  connector drops into the same service and UI. First connector is file-based:
+  push writes the project's invoices and payments as CSV or JSON to the storage
+  backend; pull reads a general-ledger file and posts it as balanced double-entry
+  ledger transactions. Every export cell goes through the spreadsheet
+  formula-injection guard; the inbound parser accepts common header aliases.
+  Safe by construction: a dry run previews and writes nothing (no files, no
+  ledger rows) and only records its own audit entry; inbound journals must
+  balance and be a single debit/credit pair or they are reported and skipped;
+  re-importing the same file is a no-op (one post per transaction ref per
+  project). Auto-push on invoice.approved / invoice.paid hands off to the
+  background job runner with an idempotency key. MANAGER-only manage/sync;
+  credentials Fernet-encrypted at rest and never returned (has-credentials flag
+  only). New connector subpackage + config/sync-log models + schemas + service +
+  event wiring + 9 REST endpoints + Connectors tab in the finance page. Two new
+  tables via migration v3155 (embedded runtime auto-creates them); single
+  alembic head. Verified: 23 unit tests against real PG, full E2E HTTP on a live
+  backend (login, types, create, validate, dry-run wrote no files, live push
+  wrote invoices.csv, sync history, missing-inbound surfaced a clean error not a
+  crash, editor role got 403, delete 204), tsc 0 errors + production build OK,
+  ruff clean, and a Playwright browser pass over the Connectors tab with zero
+  console errors. Wave 3 (#9, #10, #11, #4) complete. NEXT: Waves 4-6.
