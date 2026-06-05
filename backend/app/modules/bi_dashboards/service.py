@@ -620,9 +620,7 @@ class BIDashboardsService:
         # project_id) series exactly once up front and look it up in the loop
         # rather than re-querying per widget.
         chart_kpi_codes = {
-            w.kpi_code
-            for w in widgets
-            if w.kpi_code is not None and w.widget_type in ("line_chart", "bar_chart")
+            w.kpi_code for w in widgets if w.kpi_code is not None and w.widget_type in ("line_chart", "bar_chart")
         }
         history_by_kpi: dict[str, list[dict[str, Any]]] = {}
         for kpi_code in chart_kpi_codes:

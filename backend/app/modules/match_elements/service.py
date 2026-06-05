@@ -1743,9 +1743,7 @@ class MatchElementsService:
                 return Decimal("0"), False
             return amount * factor_dec, True
 
-        totals: dict[uuid.UUID, tuple[Decimal, str | None]] = dict.fromkeys(
-            sids, (Decimal("0"), None)
-        )
+        totals: dict[uuid.UUID, tuple[Decimal, str | None]] = dict.fromkeys(sids, (Decimal("0"), None))
         for sid, cid, qty_raw, unit in applied_rows:
             if cid is None or cid not in cost_lookup:
                 continue

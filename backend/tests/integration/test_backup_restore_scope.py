@@ -117,6 +117,4 @@ async def test_replace_restore_delete_leaves_other_users_data(session):
     # ...but tenant B survives completely.
     assert await _count(session, Project, Project.owner_id == TENANT_B) == 1
     assert await _count(session, BOQ, BOQ.project_id == PROJECT_B) == 1
-    assert (
-        await _count(session, Position, Position.boq_id.in_(select(BOQ.id).where(BOQ.project_id == PROJECT_B))) == 3
-    )
+    assert await _count(session, Position, Position.boq_id.in_(select(BOQ.id).where(BOQ.project_id == PROJECT_B))) == 3

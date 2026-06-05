@@ -289,11 +289,7 @@ class ComplianceDocService:
         # that and let a doc be un-cancelled (e.g. ``cancelled`` → ``active``).
         # Mirror the terminal-state contract here so the explicit path can't
         # break it.
-        if (
-            explicit_status is not None
-            and doc.status in _TERMINAL_STATUSES
-            and explicit_status != doc.status
-        ):
+        if explicit_status is not None and doc.status in _TERMINAL_STATUSES and explicit_status != doc.status:
             raise HTTPException(
                 status_code=http_status.HTTP_400_BAD_REQUEST,
                 detail=("Cannot transition out of a terminal status."),

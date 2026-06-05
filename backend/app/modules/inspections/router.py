@@ -150,6 +150,7 @@ async def export_inspections(
         ws.cell(row=row_idx, column=6, value=item.location or "")
         ws.cell(row=row_idx, column=7, value=item.status)
         ws.cell(row=row_idx, column=8, value=item.result or "")
+
         # Checklist pass/fail count. Mirror the response-based checking used
         # by complete_inspection / create_defect_from_inspection: the schema
         # field is ``response`` (yes/no/pass/fail/...), with a legacy

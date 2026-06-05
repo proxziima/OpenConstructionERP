@@ -323,9 +323,7 @@ class PaymentApplicationRepository(_BaseRepo):
         in cde/repository.py (``FOR UPDATE`` is honoured on PostgreSQL, the
         only supported backend).
         """
-        lock_stmt = (
-            select(SubcontractAgreement.id).where(SubcontractAgreement.id == agreement_id).with_for_update()
-        )
+        lock_stmt = select(SubcontractAgreement.id).where(SubcontractAgreement.id == agreement_id).with_for_update()
         await self.session.execute(lock_stmt)
 
         stmt = (

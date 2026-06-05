@@ -154,9 +154,7 @@ class ResourceSkillRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def list_for_resources(
-        self, resource_ids: list[uuid.UUID]
-    ) -> dict[uuid.UUID, list[ResourceSkill]]:
+    async def list_for_resources(self, resource_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[ResourceSkill]]:
         """Bulk-fetch skills for many resources in one round-trip.
 
         Returns a mapping ``resource_id -> [ResourceSkill, ...]`` so callers

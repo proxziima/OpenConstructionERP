@@ -1105,10 +1105,7 @@ class ContractsService:
 
         return {
             "error": "compliance_gate_failed",
-            "message": (
-                "Compliance gate failed: resolve the blocking issues below "
-                "before signing this contract."
-            ),
+            "message": ("Compliance gate failed: resolve the blocking issues below before signing this contract."),
             "rule_packs": pack_ids,
             "rule_sets": report.rule_sets_applied,
             "status": report.status.value,
@@ -1701,8 +1698,7 @@ class ContractsService:
                 period_completed_value=derived["period_completed_value"],
                 period_completed_pct=derived["period_completed_pct"],
                 cumulative_completed_value=(
-                    prior_by_line.get(sov_line.id, DEC_ZERO)
-                    + derived["period_completed_value"]
+                    prior_by_line.get(sov_line.id, DEC_ZERO) + derived["period_completed_value"]
                 ).quantize(Decimal("0.0001")),
             )
             for sov_line, derived in resolved

@@ -11,7 +11,6 @@ fixture, function-scoped).
 
 from __future__ import annotations
 
-import uuid
 from decimal import Decimal
 
 import pytest
@@ -47,14 +46,10 @@ async def _make_sub(session: AsyncSession, **kwargs: object) -> Subcontractor:
 async def test_rating_period_unique_constraint(session: AsyncSession) -> None:
     """TC-10: a second rating row for the same (sub, period) is rejected."""
     sub = await _make_sub(session)
-    session.add(
-        SubcontractorRating(subcontractor_id=sub.id, period="2026-05", overall_score=Decimal("80"))
-    )
+    session.add(SubcontractorRating(subcontractor_id=sub.id, period="2026-05", overall_score=Decimal("80")))
     await session.flush()
 
-    session.add(
-        SubcontractorRating(subcontractor_id=sub.id, period="2026-05", overall_score=Decimal("90"))
-    )
+    session.add(SubcontractorRating(subcontractor_id=sub.id, period="2026-05", overall_score=Decimal("90")))
     with pytest.raises(IntegrityError):
         await session.flush()
     await session.rollback()

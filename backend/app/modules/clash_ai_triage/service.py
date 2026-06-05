@@ -496,9 +496,7 @@ class ClashTriageService:
         # ``ClashTriageUnavailable`` does not cancel the other in-flight
         # workers and discard rows that already completed. We surface the
         # config error afterwards (preserving the router's 503 path).
-        gathered = await asyncio.gather(
-            *[_one(cid) for cid in clash_ids], return_exceptions=True
-        )
+        gathered = await asyncio.gather(*[_one(cid) for cid in clash_ids], return_exceptions=True)
         for outcome in gathered:
             if isinstance(outcome, ClashTriageUnavailable):
                 raise outcome

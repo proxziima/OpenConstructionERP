@@ -314,7 +314,7 @@ class _EventSpy:
 
     def publish_detached(self, name, data=None, source_module=None):  # noqa: ANN001
         self.events.append((name, data or {}))
-        return None
+        return
 
     def count(self, name: str) -> int:
         return sum(1 for n, _ in self.events if n == name)

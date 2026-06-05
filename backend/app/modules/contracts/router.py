@@ -955,8 +955,7 @@ async def update_progress_claim(
             detail={
                 "error": "status_not_directly_editable",
                 "message": (
-                    "Use the submit / approve / certify / reject / mark-paid "
-                    "endpoints to change progress claim status"
+                    "Use the submit / approve / certify / reject / mark-paid endpoints to change progress claim status"
                 ),
             },
         )

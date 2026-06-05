@@ -647,9 +647,7 @@ async def unified_search_service(
     async with async_session_factory() as session:
         # Only resolve the accessible-project fence for cross-project
         # searches; when project_id is set the router already authorised it.
-        allowed_project_ids = (
-            None if project_id else await _accessible_project_ids(session, user_id)
-        )
+        allowed_project_ids = None if project_id else await _accessible_project_ids(session, user_id)
         for collection in chosen:
             try:
                 hits = await _sql_search_collection(

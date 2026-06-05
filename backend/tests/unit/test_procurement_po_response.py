@@ -14,7 +14,7 @@ and the router stamps the real computed values afterwards.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.modules.procurement.schemas import POResponse
@@ -38,8 +38,8 @@ class _FakePO:
         self.metadata_ = {}
         self.retention_percent = Decimal("5.00")
         self.retain_on_receipt = False
-        self.created_at = datetime.now(timezone.utc)
-        self.updated_at = datetime.now(timezone.utc)
+        self.created_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
 
     # The crux: these are methods, exactly like the real ORM model.
     def retainage_amount(self) -> Decimal:

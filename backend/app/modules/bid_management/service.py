@@ -1526,8 +1526,8 @@ class BidManagementService:
         sub_by_bidder = {s.bidder_id: s for s in valid_subs}
 
         # Pre-fetch every line for every submission in a single query.
-        lines_by_sub: dict[uuid.UUID, list[BidSubmissionLine]] = (
-            await self.submission_line_repo.list_for_submissions([s.id for s in valid_subs])
+        lines_by_sub: dict[uuid.UUID, list[BidSubmissionLine]] = await self.submission_line_repo.list_for_submissions(
+            [s.id for s in valid_subs]
         )
 
         rows: list[dict[str, Any]] = []

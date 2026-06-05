@@ -203,11 +203,7 @@ async def restore_backup(
                             # break merge semantics by importing a duplicate.
                             # Treat an un-checkable record as skipped instead.
                             try:
-                                lookup_id = (
-                                    uuid.UUID(record_id)
-                                    if isinstance(record_id, str)
-                                    else record_id
-                                )
+                                lookup_id = uuid.UUID(record_id) if isinstance(record_id, str) else record_id
                             except (ValueError, TypeError):
                                 count_skipped += 1
                                 logger.debug(
@@ -218,9 +214,7 @@ async def restore_backup(
                                 continue
 
                             existing = (
-                                await session.execute(
-                                    select(model_cls).where(model_cls.id == lookup_id)
-                                )
+                                await session.execute(select(model_cls).where(model_cls.id == lookup_id))
                             ).scalar_one_or_none()
                             if existing is not None:
                                 count_skipped += 1
