@@ -173,7 +173,7 @@ function localeWeekStart(locale: string | undefined): 0 | 1 {
     /* Intl.Locale.weekInfo not available — fall through to the region map. */
   }
   const norm = lc.toLowerCase();
-  const lang = norm.split('-')[0];
+  const lang = norm.split('-')[0] ?? '';
   // Languages/regions that conventionally start the week on Sunday.
   const sundayFirstLangs = ['ja', 'ko', 'he', 'ar'];
   const sundayFirstLocales = ['en-us', 'en-ca', 'es-mx', 'zh-cn'];

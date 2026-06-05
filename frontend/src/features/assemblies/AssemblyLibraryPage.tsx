@@ -341,8 +341,7 @@ function TemplateDrawer({
         project_id: projectId,
       });
 
-      for (let i = 0; i < result.components.length; i += 1) {
-        const c = result.components[i];
+      for (const c of result.components) {
         await assembliesApi.addComponent(assembly.id, {
           cost_item_id: c.matched_cost_item_id || undefined,
           description: c.matched_description || c.description,
