@@ -22,6 +22,40 @@ import {
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
+// The global test setup (src/test/setup.ts) mocks react-router-dom with a
+// useParams() that always returns {}, which would leave the detail page
+// without a claimId and short-circuit its query. Restore the real router so
+// the MemoryRouter/Route wrapper below actually supplies :claimId/:projectId.
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>(
+    'react-router-dom',
+  );
+  return { ...actual, useNavigate: () => vi.fn() };
+});
+
+// The global setup's i18n mock returns defaultValue but does not interpolate
+// {{number}} / {{count}}. These components rely on standard i18next
+// interpolation, so use an interpolation-aware t() here (matches the pattern
+// used by the coordination feature tests).
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string, opts?: Record<string, unknown>) => {
+      const defaultValue =
+        opts && typeof opts === 'object' && 'defaultValue' in opts
+          ? (opts.defaultValue as string)
+          : key;
+      if (!opts) return defaultValue;
+      return defaultValue.replace(/\{\{(\w+)\}\}/g, (_, name) =>
+        String(opts[name] ?? ''),
+      );
+    },
+    i18n: { language: 'en', changeLanguage: vi.fn() },
+  }),
+  Trans: ({ children }: { children: React.ReactNode }) => children,
+  initReactI18next: { type: '3rdParty', init: () => {} },
+  I18nextProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 vi.mock('./api', () => ({
   getProgressClaim: vi.fn(),
   listClaimLines: vi.fn(),
@@ -135,7 +169,9 @@ describe('ProgressClaimDetailPage', () => {
     api.getProgressClaim.mockResolvedValue(claim());
     api.listClaimLines.mockResolvedValue([]);
     renderDetail();
-    await waitFor(() => expect(screen.getByText(/PC-0001/)).toBeTruthy());
+    // The claim number renders in both the breadcrumb and the heading, so
+    // assert on at least one match rather than a unique element.
+    await waitFor(() => expect(screen.getAllByText(/PC-0001/).length).toBeGreaterThan(0));
     expect(screen.getByTestId('progress-claim-detail')).toBeTruthy();
   });
 
@@ -150,7 +186,7 @@ describe('ProgressClaimDetailPage', () => {
     api.getProgressClaim.mockResolvedValue(claim({ status: 'certified' }));
     api.listClaimLines.mockResolvedValue([]);
     renderDetail();
-    await waitFor(() => expect(screen.getByText(/PC-0001/)).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText(/PC-0001/).length).toBeGreaterThan(0));
     expect(screen.queryByTestId('populate-button')).toBeNull();
   });
 

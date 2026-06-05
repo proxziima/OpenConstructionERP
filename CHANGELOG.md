@@ -5,6 +5,12 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.8.2] - 2026-06-05
+
+### Fixed
+
+- The desktop installers for Windows, macOS and Linux build again. The 6.8.1 desktop build failed to compile because of a mistake in the launcher's shutdown handler, so the database launch fix in 6.8.1 was correct but no installer was produced. This release carries the same launch fix, so the app no longer does nothing after install, with a working build on all three platforms. The pip package and the Docker image were already fixed in 6.8.1 and are unchanged here.
+
 ## [6.8.1] - 2026-06-05
 
 ### Fixed

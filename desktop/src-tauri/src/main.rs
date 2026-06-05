@@ -329,8 +329,14 @@ window and try again. If the problem persists, a log was saved under your home f
         Ok(app) => app.run(|app_handle, event| {
             if let RunEvent::ExitRequested { .. } = event {
                 // Stop the backend sidecar so it does not linger after close.
+                // Take the child out in its own statement so the MutexGuard
+                // temporary is dropped at the semicolon, before `state` (the
+                // State borrow it is taken from) goes out of scope. Holding the
+                // guard across the `if let` body borrowed `state` too long and
+                // failed to compile (E0597) in the release build.
                 let state = app_handle.state::<AppState>();
-                if let Some(child) = state.backend_child.lock().unwrap().take() {
+                let child = state.backend_child.lock().unwrap().take();
+                if let Some(child) = child {
                     let _ = child.kill();
                 }
             }

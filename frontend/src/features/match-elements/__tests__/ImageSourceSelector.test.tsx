@@ -17,6 +17,7 @@ import {
   cleanup,
   fireEvent,
   waitFor,
+  within,
 } from '@testing-library/react';
 
 // i18n: the component calls t(key, { defaultValue }). Return the default
@@ -88,7 +89,11 @@ describe('ImageSourceSelector', () => {
     await waitFor(() =>
       expect(screen.getByAltText('Preview of the uploaded image')).toBeInTheDocument(),
     );
-    expect(screen.getByText('site.png')).toBeInTheDocument();
+    // The harness's bookkeeping div also echoes the name, so scope the
+    // assertion to the picker's drop zone to confirm the preview surface
+    // itself shows the filename.
+    const dropZone = screen.getByLabelText('Image upload drop zone');
+    expect(within(dropZone).getByText('site.png')).toBeInTheDocument();
   });
 
   it('rejects a non-image file with an inline error and no selection', () => {
