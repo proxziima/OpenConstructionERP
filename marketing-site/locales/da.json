@@ -66,11 +66,12 @@
     "mod_users_title": "Brugere",
     "panel_status": "live · 17 lag",
     "mobile_modules_title": "17 indbyggede moduler",
-    "headline": "<span class=\"word\"><span>Driv</span></span> <span class=\"word\"><span>hele</span></span> <span class=\"word italic\" data-anchor=\"primary\"><span>bygge</span></span> <span class=\"word italic\" data-anchor=\"secondary\"><span>projektet</span></span>"
+    "headline": "<span class=\"word\"><span>Driv</span></span> <span class=\"word\"><span>hele</span></span> <span class=\"word italic\" data-anchor=\"primary\"><span>bygge</span></span> <span class=\"word italic\" data-anchor=\"secondary\"><span>projektet</span></span>",
+    "download_label": "Eller download bare den gratis desktop-app, ingen Python, ingen Docker, intet at sætte op:"
   },
   "final_cta": {
     "title_line1": "Stop kampen mod dine værktøjer.",
-    "title_line2_start": "Start",
+    "title_line2_start": "Kom i gang",
     "title_line2_italic": "kalkulationen.",
     "sub": "Installér med én kommando. Kør det på din laptop, VPS eller den cloud, du foretrækker. Selvhost for evigt, eller lad os stå for det.",
     "btn_install": "Installér nu",
@@ -164,7 +165,7 @@
     "cta_open_repo": "Åbn repoet",
     "modcard_1_title": "Dokumentation",
     "modcard_1_desc": "Kom godt i gang, modul-SDK, API-reference og deployment-guides.",
-    "modcard_2_title": "Issues & roadmap",
+    "modcard_2_title": "Issues og roadmap",
     "modcard_2_desc": "Hver bug, feature request og roadmap-punkt spores offentligt.",
     "modcard_3_title": "Byg et modul",
     "modcard_3_desc": "Cookiecutter-skabelon, typet SDK, auto-genereret OpenAPI. Lancér et plugin på en eftermiddag.",
@@ -187,7 +188,7 @@
     "card3_foot": "tilføj & fjern som pakker",
     "card4_eyebrow": "licensering",
     "card4_label": "open source-kerne under AGPL-3.0. Ingen vendor lock-in. Dine data forbliver dine.",
-    "card4_foot": "AGPL-3.0 + Commercial"
+    "card4_foot": "AGPL-3.0 + Kommerciel"
   },
   "tour": {
     "eyebrow": "<span class=\"num\">05</span> · produktrundvisning",
@@ -340,7 +341,7 @@
     "row_cost_label": "Typisk pris / licens / år",
     "row_cost_us": "€ 0 · selvhost",
     "row_impl_label": "Implementering / onboarding",
-    "row_impl_us": "€ 0 · docs + community",
+    "row_impl_us": "0 € · dokumentation + community",
     "row_term_label": "Kontraktperiode",
     "row_term_us": "Ingen · opsig når som helst",
     "row_term_enterprise": "1–3 års binding",
@@ -349,7 +350,7 @@
     "note": "<span class=\"compare-check\">✓</span> fuldt understøttet  ·  <span class=\"compare-partial\">~</span> delvist eller via plugin  ·  <span class=\"compare-cross\">✗</span> ikke understøttet"
   },
   "developers": {
-    "eyebrow": "<span class=\"num\">08</span> · developer experience",
+    "eyebrow": "<span class=\"num\">08</span> · udvikleroplevelse",
     "lede": "Hver funktion er en Python-pakke med et manifest. Du kan tilføje én til en kørende installation uden at genbygge noget. API'erne er typede; OpenAPI-specifikationen genereres, ikke håndvedligeholdes.",
     "bullet1_text": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"20 6 9 17 4 12\"/></svg>Modul-SDK — scaffold ét med <code style=\"font-family:'JetBrains Mono',monospace;background:color-mix(in oklab,var(--accent) 10%,transparent);padding:1px 6px;border-radius:4px;font-size:12px\">make module-new</code>",
     "bullet2": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"20 6 9 17 4 12\"/></svg>Typet REST API, auto-genereret OpenAPI-specifikation",
@@ -366,7 +367,7 @@
     "para1": "Jeg har brugt ti år på kalkulation i byggebranchen med de sædvanlige kommercielle værktøjer — regneark gaffatapet sammen med PDF-viewere inklusive. De gode dele lå bag enterprise-licenser og vendor lock-in. De dårlige dele var overalt.",
     "para2": "OpenConstructionERP startede som den interne pipeline bag <a href=\"https://datadrivenconstruction.io\" target=\"_blank\" rel=\"noopener\" style=\"color: var(--accent); text-decoration: underline; text-underline-offset: 2px;\">DataDrivenConstruction</a> — <strong>CWICR</strong>-omkostningsdatabasen (55.000+ poster), <strong>cad2data</strong>-CAD-parser-pipelinen, klassifikationsmapningen. Vi open-sourcede det, fordi kløften mellem det, kommercielle ERP'er tager betaling for, og det, branchen faktisk har brug for, blev ved med at vokse.",
     "para3": "Det udkommer under AGPL-3.0, det kører på en 2 GB VPS, og alt ligger på <a href=\"https://github.com/datadrivenconstruction\" target=\"_blank\" rel=\"noopener\" style=\"color: var(--accent); text-decoration: underline; text-underline-offset: 2px;\">GitHub</a>.",
-    "founder_title": "founder, datadrivenconstruction.io",
+    "founder_title": "stifter, datadrivenconstruction.io",
     "recently_shipped": "Senest udgivet",
     "changelog_more": "Fuld changelog på GitHub <svg viewBox=\"0 0 24 24\" width=\"12\" height=\"12\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M7 7h10v10\"/><path d=\"M7 17 17 7\"/></svg>",
     "aside_label": "DDC-økosystemet · projekter nævnt ovenfor",
@@ -414,7 +415,7 @@
     "tier2_desc": "Når du har brug for managed hosting, kommerciel licensering af converterne eller noget, der ikke passer under AGPL — fortæl os, hvad du har brug for, og vi skruer det sammen.",
     "tier2_feature1": "Managed cloud hosting — vi kører det for dig",
     "tier2_feature2": "Kommerciel licens til CAD-convertere & omkostnings-DB",
-    "tier2_feature3": "Private deployments (on-prem, air-gapped, VPC)",
+    "tier2_feature3": "Private installationer (on-prem, air-gapped, VPC)",
     "tier2_feature4": "SSO, RBAC, SLA & prioriteret support",
     "tier2_feature5": "Brugerdefinerede valideringsregelsæt & integrationer",
     "tier2_feature6": "Direkte linje til onboarding og roadmap-ønsker",
@@ -519,7 +520,7 @@
     "aria_email": "E-mail",
     "link_cookies": "Cookie-indstillinger",
     "link_docs": "Dokumentation",
-    "link_issues": "Issues & roadmap",
+    "link_issues": "Issues og roadmap",
     "link_newsletter": "Nyhedsbrev",
     "link_imprint": "Selskabsoplysninger"
   },
@@ -569,7 +570,7 @@
     "corner_bl": "DU EJER DET HELE",
     "corner_br": "MÅLESTOK 1:1",
     "corner_tl": "FEM LAG / ALT DIT",
-    "corner_tr": "REV. 2026.04 — DRAFT",
+    "corner_tr": "REV. 2026.04, UDKAST",
     "eyebrow": "Du leverer — du beholder",
     "field_company": "Virksomhed",
     "field_company_placeholder": "Din virksomhed",
@@ -640,7 +641,7 @@
     "close": "Luk",
     "eyebrow": "Hold dig opdateret",
     "note": "~1 mail om måneden · GDPR-kompatibel",
-    "placeholder": "your@email.com",
+    "placeholder": "din@email.com",
     "sub": "Én kort mail om måneden — nye moduler, CAD-parser-udgivelser, noter bag kulisserne. Ingen spam, afmeld når som helst.",
     "submit": "Tilmeld",
     "title": "Gå ikke glip af <span class=\"italic\">det, der kommer.</span>"

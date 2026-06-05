@@ -66,7 +66,8 @@
     "mod_users_title": "Användare",
     "panel_status": "live · 17 lager",
     "mobile_modules_title": "17 inbyggda moduler",
-    "headline": "<span class=\"word\"><span>Driv</span></span> <span class=\"word\"><span>hela</span></span> <span class=\"word italic\" data-anchor=\"primary\"><span>bygg</span></span> <span class=\"word italic\" data-anchor=\"secondary\"><span>projektet</span></span>"
+    "headline": "<span class=\"word\"><span>Driv</span></span> <span class=\"word\"><span>hela</span></span> <span class=\"word italic\" data-anchor=\"primary\"><span>bygg</span></span> <span class=\"word italic\" data-anchor=\"secondary\"><span>projektet</span></span>",
+    "download_label": "Eller ladda bara ner den kostnadsfria skrivbordsappen, ingen Python, ingen Docker, inget att installera:"
   },
   "final_cta": {
     "title_line1": "Sluta kämpa mot dina verktyg.",
@@ -519,7 +520,7 @@
     "aria_email": "E-post",
     "link_cookies": "Cookie-inställningar",
     "link_docs": "Dokumentation",
-    "link_issues": "Issues & roadmap",
+    "link_issues": "Issues och färdplan",
     "link_newsletter": "Nyhetsbrev",
     "link_imprint": "Företagsinformation"
   },
@@ -569,12 +570,12 @@
     "corner_bl": "DU ÄGER ALLT DETTA",
     "corner_br": "SKALA 1:1",
     "corner_tl": "FEM LAGER / ALLT DITT",
-    "corner_tr": "REV. 2026.04 — DRAFT",
+    "corner_tr": "REV. 2026.04, UTKAST",
     "eyebrow": "Du levererar — du behåller",
     "field_company": "Företag",
     "field_company_placeholder": "Ditt företag",
     "field_email": "Arbets-e-post",
-    "field_email_placeholder": "alex@yourco.com",
+    "field_email_placeholder": "alex@dittforetag.se",
     "field_message": "Berätta om din miljö eller ditt behov",
     "field_message_placeholder": "Moduler du behöver, utrullningsomfattning, tidsplan, regelkrav…",
     "field_name": "Fullständigt namn",
@@ -640,7 +641,7 @@
     "close": "Stäng",
     "eyebrow": "Håll dig uppdaterad",
     "note": "~1 mejl per månad · GDPR-kompatibelt",
-    "placeholder": "your@email.com",
+    "placeholder": "din@epost.se",
     "sub": "Ett kort mejl i månaden — nya moduler, CAD-parser-releaser, anteckningar bakom kulisserna. Ingen spam, avregistrera när som helst.",
     "submit": "Prenumerera",
     "title": "Missa inte <span class=\"italic\">det som kommer.</span>"

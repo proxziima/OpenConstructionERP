@@ -28,7 +28,7 @@
     "mod_schedules_sub": "4D gantt",
     "mod_schedules_feature": "Gantt<br>& BOQ",
     "mod_takeoff_title": "Hoeveelhedenbepaling",
-    "mod_takeoff_sub": "auto",
+    "mod_takeoff_sub": "automatisch",
     "mod_takeoff_feature": "AI stelt voor<br>u bevestigt",
     "mod_costs_title": "Kosten",
     "mod_costs_sub": "55k posten",
@@ -66,7 +66,8 @@
     "mod_users_title": "Gebruikers",
     "panel_status": "live · 17 lagen",
     "mobile_modules_title": "17 ingebouwde modules",
-    "headline": "<span class=\"word\"><span>Stuur</span></span> <span class=\"word\"><span>het</span></span> <span class=\"word\"><span>hele</span></span> <span class=\"word italic\" data-anchor=\"primary\"><span>bouw</span></span> <span class=\"word italic\" data-anchor=\"secondary\"><span>project</span></span> <span class=\"word\"><span>aan</span></span>"
+    "headline": "<span class=\"word\"><span>Stuur</span></span> <span class=\"word\"><span>het</span></span> <span class=\"word\"><span>hele</span></span> <span class=\"word italic\" data-anchor=\"primary\"><span>bouw</span></span> <span class=\"word italic\" data-anchor=\"secondary\"><span>project</span></span> <span class=\"word\"><span>aan</span></span>",
+    "download_label": "Of download gewoon de gratis desktopapp, geen Python, geen Docker, niets te installeren:"
   },
   "final_cta": {
     "title_line1": "Stop met vechten tegen je tools.",
@@ -198,7 +199,7 @@
     "info_chip1_default": "Taal",
     "info_chip2_default": "Regio",
     "info_chip3_default": "Valuta",
-    "info_chip4_default": "Starter DB",
+    "info_chip4_default": "Starter-database",
     "chip1_title": "Onboarding",
     "chip2_title": "Project aanmaken",
     "chip3_title": "Calculatie starten",
@@ -550,7 +551,7 @@
     "trusted_sub": "Een overzicht van de bouw-, engineering- en infrastructuurbedrijven die het afgelopen decennium hebben gebouwd met de open tools, datasets en AI-workflows van DataDrivenConstruction."
   },
   "custom": {
-    "badge_audit": "audit-ready",
+    "badge_audit": "audit-klaar",
     "badge_data": "jouw data, jouw wetten",
     "badge_gdpr": "GDPR-proof",
     "badge_iso": "klaar voor ISO 27001",
@@ -569,7 +570,7 @@
     "corner_bl": "DIT IS ALLEMAAL VAN JOU",
     "corner_br": "SCHAAL 1:1",
     "corner_tl": "VIJF LAGEN / ALLEMAAL VAN JOU",
-    "corner_tr": "REV. 2026.04 — DRAFT",
+    "corner_tr": "REV. 2026.04 — CONCEPT",
     "eyebrow": "Jij implementeert — jij houdt het",
     "field_company": "Bedrijf",
     "field_company_placeholder": "Jouw bedrijf",
@@ -640,7 +641,7 @@
     "close": "Sluiten",
     "eyebrow": "Blijf op de hoogte",
     "note": "~1 e-mail per maand · GDPR-conform",
-    "placeholder": "your@email.com",
+    "placeholder": "jouw@email.com",
     "sub": "Eén korte e-mail per maand — nieuwe modules, releases van de CAD-parser, notities van achter de schermen. Geen spam, je kunt je altijd uitschrijven.",
     "submit": "Aanmelden",
     "title": "Mis niet <span class=\"italic\">wat er komt.</span>"
