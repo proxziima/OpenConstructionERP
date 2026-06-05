@@ -16,7 +16,6 @@ import pytest
 
 from app.modules.costmodel.service import is_budget_line_overrun
 
-
 # ── Case 1: under the threshold ────────────────────────────────────────────────
 
 

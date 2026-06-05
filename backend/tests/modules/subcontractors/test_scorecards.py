@@ -11,7 +11,6 @@ fixture, function-scoped).
 
 from __future__ import annotations
 
-import uuid
 from decimal import Decimal
 
 import pytest
